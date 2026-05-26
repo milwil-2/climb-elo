@@ -135,6 +135,27 @@ K-factors are tiered by EventTier × RoundType, doubled from the PRD baseline af
 
 `scripts/compute_combined_ratings.py` populates `Discipline.BOULDER_LEAD` ratings using the **geometric mean** `sqrt(mu_boulder × mu_lead)` of athletes with ≥3 events in both disciplines. The geometric mean penalizes specialists and rewards all-rounders, matching the Olympic combined format. Sigma uses RMS: `sqrt((sigma_b² + sigma_l²) / 2)`.
 
+### Learned composite weights (Issue #54)
+
+The script supports an optional **learned-weights** mode. When `data/learned_combined_weights.json` exists and is well-formed, the formula generalises to `μ_combined = μ_lead^w_lead × μ_boulder^w_boulder` (with `w_lead + w_boulder = 1`). When the file is missing or malformed it logs a warning and falls back to the geometric mean (w_lead = w_boulder = 0.5). The script logs which mode is active at startup. Sigma stays on the RMS formula regardless of the learned weights — the fitter only optimises the μ-ranking task.
+
+Fit the weights with:
+
+```bash
+uv run python scripts/fit_combined_weights.py             # default grid step=0.1
+uv run python scripts/fit_combined_weights.py --step 0.05  # finer grid
+```
+
+The fitter:
+
+1. Discovers "virtual combined events" — every (WCh season, gender) tuple where ≥ 6 athletes have results in BOTH Boulder and Lead. The Olympics tier is included if present; the IFSC API doesn't expose Olympic events directly, so today the folds come from WCh seasons (2012–2025).
+2. Builds the ground-truth combined ranking via rank product (Tokyo 2020 / Paris 2024 format).
+3. For each fold year, copies the production DB to a temp file and runs backfill on Boulder + Lead with `end_date=date(year, 1, 1)` — ratings reflect only events strictly prior, no data leakage.
+4. Sweeps (w_lead, 1 - w_lead) over a grid, scoring each candidate via Monte Carlo podium probabilities (log-loss primary metric, Spearman rank correlation tie-breaker).
+5. Writes `data/learned_combined_weights.json` only if learned weights beat the geometric mean on log-loss AND don't regress rank correlation by more than 5%. Otherwise it prints "Learned weights did not improve over geometric mean — keeping baseline." and leaves the JSON file alone (so production keeps falling back to the geometric mean).
+
+**When to re-run**: after each new combined-format major (Olympics, World Championships) lands in the DB. New ground-truth folds + updated ratings can shift the optimum. The JSON is checked into the repo (the `.gitignore` has an `!data/learned_combined_weights.json` exception) so the production deployment picks up the new weights on next deploy without a manual config step.
+
 ## Projections Engine
 
 `engine/projections.py` provides Monte Carlo outcome prediction:

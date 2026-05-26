@@ -19,6 +19,9 @@ build/
 *.db-shm
 data/*.csv
 data/*.json
+# But DO check in the fitted Boulder+Lead composite weights (Issue #54) —
+# the production combined-rating script reads it at startup.
+!data/learned_combined_weights.json
 *.sqlite
 *.sqlite3
 # External-ranking cache (Issue #44). Recorded snapshots live in
