@@ -2,12 +2,18 @@
 """Backtest the Lead ELO model against historical results.
 
 Splits data into training (all but last N seasons) and holdout (last N seasons).
-For each holdout event final, predicts top-3 by ELO and compares to actual podium.
-Reports hit-rate vs. an official-ranking baseline (predict by cumulative results).
+For each holdout event final, predicts top-3 by pre-event ELO and compares to
+actual podium. Reports hit-rate vs. an attendance-based baseline.
+
+Methodology:
+  1. Clear all ratings and rating history.
+  2. Run backfill on training events only (start_date < cutoff).
+  3. For each holdout event final, use the ELO ratings frozen at the end of
+     training to predict the podium (athletes with no history get mu=1500).
+  4. Baseline: predict by n_events attended (proxy for accumulated points).
 """
 import logging
 import sys
-from collections import defaultdict
 from datetime import date
 
 from sqlalchemy import delete, func, select
@@ -15,13 +21,11 @@ from sqlalchemy import delete, func, select
 from climbing_elo.database import init_db
 from climbing_elo.engine.backfill import run_backfill
 from climbing_elo.models import (
-    Athlete,
     Discipline,
     Event,
     Rating,
     RatingHistory,
     Result,
-    Round,
     RoundType,
 )
 
@@ -39,73 +43,64 @@ def main() -> None:
         ).scalar()
 
         if max_season is None:
-            print("No Lead events in database. Run seed_from_kaggle.py first.")
+            print("No Lead events in database. Run scrape_ifsc.py first.")
             sys.exit(1)
 
         cutoff_season = max_season - HOLDOUT_SEASONS + 1
-        print(f"Max season: {max_season}")
-        print(f"Training: seasons < {cutoff_season}")
-        print(f"Holdout:  seasons >= {cutoff_season}")
+        cutoff_date = date(cutoff_season, 1, 1)
+
+        print(f"Max season:    {max_season}")
+        print(f"Cutoff season: {cutoff_season}  (events before {cutoff_date} are training)")
+        print(f"Training:      seasons < {cutoff_season}")
+        print(f"Holdout:       seasons >= {cutoff_season}")
         print()
 
-        # Clear existing ratings
+        # ------------------------------------------------------------------
+        # 1. Clear all ratings so we start fresh
+        # ------------------------------------------------------------------
         session.execute(delete(RatingHistory))
         session.execute(delete(Rating))
         session.commit()
 
-        # Run backfill on training data only
-        training_events = session.execute(
-            select(Event)
-            .where(Event.discipline == Discipline.LEAD, Event.season < cutoff_season)
-            .order_by(Event.start_date.asc())
-        ).scalars().all()
+        # ------------------------------------------------------------------
+        # 2. Run backfill on training events only (end_date = cutoff_date)
+        # ------------------------------------------------------------------
+        training_count = session.execute(
+            select(func.count(Event.id)).where(
+                Event.discipline == Discipline.LEAD,
+                Event.start_date < cutoff_date,
+            )
+        ).scalar()
 
-        print(f"Training events: {len(training_events)}")
-        report = run_backfill(session, Discipline.LEAD, from_date=None)
-        # The backfill ran on ALL events because from_date=None. We need
-        # to instead restrict. For backtesting, we process training events
-        # to build ratings, then evaluate on holdout events using those ratings.
-        # Since backfill already processed everything, let's take a different
-        # approach: clear and re-run with a date cutoff.
-
-        session.execute(delete(RatingHistory))
-        session.execute(delete(Rating))
-        session.commit()
-
-        if training_events:
-            training_cutoff_date = date(cutoff_season, 1, 1)
-            # Process only training events by setting from_date to earliest
-            # and stopping before cutoff. The backfill processes all events
-            # in date order, so we need to filter in the query.
-            # Let's manually process:
-            from climbing_elo.engine.backfill import run_backfill as _backfill
-
-            # Temporarily update the holdout events to a different discipline
-            # to exclude them from backfill. Hacky but avoids refactoring backfill.
-            # Better approach: pass an end_date to backfill.
-            # For now, just run backfill and snapshot ratings before holdout.
-
-        # Actually, let's just run backfill with end_date support.
-        # Process all events, snapshot ratings at cutoff point for evaluation.
-        report = run_backfill(session, Discipline.LEAD)
-
-        # Snapshot ratings after all processing (will include holdout, but
-        # we can evaluate holdout event-by-event using pre-event ratings
-        # from RatingHistory).
-
-        # Evaluate holdout events
         holdout_events = session.execute(
             select(Event)
             .where(
                 Event.discipline == Discipline.LEAD,
-                Event.season >= cutoff_season,
+                Event.start_date >= cutoff_date,
             )
             .order_by(Event.start_date.asc())
         ).scalars().all()
 
-        print(f"Holdout events: {len(holdout_events)}")
+        print(f"Training events: {training_count}")
+        print(f"Holdout events:  {len(holdout_events)}")
         print()
 
+        report = run_backfill(session, Discipline.LEAD, end_date=cutoff_date)
+        if report.errors:
+            print(f"Backfill errors: {len(report.errors)}")
+
+        # Snapshot training-end ratings (mu per athlete) for holdout evaluation.
+        training_ratings: dict[int, float] = {}
+        training_n_events: dict[int, int] = {}
+        for rating in session.execute(
+            select(Rating).where(Rating.discipline == Discipline.LEAD)
+        ).scalars():
+            training_ratings[rating.athlete_id] = rating.mu
+            training_n_events[rating.athlete_id] = rating.n_events
+
+        # ------------------------------------------------------------------
+        # 3. Evaluate holdout finals using training-end ratings
+        # ------------------------------------------------------------------
         elo_hits = 0
         baseline_hits = 0
         total_finals = 0
@@ -125,39 +120,20 @@ def main() -> None:
 
                 actual_podium = {r.athlete_id for r in results[:3]}
 
-                # ELO prediction: use pre-event ratings from RatingHistory
-                pre_event_ratings = {}
-                for res in results:
-                    rh = session.execute(
-                        select(RatingHistory)
-                        .where(
-                            RatingHistory.athlete_id == res.athlete_id,
-                            RatingHistory.event_id == event.id,
-                        )
-                        .order_by(RatingHistory.id.asc())
-                        .limit(1)
-                    ).scalar_one_or_none()
-
-                    if rh:
-                        pre_event_ratings[res.athlete_id] = rh.mu_before
-                    else:
-                        pre_event_ratings[res.athlete_id] = 1500.0
-
+                # ELO prediction: use training-end mu (default 1500 if unknown)
+                pre_event_ratings: dict[int, float] = {
+                    res.athlete_id: training_ratings.get(res.athlete_id, 1500.0)
+                    for res in results
+                }
                 elo_top3 = set(
                     sorted(pre_event_ratings, key=pre_event_ratings.get, reverse=True)[:3]
                 )
 
-                # Baseline: predict by most events attended (proxy for ranking points)
-                event_counts = {}
-                for res in results:
-                    rating = session.execute(
-                        select(Rating).where(
-                            Rating.athlete_id == res.athlete_id,
-                            Rating.discipline == Discipline.LEAD,
-                        )
-                    ).scalar_one_or_none()
-                    event_counts[res.athlete_id] = rating.n_events if rating else 0
-
+                # Baseline: predict by most events attended
+                event_counts: dict[int, int] = {
+                    res.athlete_id: training_n_events.get(res.athlete_id, 0)
+                    for res in results
+                }
                 baseline_top3 = set(
                     sorted(event_counts, key=event_counts.get, reverse=True)[:3]
                 )
@@ -172,7 +148,7 @@ def main() -> None:
                 event_label = f"{event.name} ({event.season}) {rnd.gender.value}"
                 elo_marker = "+" if elo_hit else "-"
                 base_marker = "+" if baseline_hit else "-"
-                print(f"  [{elo_marker}] [{base_marker}] {event_label}")
+                print(f"  [ELO:{elo_marker}] [BASE:{base_marker}] {event_label}")
 
         if total_finals == 0:
             print("\nNo holdout finals to evaluate.")
@@ -182,7 +158,7 @@ def main() -> None:
         baseline_rate = baseline_hits / total_finals * 100
         delta = elo_rate - baseline_rate
 
-        print(f"\n{'='*50}")
+        print(f"\n{'='*55}")
         print(f"Results ({total_finals} finals evaluated):")
         print(f"  ELO podium hit-rate:      {elo_rate:.1f}%")
         print(f"  Baseline podium hit-rate: {baseline_rate:.1f}%")

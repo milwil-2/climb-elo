@@ -13,7 +13,12 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "climbing_elo.d
 def get_engine(db_path: Path | str = DEFAULT_DB_PATH):
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    return create_engine(f"sqlite:///{db_path}", echo=False)
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        echo=False,
+        connect_args={"timeout": 60},  # wait up to 60s for locks
+    )
+    return engine
 
 
 def get_session_factory(db_path: Path | str = DEFAULT_DB_PATH) -> sessionmaker[Session]:
