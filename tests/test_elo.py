@@ -7,14 +7,16 @@ from datetime import date
 from climbing_elo.engine.elo import (
     DEFAULT_MU,
     DEFAULT_SIGMA,
+    SPEED_MAX_GAP_SECONDS,
     AthleteRating,
     AthleteResult,
     apply_time_decay,
     calculate_round_updates,
     compute_margin_multiplier,
+    compute_speed_margin_multiplier,
     expected_score,
 )
-from climbing_elo.models import EventTier, RoundType
+from climbing_elo.models import Discipline, EventTier, RoundType
 
 
 def test_expected_score_equal_ratings():
@@ -214,3 +216,116 @@ def test_single_athlete_no_updates():
         results, ratings, EventTier.WORLD_CUP, RoundType.FINAL, date(2024, 6, 1)
     )
     assert len(updates) == 0
+
+
+# ---------------------------------------------------------------------------
+# Speed discipline tests
+# ---------------------------------------------------------------------------
+
+
+def test_speed_margin_multiplier_no_scores():
+    """No times → neutral margin."""
+    assert compute_speed_margin_multiplier(None, None) == 1.0
+
+
+def test_speed_margin_multiplier_capped():
+    """Gap >= max_gap should produce MARGIN_CAP (2.0)."""
+    mult = compute_speed_margin_multiplier(6.0, 8.1)  # 2.1 s gap > 2.0
+    assert mult == 2.0
+
+
+def test_speed_margin_multiplier_half_gap():
+    """1.0 s gap with max 2.0 s → 1.5x multiplier."""
+    mult = compute_speed_margin_multiplier(6.5, 7.5)
+    assert abs(mult - 1.5) < 0.01
+
+
+def test_speed_margin_multiplier_argument_order_invariant():
+    """Multiplier should be the same regardless of argument order."""
+    m1 = compute_speed_margin_multiplier(6.5, 7.5)
+    m2 = compute_speed_margin_multiplier(7.5, 6.5)
+    assert abs(m1 - m2) < 1e-9
+
+
+def test_speed_round_updates_zero_sum():
+    """ELO is zero-sum for Speed qualification (ranked by time)."""
+    # Lower rank = faster time = better
+    results = [
+        AthleteResult(athlete_id=i, rank=i, score_normalized=6.0 + i * 0.1)
+        for i in range(1, 9)
+    ]
+    ratings = {
+        i: AthleteRating(athlete_id=i, mu=1500.0, n_events=10, provisional=False)
+        for i in range(1, 9)
+    }
+    updates = calculate_round_updates(
+        results, ratings, EventTier.WORLD_CUP, RoundType.QUALIFICATION,
+        date(2024, 6, 1), discipline=Discipline.SPEED,
+    )
+    total_delta = sum(u.mu_after - u.mu_before for u in updates)
+    assert abs(total_delta) < 0.0001
+
+
+def test_speed_false_start_treated_as_dnf():
+    """An athlete with DNF=True (false start) should rank at bottom with no margin bonus."""
+    results = [
+        AthleteResult(athlete_id=1, rank=1, score_normalized=6.5),
+        AthleteResult(athlete_id=2, rank=2, score_normalized=None, dnf=True),
+    ]
+    ratings = {
+        1: AthleteRating(athlete_id=1, mu=1500.0, n_events=10, provisional=False),
+        2: AthleteRating(athlete_id=2, mu=1500.0, n_events=10, provisional=False),
+    }
+    updates = calculate_round_updates(
+        results, ratings, EventTier.WORLD_CUP, RoundType.FINAL,
+        date(2024, 6, 1), discipline=Discipline.SPEED,
+    )
+    by_id = {u.athlete_id: u for u in updates}
+    # Margin multiplier for the pair should be 1.0 (DNF path)
+    pair_for_winner = by_id[1].contributing_pairs[0]
+    assert pair_for_winner.margin_multiplier == 1.0
+    # Zero-sum still holds
+    total_delta = sum(u.mu_after - u.mu_before for u in updates)
+    assert abs(total_delta) < 0.0001
+
+
+def test_speed_winner_gains_more_with_large_margin():
+    """Larger time gap should produce a bigger rating swing than a small gap."""
+    def _run(winner_time, loser_time):
+        results = [
+            AthleteResult(athlete_id=1, rank=1, score_normalized=winner_time),
+            AthleteResult(athlete_id=2, rank=2, score_normalized=loser_time),
+        ]
+        ratings = {
+            1: AthleteRating(1, mu=1500.0, n_events=10, provisional=False),
+            2: AthleteRating(2, mu=1500.0, n_events=10, provisional=False),
+        }
+        upd = calculate_round_updates(
+            results, ratings, EventTier.WORLD_CUP, RoundType.FINAL,
+            date(2024, 6, 1), discipline=Discipline.SPEED,
+        )
+        return next(u for u in upd if u.athlete_id == 1).mu_after - 1500.0
+
+    delta_small = _run(6.5, 6.6)   # 0.1 s gap
+    delta_large = _run(6.5, 8.5)   # 2.0 s gap (capped)
+    assert delta_large > delta_small
+
+
+def test_speed_dns_excluded():
+    """Athletes marked DNS should be excluded from Speed rounds too."""
+    results = [
+        AthleteResult(athlete_id=1, rank=1, score_normalized=6.5),
+        AthleteResult(athlete_id=2, rank=2, score_normalized=7.0),
+        AthleteResult(athlete_id=3, rank=0, dns=True),
+    ]
+    ratings = {
+        i: AthleteRating(i, mu=1500.0, n_events=10, provisional=False)
+        for i in range(1, 4)
+    }
+    updates = calculate_round_updates(
+        results, ratings, EventTier.WORLD_CUP, RoundType.QUALIFICATION,
+        date(2024, 6, 1), discipline=Discipline.SPEED,
+    )
+    ids_updated = {u.athlete_id for u in updates}
+    assert 3 not in ids_updated
+    assert len(updates) == 2

@@ -130,6 +130,7 @@ def run_backfill(
                     event.tier,
                     rnd.round_type,
                     event.start_date,
+                    discipline=discipline,
                 )
             except Exception as e:
                 msg = f"Error processing round {rnd.id} of event {event.id}: {e}"
