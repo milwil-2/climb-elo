@@ -1,0 +1,89 @@
+name: Scrape IFSC → Supabase
+
+# Keeps the production Supabase DB fresh:
+#   1. Pulls the upcoming-events calendar (so /predictions stays populated).
+#   2. Pulls recent finished results for the current and previous season.
+#   3. Runs the ELO backfill for each discipline (ratings get re-computed from
+#      any new results — idempotent thanks to uq_rating_history_athlete_round).
+#   4. Refreshes the combined Boulder+Lead ratings.
+#
+# Schedule: every 6 hours (00/06/12/18 UTC). World Cup events typically finish
+# mid-afternoon UTC, so the next scrape picks them up within a few hours.
+#
+# Required secret: DATABASE_URL — the **direct** Supabase connection string
+#   (port 5432, NOT the pooler). Bulk inserts + long-lived connections do not
+#   work well via PgBouncer transaction-mode pooling.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      historical_backfill:
+        description: "Also run the full 2012→present historical scrape (slow)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Fail fast if DATABASE_URL is missing
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL secret is not set. Add it to repo secrets (direct Supabase connection, port 5432)."
+            exit 1
+          fi
+
+      # ----------------------------------------------------------------------
+      - name: Scrape upcoming events (all disciplines)
+        run: uv run python scripts/scrape_upcoming.py --all-disciplines
+
+      # ----------------------------------------------------------------------
+      - name: Scrape recent IFSC results (current + previous season)
+        run: |
+          CURRENT_YEAR=$(date +%Y)
+          PREV_YEAR=$((CURRENT_YEAR - 1))
+          uv run python scripts/scrape_ifsc.py \
+            --min-year "$PREV_YEAR" \
+            --max-year "$CURRENT_YEAR"
+
+      # ----------------------------------------------------------------------
+      - name: Historical backfill (manual trigger only)
+        if: ${{ inputs.historical_backfill == true }}
+        run: uv run python scripts/scrape_ifsc_historical.py --min-year 2012
+
+      # ----------------------------------------------------------------------
+      - name: Run backfill for each discipline
+        run: |
+          for discipline in lead boulder speed; do
+            echo "::group::Backfill — $discipline"
+            uv run python scripts/run_backfill.py --discipline "$discipline"
+            echo "::endgroup::"
+          done
+
+      - name: Compute combined Boulder+Lead ratings
+        run: uv run python scripts/compute_combined_ratings.py
+
+      # ----------------------------------------------------------------------
+      - name: Show DB counts
+        run: uv run python scripts/validate_db_counts.py
