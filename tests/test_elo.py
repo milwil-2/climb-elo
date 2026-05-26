@@ -1,22 +1,31 @@
 """Tests for the ELO rating engine.
 
 Reproduces the PRD Appendix C worked example (adapted to K/(N-1) normalization).
+Post-#51 the engine uses Glicko-2 RD integration — see tests below for
+g(φ) function values, inactivity inflation, high-φ cold-start trajectory.
 """
 
+import math
 from datetime import date
 
 from climbing_elo.engine.elo import (
     BOULDER_MARGIN_MAX_GAP,
+    DEFAULT_SIGMA,
+    GLICKO2_SCALE,
     MARGIN_CAP,
+    SIGMA_CEILING,
+    SIGMA_FLOOR,
     AthleteRating,
     AthleteResult,
     _is_new_boulder_format,
-    apply_time_decay,
     calculate_round_updates,
     compute_boulder_margin_multiplier,
     compute_margin_multiplier,
     compute_speed_margin_multiplier,
     expected_score,
+    glicko2_expected_score,
+    glicko2_g,
+    glicko2_inflate_phi,
     normalize_boulder_score,
 )
 from climbing_elo.models import Discipline, EventTier, RoundType
@@ -62,19 +71,88 @@ def test_margin_multiplier_partial():
     assert abs(mult - 1.5) < 0.01
 
 
-def test_time_decay_no_previous():
-    result = apply_time_decay(100.0, None, date(2024, 1, 1))
-    assert result == 100.0
+def test_inactivity_inflation_no_previous_event():
+    """Athletes with no recorded last event keep their σ unchanged."""
+    assert glicko2_inflate_phi(100.0, None, date(2024, 1, 1)) == 100.0
 
 
-def test_time_decay_increases_sigma():
-    sigma_after = apply_time_decay(100.0, date(2022, 1, 1), date(2024, 1, 1))
+def test_inactivity_inflation_grace_period():
+    """Activity gaps inside the 30-day grace window do not inflate φ."""
+    # 15 days inactive — inside grace.
+    sigma_after = glicko2_inflate_phi(100.0, date(2024, 1, 1), date(2024, 1, 16))
+    assert sigma_after == 100.0
+
+
+def test_inactivity_inflation_increases_sigma():
+    """6 months inactivity inflates σ via the Wiener-process formula."""
+    sigma_after = glicko2_inflate_phi(100.0, date(2024, 1, 1), date(2024, 7, 1))
     assert sigma_after > 100.0
+    assert sigma_after < SIGMA_CEILING
 
 
-def test_time_decay_capped():
-    sigma_after = apply_time_decay(100.0, date(2010, 1, 1), date(2024, 1, 1))
-    assert sigma_after == 350.0
+def test_inactivity_inflation_capped_at_ceiling():
+    """A pre-inflated φ near the ceiling stays clamped at the ceiling."""
+    # Start at the ceiling — any positive inflation must not exceed it.
+    sigma_after = glicko2_inflate_phi(
+        SIGMA_CEILING - 5.0, date(2000, 1, 1), date(2024, 1, 1)
+    )
+    assert sigma_after == SIGMA_CEILING
+
+
+def test_inactivity_inflation_monotonic_with_gap_length():
+    """Longer gaps must inflate σ at least as much as shorter ones."""
+    s_short = glicko2_inflate_phi(80.0, date(2024, 1, 1), date(2024, 7, 1))
+    s_long = glicko2_inflate_phi(80.0, date(2024, 1, 1), date(2025, 1, 1))
+    assert s_long >= s_short
+
+
+# ---------------------------------------------------------------------------
+# Glicko-2 primitive tests
+# ---------------------------------------------------------------------------
+
+
+def test_glicko2_g_at_zero_phi():
+    """g(0) = 1.0 — full confidence in the opponent's rating."""
+    assert math.isclose(glicko2_g(0.0), 1.0, rel_tol=1e-9)
+
+
+def test_glicko2_g_decreases_with_phi():
+    """g is monotonically decreasing — higher φ → lower weight."""
+    assert glicko2_g(0.0) > glicko2_g(1.0) > glicko2_g(2.0) > glicko2_g(5.0)
+
+
+def test_glicko2_g_approaches_zero_for_large_phi():
+    """g(φ) → 0 as φ grows; an opponent with infinite RD contributes nothing."""
+    assert glicko2_g(100.0) < 0.05
+
+
+def test_glicko2_g_default_phi_value():
+    """Reference: φ = 350/173.7178 ≈ 2.015 → g(φ) ≈ 0.669.
+
+    Closed form: ``g(2.015) = 1/sqrt(1 + 3·2.015²/π²) ≈ 0.669``.
+    """
+    phi = DEFAULT_SIGMA / GLICKO2_SCALE
+    g_val = glicko2_g(phi)
+    assert 0.66 < g_val < 0.68
+
+
+def test_glicko2_expected_score_equal_ratings_high_confidence():
+    """Equal μ, low φ → expected score 0.5."""
+    e = glicko2_expected_score(1500.0, 1500.0, phi_b=50.0)
+    assert math.isclose(e, 0.5, rel_tol=1e-9)
+
+
+def test_glicko2_expected_score_higher_rated_favoured():
+    """Higher-μ athlete is favoured."""
+    e = glicko2_expected_score(1700.0, 1500.0, phi_b=100.0)
+    assert e > 0.5
+
+
+def test_glicko2_expected_score_high_phi_opponent_dampens_edge():
+    """Against a very high-φ opponent, the favourite's edge shrinks toward 0.5."""
+    e_low_phi = glicko2_expected_score(1700.0, 1500.0, phi_b=50.0)
+    e_high_phi = glicko2_expected_score(1700.0, 1500.0, phi_b=350.0)
+    assert e_low_phi > e_high_phi > 0.5
 
 
 def test_calculate_round_updates_zero_sum():
@@ -189,19 +267,24 @@ def test_ties_produce_no_delta():
     assert abs(delta_2 - delta_3) < 0.0001
 
 
-def test_provisional_higher_k():
-    """Provisional athletes should have larger rating swings."""
+def test_high_phi_athlete_phi_shrinks_more():
+    """High-φ (cold-start) athletes have their φ shrink more in absolute terms
+    after a round than already-confident athletes — that's the whole point of
+    Glicko-2 RD integration. Replaces the legacy ``test_provisional_higher_k``.
+    """
     results = [
         AthleteResult(athlete_id=1, rank=1),
         AthleteResult(athlete_id=2, rank=2),
     ]
+    # Established pair (low σ, well-known ratings).
     ratings_established = {
-        1: AthleteRating(1, mu=1500, n_events=10, provisional=False),
-        2: AthleteRating(2, mu=1500, n_events=10, provisional=False),
+        1: AthleteRating(1, mu=1500, sigma=80.0, n_events=10, provisional=False),
+        2: AthleteRating(2, mu=1500, sigma=80.0, n_events=10, provisional=False),
     }
-    ratings_provisional = {
-        1: AthleteRating(1, mu=1500, n_events=1, provisional=True),
-        2: AthleteRating(2, mu=1500, n_events=10, provisional=False),
+    # Cold-start pair (high σ — fresh in the rating system).
+    ratings_cold = {
+        1: AthleteRating(1, mu=1500, sigma=DEFAULT_SIGMA, n_events=1, provisional=True),
+        2: AthleteRating(2, mu=1500, sigma=DEFAULT_SIGMA, n_events=1, provisional=True),
     }
 
     updates_est = calculate_round_updates(
@@ -211,17 +294,24 @@ def test_provisional_higher_k():
         RoundType.FINAL,
         date(2024, 6, 1),
     )
-    updates_prov = calculate_round_updates(
+    updates_cold = calculate_round_updates(
         results,
-        ratings_provisional,
+        ratings_cold,
         EventTier.WORLD_CUP,
         RoundType.FINAL,
         date(2024, 6, 1),
     )
 
-    delta_est = updates_est[0].mu_after - updates_est[0].mu_before
-    delta_prov = updates_prov[0].mu_after - updates_prov[0].mu_before
-    assert delta_prov > delta_est
+    # Cold-start athlete's φ should shrink notably more than established's.
+    phi_shrink_est = updates_est[0].sigma_before - updates_est[0].sigma_after
+    phi_shrink_cold = updates_cold[0].sigma_before - updates_cold[0].sigma_after
+    assert phi_shrink_cold > phi_shrink_est
+    # Both shrinks should be positive (round consumes uncertainty).
+    assert phi_shrink_est >= 0
+    assert phi_shrink_cold > 0
+    # Floor should be respected.
+    assert updates_est[0].sigma_after >= SIGMA_FLOOR
+    assert updates_cold[0].sigma_after >= SIGMA_FLOOR
 
 
 def test_single_athlete_no_updates():

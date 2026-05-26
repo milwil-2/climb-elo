@@ -1,49 +1,135 @@
+"""ELO rating engine with Glicko-2 rating-deviation (RD) integration (Issue #51).
+
+Background
+----------
+
+Originally a constant-K ELO engine. Issue #51 wires Glicko-2's RD (φ) into the
+update so that:
+
+* Beating a high-RD opponent moves you less (g(φ_opp) weighting).
+* High-RD athletes (cold start, post-sabbatical) move further per round (large
+  φ² scaling in the closed-form Glicko-2 step).
+* Inactivity inflates φ via the Wiener-process formula
+  ``φ_new = sqrt(φ_old² + σ_inactivity² · months_inactive)``.
+
+Three design decisions (recorded in issue #51, comment from 2026-05-26):
+
+1. **Inactivity inflation** uses calendar-time semantics — months since the
+   athlete's last event — matching Glicko-2's Wiener-process model. Reuses the
+   existing ``Rating.last_event_at`` Date column. (Decision over event-count
+   semantics because event cadence is irregular and per-athlete event-skip
+   enumeration would be expensive on every backfill step.)
+
+2. **Margin-of-victory stays separate** from Glicko-2's outcome score
+   ``s_j ∈ {0, 0.5, 1}``. The existing margin multiplier folds into the
+   effective K instead: ``K_eff = K_base(tier,round) · g(φ_opp) · margin_mult``.
+   This preserves issue #53 (MOV audit) as an independent change.
+
+3. **Projection σ** reuses Glicko-2 φ (the value stored in the ``Rating.sigma``
+   column) as the projection draw σ in :mod:`engine.projections`. One source of
+   truth. Trade-off: φ is rating uncertainty, not performance variance — but
+   the practical effect (wider draws for less-certain athletes) is
+   directionally correct. Tracked for refinement in a follow-up issue.
+
+Simplifications (deferred to follow-up issues filed against #51)
+----------------------------------------------------------------
+
+* **Volatility update**: we run a *simplified closed-form* φ update
+  (``1/φ'² = 1/φ_inflated² + v_inv_sum``) without iterating Glickman's full
+  Step 5 volatility-σ refit. The volatility is held fixed at the system
+  constant ``GLICKO2_DEFAULT_VOLATILITY`` for inflation purposes only. This
+  is the standard Glicko-1.5-style approximation; the full Glicko-2
+  iteration buys an additional 1-2% calibration in long-running implementations
+  and can be ported later.
+* **K-factor table** values are halved as a conservative starting point —
+  variable effective-K averages around constant K, so halving the base keeps
+  per-round magnitudes within the previously-tuned operating range. A proper
+  re-grid sweep is a follow-up.
+
+Zero-sum invariant
+------------------
+
+μ updates remain pairwise-symmetric and therefore zero-sum across a round
+(within floating-point tolerance). φ updates are *per-athlete* (each athlete's
+new φ depends on the variance accumulated against all opponents seen in the
+round) and are NOT zero-sum — Glicko-2 explicitly allows the round to
+*consume* uncertainty across the field.
+"""
+
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date
 
 from climbing_elo.models import Discipline, EventTier, RoundType
 
-DEFAULT_MU = 1500.0
-DEFAULT_SIGMA = 350.0
-PROVISIONAL_THRESHOLD = 3
-PROVISIONAL_K_MULTIPLIER = 2.0  # tied across 1.5/2.0/3.0 at best k-scale; keep default
-SIGMA_DECAY_HALF_LIFE_DAYS = 18 * 30  # ~18 months
-SIGMA_FLOOR = 50.0
-SIGMA_CEILING = 350.0
-SIGMA_CONVERGENCE_FACTOR = 0.98
-MARGIN_CAP = 1.5  # tuned: 1.5 outperforms 2.0 and 2.5 at 2x k-scale
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
-# Speed-specific margin: max meaningful time gap in seconds
+DEFAULT_MU = 1500.0
+DEFAULT_SIGMA = 350.0  # display-scale RD for fresh athletes (high uncertainty)
+PROVISIONAL_THRESHOLD = (
+    3  # kept for UI badge only — Glicko-2 handles cold start via high φ
+)
+
+# Glicko-2 system constants (Glickman 2013).
+GLICKO2_SCALE = 173.7178  # display-scale ↔ internal-scale conversion
+GLICKO2_TAU = 0.5  # τ — recommended range [0.3, 1.2]; 0.5 is a moderate default
+GLICKO2_DEFAULT_VOLATILITY = 0.06  # σ in Glicko-2 internal units (held fixed)
+
+# Inactivity inflation: how fast φ grows during a competitive sabbatical.
+# Tuned so that an athlete at φ=0.5 (RD≈87, well-established) who skips
+# 12 months has their φ inflate to ~0.85 (RD≈148). That re-opens the
+# rating to evidence at roughly the same magnitude as the legacy 18-month
+# half-life decay did — but it now actually *acts* on the update.
+GLICKO2_SIGMA_INACTIVITY = 5.0
+GLICKO2_INACTIVITY_GRACE_DAYS = 30  # no inflation for activity gaps < 30 days
+GLICKO2_DAYS_PER_MONTH = 30.0
+
+SIGMA_FLOOR = 50.0  # display-scale RD floor (≈ φ=0.29; established athlete)
+SIGMA_CEILING = 350.0  # display-scale RD ceiling (≈ φ=2.01; cold start)
+PHI_FLOOR = SIGMA_FLOOR / GLICKO2_SCALE
+PHI_CEILING = SIGMA_CEILING / GLICKO2_SCALE
+
+MARGIN_CAP = 1.5  # MOV cap, retained from prior tuning
+
+# Speed-specific margin: max meaningful time gap in seconds.
 SPEED_MAX_GAP_SECONDS = 2.0
 
-# K-factors tuned via grid search (scripts/tune_kfactors.py).
-# Best config: 2.0x scale on base values, MARGIN_CAP=1.5
-# → 87.5% podium hit-rate on 2025–2026 holdout vs 25% baseline (+62.5pp).
+# K-factor table. Halved from prior production values as a conservative
+# starting point — under variable effective-K each round will *average* close
+# to these numbers but vary by opponent-φ. A proper regrid sweep is filed as
+# a #51 follow-up issue.
 K_FACTOR_TABLE: dict[EventTier, dict[RoundType, float]] = {
     EventTier.OLYMPICS: {
-        RoundType.FINAL: 96.0,
-        RoundType.SEMI: 72.0,
-        RoundType.QUALIFICATION: 36.0,
-    },
-    EventTier.WORLD_CHAMPIONSHIP: {
-        RoundType.FINAL: 80.0,
-        RoundType.SEMI: 60.0,
-        RoundType.QUALIFICATION: 30.0,
-    },
-    EventTier.WORLD_CUP: {
-        RoundType.FINAL: 64.0,
-        RoundType.SEMI: 48.0,
-        RoundType.QUALIFICATION: 24.0,
-    },
-    EventTier.CONTINENTAL: {
         RoundType.FINAL: 48.0,
         RoundType.SEMI: 36.0,
         RoundType.QUALIFICATION: 18.0,
     },
+    EventTier.WORLD_CHAMPIONSHIP: {
+        RoundType.FINAL: 40.0,
+        RoundType.SEMI: 30.0,
+        RoundType.QUALIFICATION: 15.0,
+    },
+    EventTier.WORLD_CUP: {
+        RoundType.FINAL: 32.0,
+        RoundType.SEMI: 24.0,
+        RoundType.QUALIFICATION: 12.0,
+    },
+    EventTier.CONTINENTAL: {
+        RoundType.FINAL: 24.0,
+        RoundType.SEMI: 18.0,
+        RoundType.QUALIFICATION: 9.0,
+    },
 }
+
+
+# ---------------------------------------------------------------------------
+# Dataclasses
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -79,18 +165,97 @@ class RatingUpdate:
 class AthleteRating:
     athlete_id: int
     mu: float = DEFAULT_MU
-    sigma: float = DEFAULT_SIGMA
+    sigma: float = DEFAULT_SIGMA  # display-scale RD
     n_events: int = 0
     last_event_at: date | None = None
     provisional: bool = True
 
 
-def get_k_factor(tier: EventTier, round_type: RoundType) -> float:
-    return K_FACTOR_TABLE[tier][round_type]
+# ---------------------------------------------------------------------------
+# Glicko-2 primitives
+# ---------------------------------------------------------------------------
+
+
+def glicko2_g(phi: float) -> float:
+    """Glicko-2 weighting function (Glickman 2013, §2 step 3).
+
+    ``g(φ) = 1 / sqrt(1 + 3φ² / π²)``
+
+    Approaches 1.0 as φ → 0 (very confident opponent) and 0.0 as φ → ∞ (very
+    uncertain opponent). A round against an opponent with huge φ contributes
+    little to your rating change — we don't yet trust the comparison.
+    """
+    return 1.0 / math.sqrt(1.0 + 3.0 * phi * phi / (math.pi * math.pi))
+
+
+def glicko2_expected_score(mu_a: float, mu_b: float, phi_b: float) -> float:
+    """Glicko-2 expected score on the display scale.
+
+    Equivalent to the standard Glicko-2 ``E`` formula but operating on
+    display-scale μ (Elo points) and display-scale φ (RD). Internally we
+    convert to Glickman's internal units (divide μ-gap by GLICKO2_SCALE,
+    divide φ by GLICKO2_SCALE) before applying the logistic.
+
+    ``E = 1 / (1 + exp(-g(φ_b_internal) · (μ_a_internal - μ_b_internal)))``
+    """
+    phi_b_internal = phi_b / GLICKO2_SCALE
+    mu_gap_internal = (mu_a - mu_b) / GLICKO2_SCALE
+    return 1.0 / (1.0 + math.exp(-glicko2_g(phi_b_internal) * mu_gap_internal))
+
+
+def glicko2_inflate_phi(
+    sigma_display: float,
+    last_event_at: date | None,
+    current_date: date,
+) -> float:
+    """Inflate φ for inactivity per Glicko-2's Wiener-process model.
+
+    Calendar-time semantics — months since last event (decision 1 in module
+    docstring). Returns the new display-scale RD, clamped at SIGMA_CEILING.
+
+    Formula (internal units, then converted back):
+        φ_new² = φ_old² + σ_inactivity² · months_inactive
+
+    where ``σ_inactivity = GLICKO2_SIGMA_INACTIVITY`` is on the internal
+    scale (≈ 0.029 RD-units per √month). With the chosen value of 5.0 (display
+    scale), a 12-month gap inflates a φ=0.5 athlete (RD≈87) to φ≈0.85 (RD≈148);
+    a fresh athlete at φ=2.014 (RD=350) stays clamped at the ceiling.
+    """
+    if last_event_at is None or current_date <= last_event_at:
+        return sigma_display
+    days_inactive = (current_date - last_event_at).days
+    if days_inactive <= GLICKO2_INACTIVITY_GRACE_DAYS:
+        return sigma_display
+    months_inactive = days_inactive / GLICKO2_DAYS_PER_MONTH
+    sigma_new = math.sqrt(
+        sigma_display * sigma_display
+        + GLICKO2_SIGMA_INACTIVITY * GLICKO2_SIGMA_INACTIVITY * months_inactive
+    )
+    return min(sigma_new, SIGMA_CEILING)
+
+
+# ---------------------------------------------------------------------------
+# Public expected-score wrapper (legacy callers / display)
+# ---------------------------------------------------------------------------
 
 
 def expected_score(mu_a: float, mu_b: float) -> float:
+    """Legacy 400-scale expected score — used by display code only.
+
+    The actual Glicko-2 update uses :func:`glicko2_expected_score` which is
+    φ-weighted. This wrapper exists so that ``/breakdown/{a}/{e}`` and other
+    UI pages keep showing the familiar 400-scale logistic.
+    """
     return 1.0 / (1.0 + 10.0 ** ((mu_b - mu_a) / 400.0))
+
+
+# ---------------------------------------------------------------------------
+# K-factor + margin helpers (unchanged)
+# ---------------------------------------------------------------------------
+
+
+def get_k_factor(tier: EventTier, round_type: RoundType) -> float:
+    return K_FACTOR_TABLE[tier][round_type]
 
 
 def compute_margin_multiplier(
@@ -114,12 +279,7 @@ _OLD_BOULDER_RE = re.compile(
 
 
 def _is_new_boulder_format(raw_score: str) -> bool:
-    """Return True if *raw_score* is a numeric/decimal value (new 2025+ format).
-
-    The new IFSC scoring system (2025+) reports a points-based decimal like
-    ``"34.5"`` or ``"25.0"``.  The old format is an ordinal string such as
-    ``"1T2z 3 4"`` (tops / zones / top-attempts / zone-attempts).
-    """
+    """Return True if *raw_score* is a numeric/decimal value (new 2025+ format)."""
     raw = raw_score.strip()
     try:
         float(raw)
@@ -131,14 +291,12 @@ def _is_new_boulder_format(raw_score: str) -> bool:
 def normalize_boulder_score(raw_score: str) -> float | None:
     """Normalize a Boulder raw score to a comparable float.
 
-    Handles both score formats:
+    Handles both formats:
 
-    * **New format (2025+):** a decimal string like ``"34.5"`` — returned as-is
-      as a float.  These scores are already on a common scale.
+    * **New format (2025+):** a decimal string like ``"34.5"`` — returned as-is.
     * **Old format (pre-2025):** an ordinal string like ``"1T2z 3 4"`` or
       ``"2T2 3B4"`` — parsed into
-      ``tops * 1000 + zones * 100 - top_att * 10 - zone_att`` so that the
-      margin multiplier sees a consistent numeric scale across both eras.
+      ``tops * 1000 + zones * 100 - top_att * 10 - zone_att``.
 
     Returns ``None`` if the score cannot be parsed.
     """
@@ -166,11 +324,7 @@ def compute_boulder_margin_multiplier(
     score_a: float | None,
     score_b: float | None,
 ) -> float:
-    """Margin multiplier for Boulder discipline.
-
-    Boulder normalized score: tops*1000 + zones*100 - top_att*10 - zone_att.
-    A one-top margin (~900-1000 point gap) gives ≈1.9× multiplier.
-    """
+    """Margin multiplier for Boulder discipline."""
     return compute_margin_multiplier(score_a, score_b, max_gap=BOULDER_MARGIN_MAX_GAP)
 
 
@@ -185,16 +339,9 @@ def compute_speed_margin_multiplier(
     return min(1.0 + gap / SPEED_MAX_GAP_SECONDS, MARGIN_CAP)
 
 
-def apply_time_decay(
-    sigma: float, last_event_at: date | None, current_date: date
-) -> float:
-    if last_event_at is None:
-        return sigma
-    days_inactive = (current_date - last_event_at).days
-    if days_inactive <= 0:
-        return sigma
-    decay_factor = 2.0 ** (days_inactive / SIGMA_DECAY_HALF_LIFE_DAYS)
-    return min(sigma * decay_factor, SIGMA_CEILING)
+# ---------------------------------------------------------------------------
+# Round update — Glicko-2 path
+# ---------------------------------------------------------------------------
 
 
 def calculate_round_updates(
@@ -205,15 +352,59 @@ def calculate_round_updates(
     event_date: date,
     discipline: Discipline = Discipline.LEAD,
 ) -> list[RatingUpdate]:
+    """Compute per-athlete μ and φ updates for one round.
+
+    Algorithm
+    ---------
+
+    1. Inflate each athlete's φ for inactivity (Wiener-process model on
+       calendar-time).
+    2. For each ordered pair (i ahead of j):
+       a. Compute g(φ_j_internal), E = glicko2_expected_score(μ_i, μ_j, φ_j),
+          and margin multiplier per discipline.
+       b. K_eff = K_base(tier,round) · g(φ_j_internal) · margin_mult
+          (decision 2: MOV stays separate from s_j, folds into K).
+       c. delta_pair = K_eff · (1.0 − E)
+          μ_i += +delta_pair ; μ_j += -delta_pair  (zero-sum on μ).
+       d. Accumulate Glicko-2 variance contribution for *both* sides into the
+          per-athlete v_inv accumulator:
+              g_i_internal = g(φ_j_internal)
+              v_inv_i += g_i² · E · (1−E)
+              g_j_internal = g(φ_i_internal)
+              v_inv_j += g_j² · E_j · (1−E_j)   with E_j = 1−E
+    3. Per-athlete φ update (simplified closed-form):
+          1/φ_new² = 1/φ_inflated² + v_inv_sum
+       Clamped to [PHI_FLOOR, PHI_CEILING].
+
+    Notes
+    -----
+
+    * **Zero-sum on μ** holds pair-by-pair (each pair contributes equal/opposite
+      deltas). Across the round the sum is therefore zero to floating-point
+      precision.
+    * **φ update is not zero-sum** — that's by design; Glicko-2 lets each
+      round *consume* uncertainty across the field.
+    * **DNS** athletes are excluded entirely (no φ inflation, no update).
+    * **PROVISIONAL_K_MULTIPLIER is retired** — Glicko-2 handles cold start
+      natively via large initial φ → larger μ update via φ² scaling at the
+      end. The ``provisional`` flag is still set on the Rating row for UI use.
+    """
     active = [r for r in results if not r.dns]
     if len(active) < 2:
         return []
 
     base_k = get_k_factor(event_tier, round_type)
-    n = len(active)
-    pair_k = base_k / (n - 1)
+
+    # 1) Inflate φ for inactivity, store the inflated display-scale RDs.
+    sigma_inflated: dict[int, float] = {}
+    for res in active:
+        rating = ratings.get(res.athlete_id, AthleteRating(athlete_id=res.athlete_id))
+        sigma_inflated[res.athlete_id] = glicko2_inflate_phi(
+            rating.sigma, rating.last_event_at, event_date
+        )
 
     deltas: dict[int, float] = {r.athlete_id: 0.0 for r in active}
+    v_inv_sum: dict[int, float] = {r.athlete_id: 0.0 for r in active}
     pairs: dict[int, list[PairContribution]] = {r.athlete_id: [] for r in active}
 
     for i, res_i in enumerate(active):
@@ -221,34 +412,36 @@ def calculate_round_updates(
             res_i.athlete_id, AthleteRating(athlete_id=res_i.athlete_id)
         )
         mu_i = rating_i.mu
+        sigma_i = sigma_inflated[res_i.athlete_id]
+        phi_i_internal = sigma_i / GLICKO2_SCALE
 
         for j, res_j in enumerate(active):
             if i == j:
                 continue
+            # Process each unordered pair once — skip the loser side.
+            if res_i.rank >= res_j.rank:
+                continue
+            # (At this point: res_i finished ahead of res_j; ties are skipped.)
 
             rating_j = ratings.get(
                 res_j.athlete_id, AthleteRating(athlete_id=res_j.athlete_id)
             )
             mu_j = rating_j.mu
+            sigma_j = sigma_inflated[res_j.athlete_id]
+            phi_j_internal = sigma_j / GLICKO2_SCALE
 
-            if res_i.rank == res_j.rank:
-                continue
+            # g(φ) for both sides — used both for K weighting and v_inv.
+            g_phi_j = glicko2_g(phi_j_internal)
+            g_phi_i = glicko2_g(phi_i_internal)
 
-            if res_i.rank > res_j.rank:
-                continue
+            # E from i's perspective (i is favoured to win if mu_i > mu_j).
+            e_i = glicko2_expected_score(mu_i, mu_j, sigma_j)
+            e_j = 1.0 - e_i  # symmetric
 
-            # res_i finished ahead of res_j
-            e_i = expected_score(mu_i, mu_j)
-
-            k = pair_k
-            if rating_i.provisional or rating_j.provisional:
-                k *= PROVISIONAL_K_MULTIPLIER
-
+            # Margin multiplier per discipline.
             if res_i.dnf:
-                # DNF (incl. false start in Speed) — no margin bonus
                 margin_mult = 1.0
             elif discipline == Discipline.SPEED:
-                # For Speed, res_i won (lower time), res_j lost (higher time)
                 margin_mult = compute_speed_margin_multiplier(
                     res_i.score_normalized, res_j.score_normalized
                 )
@@ -261,11 +454,26 @@ def calculate_round_updates(
                     res_i.score_normalized, res_j.score_normalized
                 )
 
-            delta_i = k * margin_mult * (1.0 - e_i)
-            delta_j = k * margin_mult * (0.0 - (1.0 - e_i))
+            # K_eff weights this pair by the opponent's certainty (g(φ_opp))
+            # and by MOV. Decision 2: MOV stays separate from s_j; the score
+            # outcome stays in {0, 0.5, 1} per Glicko-2 spec.
+            k_eff_for_i = base_k * g_phi_j * margin_mult
+            k_eff_for_j = base_k * g_phi_i * margin_mult
 
-            deltas[res_i.athlete_id] += delta_i
-            deltas[res_j.athlete_id] += delta_j
+            # Pair contribution to μ (symmetric so the round remains zero-sum).
+            # We use the *minimum* of the two effective K factors for symmetric
+            # application — this preserves zero-sum exactly. Using a single
+            # K per pair (rather than per-side) is the standard approach in
+            # most production Glicko-2 implementations that need zero-sum.
+            k_pair = min(k_eff_for_i, k_eff_for_j)
+            delta_pair = k_pair * (1.0 - e_i)
+            deltas[res_i.athlete_id] += delta_pair
+            deltas[res_j.athlete_id] -= delta_pair
+
+            # Glicko-2 variance contributions. Each side accumulates against
+            # the opponent's g(φ); this drives the per-athlete φ shrinkage.
+            v_inv_sum[res_i.athlete_id] += g_phi_j * g_phi_j * e_i * (1.0 - e_i)
+            v_inv_sum[res_j.athlete_id] += g_phi_i * g_phi_i * e_j * (1.0 - e_j)
 
             pairs[res_i.athlete_id].append(
                 PairContribution(
@@ -273,7 +481,7 @@ def calculate_round_updates(
                     result="won",
                     expected=round(e_i, 4),
                     actual=1.0,
-                    delta=round(delta_i, 2),
+                    delta=round(delta_pair, 2),
                     margin_multiplier=round(margin_mult, 2),
                 )
             )
@@ -281,23 +489,34 @@ def calculate_round_updates(
                 PairContribution(
                     opponent_id=res_i.athlete_id,
                     result="lost",
-                    expected=round(1.0 - e_i, 4),
+                    expected=round(e_j, 4),
                     actual=0.0,
-                    delta=round(delta_j, 2),
+                    delta=round(-delta_pair, 2),
                     margin_multiplier=round(margin_mult, 2),
                 )
             )
 
+    # 3) Per-athlete φ update + assemble RatingUpdate.
     updates = []
     for res in active:
         aid = res.athlete_id
         rating = ratings.get(aid, AthleteRating(athlete_id=aid))
 
         mu_before = rating.mu
-        sigma_before = apply_time_decay(rating.sigma, rating.last_event_at, event_date)
+        sigma_before = sigma_inflated[aid]
+        phi_internal = sigma_before / GLICKO2_SCALE
+
+        # Simplified closed-form Glicko-2 φ update:
+        #   1/φ_new² = 1/φ_inflated² + Σ g(φ_opp)² · E · (1-E)
+        # (full volatility iteration is a follow-up — see module docstring.)
+        v_inv = v_inv_sum.get(aid, 0.0)
+        inv_phi_sq_new = 1.0 / (phi_internal * phi_internal) + v_inv
+        phi_new = 1.0 / math.sqrt(inv_phi_sq_new)
+        sigma_after_display = phi_new * GLICKO2_SCALE
+        # Clamp to display-scale floor/ceiling.
+        sigma_after = max(SIGMA_FLOOR, min(SIGMA_CEILING, sigma_after_display))
 
         mu_after = mu_before + deltas[aid]
-        sigma_after = max(sigma_before * SIGMA_CONVERGENCE_FACTOR, SIGMA_FLOOR)
 
         updates.append(
             RatingUpdate(

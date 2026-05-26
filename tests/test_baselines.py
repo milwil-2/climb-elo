@@ -476,19 +476,15 @@ def test_stripped_elo_does_not_leak_module_constants(db_session, baseline_datase
 
     before = (
         elo_mod.MARGIN_CAP,
-        elo_mod.PROVISIONAL_K_MULTIPLIER,
         elo_mod.SIGMA_FLOOR,
         elo_mod.SIGMA_CEILING,
-        elo_mod.SIGMA_CONVERGENCE_FACTOR,
     )
     engine = StrippedEloEngine(db_session)
     engine.predict([a.id for a in baseline_dataset], Discipline.LEAD)
     after = (
         elo_mod.MARGIN_CAP,
-        elo_mod.PROVISIONAL_K_MULTIPLIER,
         elo_mod.SIGMA_FLOOR,
         elo_mod.SIGMA_CEILING,
-        elo_mod.SIGMA_CONVERGENCE_FACTOR,
     )
     assert before == after, "stripped engine leaked module constants!"
 

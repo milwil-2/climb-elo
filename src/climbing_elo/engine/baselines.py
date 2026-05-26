@@ -550,25 +550,33 @@ class _StrippedConfig:
 
     The defaults are the *stripped* values; the production defaults live in
     :mod:`engine.elo`.
+
+    Post-#51 (Glicko-2 RD integration) the legacy ``provisional_k_multiplier``
+    and ``sigma_convergence_factor`` knobs are retired — Glicko-2 handles
+    cold-start natively via large initial φ and the closed-form per-round
+    φ update. The fields are kept here only for backwards-compatibility with
+    older tests that still poke at them; they are no longer read by
+    :func:`calculate_round_updates`.
     """
 
     margin_cap: float = 1.0  # vs. 1.5 in production: no MOV bonus
-    provisional_k_multiplier: float = 1.0  # vs. 2.0: no cold-start boost
     sigma_floor: float = DEFAULT_SIGMA  # σ frozen at default
     sigma_ceiling: float = DEFAULT_SIGMA  # no decay
-    sigma_convergence_factor: float = 1.0  # no convergence
+    # Deprecated fields — kept for test-compat only.
+    provisional_k_multiplier: float = 1.0
+    sigma_convergence_factor: float = 1.0
 
 
 class StrippedEloEngine:
-    """Current engine with each non-trivial feature ablated.
+    """Glicko-2 engine with each non-trivial feature ablated.
 
     On construction we re-run a stripped backfill against the same training
     DB the harness prepared, but with:
 
       - ``MARGIN_CAP=1.0``       — pairwise updates ignore score margin
-      - provisional K = 1.0      — no 2× boost for cold-start athletes
       - σ frozen at 350           — no decay-toward-ceiling on inactivity,
-                                    no 0.98× convergence per event
+                                    no per-round φ shrinkage feeding back into
+                                    the rating
 
     Implementation notes
     --------------------
@@ -609,20 +617,16 @@ class StrippedEloEngine:
         )
 
         # Monkey-patch the module constants for the duration of this rebuild.
-        # We restore them on exit so other engines (e.g. ``current``) running
-        # in the same process aren't affected.  This is the cleanest place
-        # to inject the stripped knobs without forking ``calculate_round_updates``.
+        # Post-#51 we only flip ``MARGIN_CAP`` and the σ floor/ceiling pair;
+        # the legacy ``PROVISIONAL_K_MULTIPLIER`` and ``SIGMA_CONVERGENCE_FACTOR``
+        # are no longer features of the production engine.
         orig_margin_cap = elo_mod.MARGIN_CAP
-        orig_prov_k = elo_mod.PROVISIONAL_K_MULTIPLIER
         orig_sigma_floor = elo_mod.SIGMA_FLOOR
         orig_sigma_ceiling = elo_mod.SIGMA_CEILING
-        orig_sigma_conv = elo_mod.SIGMA_CONVERGENCE_FACTOR
         try:
             elo_mod.MARGIN_CAP = cfg.margin_cap
-            elo_mod.PROVISIONAL_K_MULTIPLIER = cfg.provisional_k_multiplier
             elo_mod.SIGMA_FLOOR = cfg.sigma_floor
             elo_mod.SIGMA_CEILING = cfg.sigma_ceiling
-            elo_mod.SIGMA_CONVERGENCE_FACTOR = cfg.sigma_convergence_factor
 
             for event in events:
                 rounds = sorted(
@@ -685,10 +689,8 @@ class StrippedEloEngine:
                             ratings[aid].provisional = False
         finally:
             elo_mod.MARGIN_CAP = orig_margin_cap
-            elo_mod.PROVISIONAL_K_MULTIPLIER = orig_prov_k
             elo_mod.SIGMA_FLOOR = orig_sigma_floor
             elo_mod.SIGMA_CEILING = orig_sigma_ceiling
-            elo_mod.SIGMA_CONVERGENCE_FACTOR = orig_sigma_conv
 
         return ratings
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Grid search to tune K-factor scaling, MARGIN_CAP, and PROVISIONAL_K_MULTIPLIER.
+"""Grid search to tune K-factor scaling and MARGIN_CAP.
 
 For each combination of hyperparameters:
   1. Temporarily override the ELO module constants.
@@ -7,6 +7,13 @@ For each combination of hyperparameters:
   3. Evaluate podium hit-rate on holdout event finals.
 
 Prints all results sorted by ELO hit-rate, then outputs the best configuration.
+
+NOTE
+----
+Post-#51 (Glicko-2 RD integration) the ``PROVISIONAL_K_MULTIPLIER`` knob is
+retired — Glicko-2 handles cold start natively via high initial φ. A dedicated
+follow-up tracks a proper Glicko-2-era regrid sweep that also varies the
+GLICKO2_SIGMA_INACTIVITY / GLICKO2_TAU axes.
 """
 
 import copy
@@ -59,7 +66,9 @@ BASE_K_TABLE = {
 # Grid axes
 K_SCALE_VALUES = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 MARGIN_CAP_VALUES = [1.5, 2.0, 2.5]
-PROVISIONAL_K_MULT_VALUES = [1.5, 2.0, 3.0]
+# Provisional K-multiplier was retired in #51; the axis is preserved as a
+# single-valued list so the existing total_combos arithmetic still works.
+PROVISIONAL_K_MULT_VALUES = [1.0]
 
 
 def scale_k_table(scale: float) -> dict:
@@ -202,7 +211,8 @@ def main() -> None:
             # Override module-level constants
             elo_module.K_FACTOR_TABLE = scale_k_table(k_scale)
             elo_module.MARGIN_CAP = margin_cap
-            elo_module.PROVISIONAL_K_MULTIPLIER = prov_mult
+            # prov_mult is a no-op post-#51; retained for log compat.
+            _ = prov_mult
 
             elo_rate, baseline_rate = run_evaluation(
                 session, holdout_events, cutoff_date
@@ -231,7 +241,6 @@ def main() -> None:
         # Restore defaults
         elo_module.K_FACTOR_TABLE = copy.deepcopy(BASE_K_TABLE)
         elo_module.MARGIN_CAP = 2.0
-        elo_module.PROVISIONAL_K_MULTIPLIER = 2.0
 
         # Sort by ELO hit-rate descending
         results_log.sort(key=lambda x: (-x["elo_rate"], -x["delta"]))
@@ -259,7 +268,6 @@ def main() -> None:
         print("BEST CONFIGURATION:")
         print(f"  K-scale multiplier:        {best['k_scale']}")
         print(f"  MARGIN_CAP:                {best['margin_cap']}")
-        print(f"  PROVISIONAL_K_MULTIPLIER:  {best['prov_mult']}")
         print(f"  ELO podium hit-rate:       {best['elo_rate']:.1f}%")
         print(f"  Baseline hit-rate:         {best['baseline_rate']:.1f}%")
         print(f"  Delta:                     {best['delta']:+.1f} pp")
