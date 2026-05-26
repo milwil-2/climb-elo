@@ -20,15 +20,20 @@ def _database_url() -> str | None:
 def get_engine(db_path: Path | str = DEFAULT_DB_PATH) -> Engine:
     url = _database_url()
     if url:
-        # Postgres / Supabase path
-        return create_engine(url, echo=False, pool_pre_ping=True)
+        # Postgres / Supabase — require SSL for external connections
+        return create_engine(
+            url,
+            echo=False,
+            pool_pre_ping=True,
+            connect_args={"sslmode": "require"},
+        )
     # SQLite fallback (local dev and tests)
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return create_engine(
         f"sqlite:///{db_path}",
         echo=False,
-        connect_args={"timeout": 60},  # wait up to 60s for locks
+        connect_args={"timeout": 60},
     )
 
 
