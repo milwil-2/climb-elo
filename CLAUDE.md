@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Production lives at **https://climb-elo.vercel.app**, served from Vercel with **Supabase Postgres** (project ref `micecpgpuispvdfqdtmm`) as the backing store.
 
 - **Hosting**: Vercel, `@vercel/python` runtime. The project auto-deploys on every push to `main` (no separate CD workflow — Vercel watches the repo). Preview deployments are created automatically for PRs.
-- **Entry point**: `api/index.py` — thin shim that prepends `src/` to `sys.path` and calls `climbing_elo.api.app.create_app()`. On startup failure it returns a plain-text 500 with the traceback (so a crashed boot is visible at the root URL instead of an opaque Vercel error).
+- **Entry point**: `api/index.py` — thin shim that prepends `src/` to `sys.path` and calls `climbing_elo.api.app.create_app()`. Startup failures surface as Vercel's standard `FUNCTION_INVOCATION_FAILED` page; the full traceback is in the deployment's runtime logs.
 - **Vercel config**: `vercel.json` declares `api/index.py` as a `@vercel/python` build and routes all paths (`/(.*)`) to it.
-- **Production deps**: a hand-written `requirements.txt` lives at the repo root for the Vercel build (it coexists with `uv.lock`, which is the source of truth for local dev + CI). Drift between the two is a known risk tracked in **#72**.
+- **Production deps**: `uv.lock` is the single source of truth — `@vercel/python` auto-detects it and runs `uv` to install pinned versions (build log shows `Using uv 0.10.11` → `Installing required dependencies from uv.lock...`). No `requirements.txt` exists; the previously hand-written one was removed in #72. Python version comes from `pyproject.toml` (`requires-python = ">=3.11"`).
 - **Required env vars** (set in Vercel project settings):
   - `DATABASE_URL` — Supabase **transaction pooler** (port 6543, IPv4). See "Connection strings" below.
 - **Local override**: when `DATABASE_URL` is unset, the app falls back to a local SQLite file (`climbing_elo.db`) — handy for offline dev.
