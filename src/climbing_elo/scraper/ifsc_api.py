@@ -441,10 +441,38 @@ class UpcomingScrapeReport:
 
 
 #: Statuses that indicate an event has not yet completed (upcoming / in-progress).
-UPCOMING_STATUSES = frozenset({"scheduled", "registration", "live"})
+UPCOMING_STATUSES = frozenset({
+    "scheduled", "registration", "registration_pending",
+    "live", "in_progress",
+})
 
 #: Max events stored per `scrape_upcoming_events` call to bound Monte Carlo work on page load.
 MAX_UPCOMING_EVENTS = 50
+
+
+def _dcat_discipline_keyword(dc: dict) -> str | None:
+    """Return 'lead' / 'boulder' / 'speed' for a d_cat, or None.
+
+    Finished events carry ``dc["discipline"] = "lead"`` etc.  Upcoming events
+    have ``dc["discipline"] = null`` and encode the discipline in the d_cat
+    *name* instead (e.g. ``"LEAD Men"``, ``"BOULDER Women"``).  This helper
+    checks the structured field first and falls back to name-parsing so both
+    shapes are handled uniformly.
+
+    Only the three canonical keywords are ever returned; arbitrary strings from
+    the API are never propagated.
+    """
+    disc = (dc.get("discipline") or "").strip().lower()
+    if disc:
+        # Validate against allowlist — ignore unexpected values
+        for kw in ("boulder", "lead", "speed"):
+            if kw in disc:
+                return kw
+    name = (dc.get("name") or "").lower()
+    for kw in ("boulder", "lead", "speed"):
+        if kw in name:
+            return kw
+    return None
 
 
 def scrape_upcoming_events(
@@ -527,26 +555,26 @@ def scrape_upcoming_events(
         league_name = wc_league.get("name", "")
         d_cats = league_data.get("d_cats", [])
 
-        # Build target d_cat id set for the discipline (same logic as scrape_season)
+        # Build target d_cat id set for the discipline.
+        # Use _dcat_discipline_keyword so that upcoming d_cats (where
+        # dc["discipline"] is null) are matched via their name field.
         if disc_lower == "boulder":
             target_dcat_ids = {
                 dc["id"]
                 for dc in d_cats
-                if "boulder" in dc.get("discipline", "").lower()
-                and "lead" not in dc.get("discipline", "").lower()
+                if _dcat_discipline_keyword(dc) == "boulder"
             }
         elif disc_lower == "lead":
             target_dcat_ids = {
                 dc["id"]
                 for dc in d_cats
-                if "lead" in dc.get("discipline", "").lower()
-                and "boulder" not in dc.get("discipline", "").lower()
+                if _dcat_discipline_keyword(dc) == "lead"
             }
         else:  # speed
             target_dcat_ids = {
                 dc["id"]
                 for dc in d_cats
-                if "speed" in dc.get("discipline", "").lower()
+                if _dcat_discipline_keyword(dc) == "speed"
             }
 
         if not target_dcat_ids:
