@@ -1,27 +1,46 @@
 #!/usr/bin/env python3
-"""Scrape Lead results from the IFSC results API into the database."""
+"""Scrape IFSC results from the IFSC results API into the database."""
 import argparse
 import logging
 
 from climbing_elo.database import init_db
+from climbing_elo.models import Discipline
 from climbing_elo.scraper.ifsc_api import scrape_all_seasons
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
+DISCIPLINE_MAP = {
+    "lead": Discipline.LEAD,
+    "speed": Discipline.SPEED,
+    "boulder": Discipline.BOULDER,
+}
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scrape IFSC Lead results")
+    parser = argparse.ArgumentParser(description="Scrape IFSC competition results")
     parser.add_argument("--min-year", type=int, default=2006, help="Earliest season to scrape")
     parser.add_argument("--max-year", type=int, default=2026, help="Latest season to scrape")
+    parser.add_argument(
+        "--discipline",
+        choices=list(DISCIPLINE_MAP.keys()),
+        default="lead",
+        help="Discipline to scrape (default: lead)",
+    )
     args = parser.parse_args()
 
+    discipline = DISCIPLINE_MAP[args.discipline]
     SessionFactory = init_db()
 
-    print(f"Scraping IFSC Lead results for {args.min_year}–{args.max_year}...")
+    print(f"Scraping IFSC {args.discipline.capitalize()} results for {args.min_year}–{args.max_year}...")
     print("This will take a few minutes due to rate limiting.\n")
 
     with SessionFactory() as session:
-        report = scrape_all_seasons(session, min_year=args.min_year, max_year=args.max_year)
+        report = scrape_all_seasons(
+            session,
+            min_year=args.min_year,
+            max_year=args.max_year,
+            discipline=discipline,
+        )
 
     print(f"\nScrape complete:")
     print(f"  Seasons scraped: {report.seasons_scraped}")

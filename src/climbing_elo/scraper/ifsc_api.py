@@ -103,6 +103,26 @@ def _parse_lead_score(score_str: str | None) -> tuple[str, float | None]:
         return (raw, None)
 
 
+def _parse_speed_score(score_str: str | None) -> tuple[str, float | None, bool, bool]:
+    """Parse a speed climbing time string.
+
+    Returns (raw_str, seconds_float | None, dnf, dns).
+    DNS/DNF/FS (false start) are treated as did-not-finish; score is None.
+    """
+    if not score_str:
+        return ("", None, False, True)
+    raw = score_str.strip()
+    upper = raw.upper()
+    if upper in ("DNS",):
+        return (raw, None, False, True)
+    if upper in ("DNF", "FS", "FALSE START", "DQ"):
+        return (raw, None, True, False)
+    try:
+        return (raw, float(raw), False, False)
+    except ValueError:
+        return (raw, None, False, False)
+
+
 def _get_or_create_athlete(
     session: Session,
     athlete_id: int,
@@ -147,11 +167,18 @@ def scrape_season(
     season_info: dict,
     league_url: str,
     league_name: str,
+    discipline: Discipline = Discipline.LEAD,
 ) -> ScrapeReport:
-    """Scrape all Lead results for one season's World Cup league."""
+    """Scrape all results for one season's World Cup league for the given discipline."""
     report = ScrapeReport()
     athlete_cache: dict[int, Athlete] = {}
     season_name = season_info.get("name", "?")
+
+    # Determine the discipline keyword to filter d_cats
+    if discipline == Discipline.SPEED:
+        disc_keyword = "speed"
+    else:
+        disc_keyword = "lead"
 
     league_data = _api_get(client, league_url)
     if not league_data:
@@ -159,14 +186,14 @@ def scrape_season(
         return report
 
     d_cats = league_data.get("d_cats", [])
-    lead_dcats = {
+    target_dcats = {
         dc["id"]: ("M" if "Men" in dc["name"] else "F")
         for dc in d_cats
-        if "lead" in dc.get("discipline", "").lower()
+        if disc_keyword in dc.get("discipline", "").lower()
     }
 
-    if not lead_dcats:
-        log.info("No Lead categories in season %s", season_name)
+    if not target_dcats:
+        log.info("No %s categories in season %s", disc_keyword.capitalize(), season_name)
         return report
 
     events = league_data.get("events", [])
@@ -174,12 +201,12 @@ def scrape_season(
         event_id = ev.get("event_id")
         event_name = ev.get("event", "Unknown")
 
-        event_lead_dcats = []
+        event_dcats = []
         for dc in ev.get("d_cats", []):
-            if dc.get("id") in lead_dcats and dc.get("status") == "finished":
-                event_lead_dcats.append(dc)
+            if dc.get("id") in target_dcats and dc.get("status") == "finished":
+                event_dcats.append(dc)
 
-        if not event_lead_dcats:
+        if not event_dcats:
             continue
 
         start_date_str = ev.get("local_start_date", f"{season_name}-01-01")
@@ -191,11 +218,15 @@ def scrape_season(
         tier = _classify_tier(event_name, league_name)
 
         existing_event = session.execute(
-            select(Event).where(Event.name == event_name, Event.season == int(season_name))
+            select(Event).where(
+                Event.name == event_name,
+                Event.season == int(season_name),
+                Event.discipline == discipline,
+            )
         ).scalar_one_or_none()
 
         if existing_event:
-            log.debug("Skipping existing event: %s", event_name)
+            log.debug("Skipping existing event: %s (%s)", event_name, discipline.value)
             continue
 
         db_event = Event(
@@ -204,16 +235,16 @@ def scrape_season(
             country=None,
             season=int(season_name),
             start_date=event_date,
-            discipline=Discipline.LEAD,
+            discipline=discipline,
         )
         session.add(db_event)
         session.flush()
 
         rounds_seen: dict[str, Round] = {}
 
-        for dc in event_lead_dcats:
+        for dc in event_dcats:
             dcat_id = dc["id"]
-            gender = Gender.M if lead_dcats[dcat_id] == "M" else Gender.F
+            gender = Gender.M if target_dcats[dcat_id] == "M" else Gender.F
 
             time.sleep(REQUEST_DELAY)
             result_data = _api_get(client, f"/api/v1/events/{event_id}/result/{dcat_id}")
@@ -250,13 +281,20 @@ def scrape_season(
                     rank = rnd_data.get("rank")
                     score_raw = rnd_data.get("score", "")
 
-                    ascents = rnd_data.get("ascents", [])
-                    if ascents and round_type != RoundType.QUALIFICATION:
-                        last_ascent = ascents[-1] if ascents else {}
-                        ascent_score = last_ascent.get("score", score_raw)
-                        raw_str, normalized = _parse_lead_score(ascent_score)
+                    if discipline == Discipline.SPEED:
+                        raw_str, normalized, dnf, dns = _parse_speed_score(score_raw)
+                        if rank is None and not dnf:
+                            dns = True
                     else:
-                        raw_str, normalized = _parse_lead_score(score_raw)
+                        ascents = rnd_data.get("ascents", [])
+                        if ascents and round_type != RoundType.QUALIFICATION:
+                            last_ascent = ascents[-1] if ascents else {}
+                            ascent_score = last_ascent.get("score", score_raw)
+                            raw_str, normalized = _parse_lead_score(ascent_score)
+                        else:
+                            raw_str, normalized = _parse_lead_score(score_raw)
+                        dns = rank is None
+                        dnf = False
 
                     existing_result = session.execute(
                         select(Result).where(
@@ -267,9 +305,6 @@ def scrape_season(
 
                     if existing_result:
                         continue
-
-                    dns = rank is None
-                    dnf = False
 
                     result = Result(
                         round_id=db_round.id,
@@ -291,7 +326,7 @@ def scrape_season(
 
         session.commit()
         report.events_scraped += 1
-        log.info("Scraped %s (%s) — %d results", event_name, season_name, report.results_created)
+        log.info("Scraped %s (%s) [%s] — %d results", event_name, season_name, discipline.value, report.results_created)
 
     report.seasons_scraped = 1
     report.athletes_created = len(athlete_cache)
@@ -302,8 +337,9 @@ def scrape_all_seasons(
     session: Session,
     min_year: int = 2006,
     max_year: int = 2026,
+    discipline: Discipline = Discipline.LEAD,
 ) -> ScrapeReport:
-    """Scrape Lead results for all seasons in the given year range."""
+    """Scrape results for all seasons in the given year range for the given discipline."""
     total_report = ScrapeReport()
 
     with httpx.Client() as client:
@@ -332,11 +368,12 @@ def scrape_all_seasons(
                 log.info("No WC league for season %s, skipping", year_str)
                 continue
 
-            log.info("Scraping season %s...", year_str)
+            log.info("Scraping season %s [%s]...", year_str, discipline.value)
             time.sleep(REQUEST_DELAY)
 
             report = scrape_season(
-                client, session, season_info, wc_league["url"], wc_league.get("name", "")
+                client, session, season_info, wc_league["url"], wc_league.get("name", ""),
+                discipline=discipline,
             )
 
             total_report.seasons_scraped += report.seasons_scraped
