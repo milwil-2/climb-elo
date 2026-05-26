@@ -44,9 +44,14 @@ MIN_EVENTS = 3
 def compute_combined_mu(mu_boulder: float, mu_lead: float) -> float:
     """Geometric mean of Boulder and Lead ratings.
 
-    Values are non-negative by construction (ELO starts at 1500 and can drift,
-    but floors at 1500 - several hundred so always positive).
+    Defensive guard: ELO ratings should always be positive (starts at 1500,
+    can drift down but practically floors well above zero). Reject non-positive
+    inputs explicitly rather than letting sqrt return 0 or raise opaquely.
     """
+    if mu_boulder <= 0 or mu_lead <= 0:
+        raise ValueError(
+            f"compute_combined_mu requires positive ratings; got mu_boulder={mu_boulder}, mu_lead={mu_lead}"
+        )
     return math.sqrt(mu_boulder * mu_lead)
 
 
@@ -130,7 +135,15 @@ def main() -> None:
             session.add(rating)
             inserted += 1
 
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError as e:
+            session.rollback()
+            log.error(
+                "Commit failed (likely concurrent run): %s. Run the script once at a time.",
+                e,
+            )
+            raise
         log.info("Inserted %d combined (BL) ratings", inserted)
 
         # Print top 10 men and women for verification
