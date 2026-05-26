@@ -169,6 +169,14 @@ SSE stream (browser / curl):
 curl -N http://localhost:8000/live/1234/stream
 ```
 
+## CI
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request.
+
+- **Jobs**: `pytest (3.11)`, `pytest (3.12)`, and `ruff` (lint + format check).
+- **Branch protection**: add `pytest (3.11)` and `pytest (3.12)` as required status checks via GitHub repo Settings → Branches → Branch protection rules (one-time manual step).
+- **Debugging failures**: check the Actions tab; the failing test name and full traceback appear in the "Run tests" step output. Lint failures show the offending line(s) from `ruff check` / `ruff format --check`.
+
 ## Testing
 
 Tests use an in-memory SQLite database (`conftest.py:db_session`). Fixtures `sample_event` and `eight_athletes` provide pre-built test data. `test_elo.py` validates pairwise math (zero-sum invariant across all 3 disciplines). `test_backfill.py` runs a 3-event integration test and checks reproducibility. `test_api.py` covers all v1 REST endpoints. `test_projections.py` covers Monte Carlo invariants. `test_combined.py` covers the Boulder+Lead aggregate. `test_scraper_upcoming.py` covers upcoming-event filter logic. `test_snapshot.py` covers snapshot/restore round-trips. `test_health_check.py` covers CLI exit codes + Discord rate-limiting. `test_cache.py` covers TTLCache thread-safety + expiry. `test_likely_roster.py` covers the likely-competitor fallback logic. `test_live.py` covers the live poller + SSE (new result detection, dedup, finished-status auto-stop, EventBus pub/sub, file lock mutex, SSE 404/200/429).
