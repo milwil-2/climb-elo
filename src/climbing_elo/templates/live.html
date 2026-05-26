@@ -291,6 +291,16 @@
 </div>
 {% endif %}
 
+{% if pre_event and from_likely_roster %}
+<div style="background:#1e2430;border:1px solid #3a4060;border-radius:6px;padding:0.65rem 1rem;margin-bottom:1.25rem;font-size:0.85rem;color:#9098c8;">
+    Event hasn&rsquo;t started yet &mdash; showing projected field based on season attendance.
+</div>
+{% elif pre_event %}
+<div style="background:#1e2430;border:1px solid #3a4060;border-radius:6px;padding:0.65rem 1rem;margin-bottom:1.25rem;font-size:0.85rem;color:#9098c8;">
+    Event hasn&rsquo;t started yet. Registered athletes will appear here once results are in.
+</div>
+{% endif %}
+
 <div class="live-panels">
     <!-- Left panel: leaderboard -->
     <div class="panel-card">
@@ -330,7 +340,11 @@
             </table>
             {% else %}
             <div class="empty-state" id="lb-empty">
+                {% if pre_event %}
+                Event hasn&rsquo;t started yet &mdash; results will appear here once competition begins.
+                {% else %}
                 No results yet. Waiting for live data&hellip;
+                {% endif %}
             </div>
             <table class="lb-table" id="leaderboard-table" style="display:none">
                 <thead>
@@ -394,7 +408,11 @@
             </table>
             {% else %}
             <div class="empty-state" id="proj-empty">
+                {% if pre_event and not from_likely_roster %}
+                Not enough season data to build a predicted field yet.
+                {% else %}
                 Projections will appear once results arrive.
+                {% endif %}
             </div>
             <table class="proj-table" id="projections-table" style="display:none">
                 <thead>

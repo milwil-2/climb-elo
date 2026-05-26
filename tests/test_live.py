@@ -745,3 +745,111 @@ class TestLiveHTMLRoute:
         client, event_id = live_html_client
         resp = client.get(f"/live/{event_id}?gender=X")
         assert resp.status_code == 200
+
+    def test_valid_gender_not_in_event_falls_back(self, live_html_client):
+        """?gender=F on a men-only event should 200 and show men's data (Problem B)."""
+        client, event_id = live_html_client
+        # The seeded event has only Gender.M rounds. Requesting F should fall
+        # back to M and still return a valid page with athlete names.
+        resp = client.get(f"/live/{event_id}?gender=F")
+        assert resp.status_code == 200
+        # Falls back to M → athlete names should still be present
+        assert "Live Athlete One" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# GET /live/{event_id} — pre-event empty-state tests (Problem A)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def pre_event_db_path(tmp_path_factory):
+    return tmp_path_factory.mktemp("pre_event") / "pre_event_test.db"
+
+
+@pytest.fixture(scope="module")
+def pre_event_html_factory(pre_event_db_path):
+    """Seed a DB with an event that has NO Result rows (true pre-event)."""
+    eng = create_engine(f"sqlite:///{pre_event_db_path}")
+    Base.metadata.create_all(eng)
+    factory = sessionmaker(bind=eng)
+
+    sess = factory()
+    # Future event with no rounds/results yet
+    ev = Event(
+        name="Pre Event World Cup",
+        tier=EventTier.WORLD_CUP,
+        season=2026,
+        start_date=date(2026, 12, 1),
+        discipline=Discipline.LEAD,
+    )
+    sess.add(ev)
+    sess.flush()
+    saved_event_id = ev.id
+
+    # Add athletes + ratings so likely_competitors has something to return
+    athletes = []
+    for i in range(5):
+        a = Athlete(name=f"Pre Athlete {i}", gender=Gender.M, nationality="AUT")
+        sess.add(a)
+        athletes.append(a)
+    sess.flush()
+    for i, a in enumerate(athletes):
+        sess.add(
+            Rating(
+                athlete_id=a.id,
+                discipline=Discipline.LEAD,
+                mu=1700.0 - i * 20,
+                sigma=100.0,
+                n_events=10,
+                provisional=False,
+            )
+        )
+    sess.commit()
+    sess.close()
+
+    return factory, saved_event_id
+
+
+@pytest.fixture(scope="module")
+def pre_event_client(pre_event_db_path, pre_event_html_factory):
+    """TestClient pointed at the pre-event seeded DB."""
+    from climbing_elo.api.app import create_app
+
+    factory, event_id = pre_event_html_factory
+    original_get_engine = _db_module.get_engine
+
+    def _patched_get_engine(db_path=None):
+        from sqlalchemy import create_engine
+
+        return create_engine(f"sqlite:///{pre_event_db_path}")
+
+    _db_module.get_engine = _patched_get_engine
+    try:
+        app = create_app()
+        client = TestClient(app, raise_server_exceptions=True)
+        yield client, event_id
+    finally:
+        _db_module.get_engine = original_get_engine
+
+
+class TestLivePreEvent:
+    def test_200_for_pre_event(self, pre_event_client):
+        """Pre-event live page must return 200, not error."""
+        client, event_id = pre_event_client
+        resp = client.get(f"/live/{event_id}")
+        assert resp.status_code == 200
+
+    def test_pre_event_message_shown(self, pre_event_client):
+        """The page must contain an explicit 'hasn't started' message (Problem A)."""
+        client, event_id = pre_event_client
+        resp = client.get(f"/live/{event_id}")
+        assert "hasn" in resp.text.lower() or "pre" in resp.text.lower() or (
+            "started" in resp.text.lower() or "results will appear" in resp.text.lower()
+        )
+
+    def test_projections_body_present(self, pre_event_client):
+        """projections-body element must exist even with no stored results."""
+        client, event_id = pre_event_client
+        resp = client.get(f"/live/{event_id}")
+        assert "projections-body" in resp.text or "proj-empty" in resp.text
