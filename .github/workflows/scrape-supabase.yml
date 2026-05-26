@@ -13,9 +13,11 @@ name: Scrape IFSC → Supabase
 # (idempotent skips on existing rows). Use workflow_dispatch for ad-hoc refreshes
 # during live event weekends.
 #
-# Required secret: DATABASE_URL — the **direct** Supabase connection string
-#   (port 5432, NOT the pooler). Bulk inserts + long-lived connections do not
-#   work well via PgBouncer transaction-mode pooling.
+# Required secret: DATABASE_URL — the Supabase **session pooler** URL
+#   (aws-0-REGION.pooler.supabase.com:5432). The direct URL is IPv6-only and
+#   unreachable from GH Actions runners. The transaction pooler (port 6543) is
+#   for serverless (Vercel) and doesn't support bulk ops / session state.
+#   Use the "Session pooler" tab in Supabase → Settings → Database.
 
 on:
   schedule:
