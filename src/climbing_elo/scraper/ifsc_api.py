@@ -47,6 +47,15 @@ from climbing_elo.models import (
 
 log = logging.getLogger(__name__)
 
+
+def _is_postgres(session: Session) -> bool:
+    """Return True when the session is backed by a PostgreSQL engine."""
+    try:
+        return session.get_bind().dialect.name == "postgresql"
+    except Exception:
+        return False
+
+
 BASE_URL = "https://ifsc.results.info"
 HEADERS = {
     "User-Agent": "ClimbingELO/0.1 (research project)",
@@ -347,16 +356,44 @@ def scrape_season(
             log.debug("Skipping existing event: %s (%s)", event_name, discipline)
             continue
 
-        db_event = Event(
-            name=event_name,
-            tier=tier,
-            country=None,
-            season=int(season_name),
-            start_date=event_date,
-            discipline=db_discipline,
-        )
-        session.add(db_event)
-        session.flush()
+        if _is_postgres(session):
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            stmt = (
+                pg_insert(Event)
+                .values(
+                    name=event_name,
+                    tier=tier,
+                    country=None,
+                    season=int(season_name),
+                    start_date=event_date,
+                    discipline=db_discipline,
+                )
+                .on_conflict_do_nothing(index_elements=["name", "season", "discipline"])
+            )
+            session.execute(stmt)
+            session.flush()
+            db_event = session.execute(
+                select(Event).where(
+                    Event.name == event_name,
+                    Event.season == int(season_name),
+                    Event.discipline == db_discipline,
+                )
+            ).scalar_one_or_none()
+            if db_event is None:
+                log.debug("Event already exists (pg conflict): %s", event_name)
+                continue
+        else:
+            db_event = Event(
+                name=event_name,
+                tier=tier,
+                country=None,
+                season=int(season_name),
+                start_date=event_date,
+                discipline=db_discipline,
+            )
+            session.add(db_event)
+            session.flush()
 
         rounds_seen: dict[str, Round] = {}
 
@@ -673,16 +710,49 @@ def scrape_upcoming_events(
                 report.events_skipped += 1
                 continue
 
-            db_event = Event(
-                name=event_name,
-                tier=tier,
-                country=None,
-                season=year,
-                start_date=event_date,
-                discipline=db_discipline,
-            )
-            session.add(db_event)
-            session.flush()
+            if _is_postgres(session):
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                stmt = (
+                    pg_insert(Event)
+                    .values(
+                        name=event_name,
+                        tier=tier,
+                        country=None,
+                        season=year,
+                        start_date=event_date,
+                        discipline=db_discipline,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=["name", "season", "discipline"]
+                    )
+                )
+                session.execute(stmt)
+                session.flush()
+                db_event = session.execute(
+                    select(Event).where(
+                        Event.name == event_name,
+                        Event.season == year,
+                        Event.discipline == db_discipline,
+                    )
+                ).scalar_one_or_none()
+                if db_event is None:
+                    log.debug(
+                        "Upcoming event already exists (pg conflict): %s", event_name
+                    )
+                    report.events_skipped += 1
+                    continue
+            else:
+                db_event = Event(
+                    name=event_name,
+                    tier=tier,
+                    country=None,
+                    season=year,
+                    start_date=event_date,
+                    discipline=db_discipline,
+                )
+                session.add(db_event)
+                session.flush()
             report.events_stored += 1
             log.info(
                 "Stored upcoming event: %s (%s) [%s]", event_name, year_str, discipline
