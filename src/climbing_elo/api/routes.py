@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
-from sqlalchemy import func, select
+from fastapi import APIRouter, Form, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import select
 
 from climbing_elo.database import get_session_factory
+from climbing_elo.engine.projections import (
+    AthleteProjectionInput,
+    compute_podium_probabilities,
+    predict_winner,
+)
 from climbing_elo.models import (
     Athlete,
     Discipline,
@@ -16,6 +22,7 @@ from climbing_elo.models import (
     RatingHistory,
     Result,
     Round,
+    RoundType,
 )
 
 router = APIRouter()
@@ -273,4 +280,287 @@ async def rating_breakdown(request: Request, athlete_id: int, event_id: int):
         "athlete": {"id": athlete.id, "name": athlete.name},
         "event": {"id": event.id, "name": event.name, "season": event.season},
         "rounds": rounds_breakdown,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Projection helpers
+# ---------------------------------------------------------------------------
+
+_DISCIPLINE_DISPLAY = {
+    Discipline.LEAD: "Lead",
+    Discipline.BOULDER: "Boulder",
+    Discipline.SPEED: "Speed",
+    Discipline.BOULDER_LEAD: "Combined",
+}
+
+_DISCIPLINE_FROM_STR: dict[str, Discipline] = {
+    "lead": Discipline.LEAD,
+    "boulder": Discipline.BOULDER,
+    "speed": Discipline.SPEED,
+    "combined": Discipline.BOULDER_LEAD,
+}
+
+
+def _build_projection_rows(
+    session,
+    athletes: list[AthleteProjectionInput],
+    probs: dict[int, dict[str, float]],
+) -> list[dict]:
+    """Merge simulation results with athlete metadata for template rendering."""
+    rows = []
+    for a in athletes:
+        p = probs[a.athlete_id]
+        rows.append({
+            "athlete_id": a.athlete_id,
+            "name": a.name,
+            "mu": round(a.mu, 1),
+            "sigma": round(a.sigma, 1),
+            "win": f"{p['win'] * 100:.1f}%",
+            "podium": f"{p['podium'] * 100:.1f}%",
+            "top_8": f"{p['top_8'] * 100:.1f}%",
+            "expected_rank": p["expected_rank"],
+            # Raw floats for sorting
+            "win_raw": p["win"],
+            "podium_raw": p["podium"],
+        })
+    rows.sort(key=lambda r: r["expected_rank"])
+    # Assign display rank
+    for i, row in enumerate(rows):
+        row["proj_rank"] = i + 1
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# GET /projections/new  — manual projection form
+# POST /projections/new — run projection and render results inline
+# ---------------------------------------------------------------------------
+
+@router.get("/projections/new", response_class=HTMLResponse)
+async def projections_new_form(request: Request):
+    templates = request.app.state.templates
+    with _get_session() as session:
+        athletes = list(
+            session.execute(
+                select(Athlete).order_by(Athlete.name)
+            ).scalars()
+        )
+        athlete_list = [
+            {"id": a.id, "name": a.name, "gender": a.gender.value}
+            for a in athletes
+        ]
+    return templates.TemplateResponse(request, "projections_new.html", {
+        "athletes": athlete_list,
+        "disciplines": [
+            {"key": k, "label": v}
+            for k, v in [
+                ("lead", "Lead"),
+                ("boulder", "Boulder"),
+                ("speed", "Speed"),
+                ("combined", "Combined"),
+            ]
+        ],
+        "result": None,
+        "error": None,
+    })
+
+
+@router.post("/projections/new", response_class=HTMLResponse)
+async def projections_new_submit(
+    request: Request,
+    discipline: Annotated[str, Form()],
+    athlete_ids: Annotated[list[int], Form()],
+):
+    templates = request.app.state.templates
+
+    disc = _DISCIPLINE_FROM_STR.get(discipline)
+
+    with _get_session() as session:
+        athletes_all = list(
+            session.execute(select(Athlete).order_by(Athlete.name)).scalars()
+        )
+        athlete_list = [
+            {"id": a.id, "name": a.name, "gender": a.gender.value}
+            for a in athletes_all
+        ]
+        disciplines_ctx = [
+            {"key": k, "label": v}
+            for k, v in [
+                ("lead", "Lead"),
+                ("boulder", "Boulder"),
+                ("speed", "Speed"),
+                ("combined", "Combined"),
+            ]
+        ]
+
+        if disc is None:
+            return templates.TemplateResponse(request, "projections_new.html", {
+                "athletes": athlete_list,
+                "disciplines": disciplines_ctx,
+                "result": None,
+                "error": "Invalid discipline selected.",
+            })
+
+        if len(athlete_ids) < 2:
+            return templates.TemplateResponse(request, "projections_new.html", {
+                "athletes": athlete_list,
+                "disciplines": disciplines_ctx,
+                "result": None,
+                "error": "Please select at least 2 athletes.",
+            })
+
+        # Load ratings for selected athletes
+        proj_inputs: list[AthleteProjectionInput] = []
+        for aid in athlete_ids:
+            athlete = session.get(Athlete, aid)
+            if not athlete:
+                continue
+            rating = session.execute(
+                select(Rating).where(
+                    Rating.athlete_id == aid,
+                    Rating.discipline == disc,
+                )
+            ).scalar_one_or_none()
+            if rating is None:
+                # Fall back to defaults so the athlete still appears
+                from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+                mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
+            else:
+                mu, sigma = rating.mu, rating.sigma
+            proj_inputs.append(AthleteProjectionInput(
+                athlete_id=aid,
+                mu=mu,
+                sigma=sigma,
+                name=athlete.name,
+            ))
+
+        probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
+        rows = _build_projection_rows(session, proj_inputs, probs)
+
+        result_ctx = {
+            "discipline": _DISCIPLINE_DISPLAY.get(disc, discipline),
+            "rows": rows,
+            "source": "manual",
+        }
+
+    return templates.TemplateResponse(request, "projections_new.html", {
+        "athletes": athlete_list,
+        "disciplines": disciplines_ctx,
+        "result": result_ctx,
+        "error": None,
+        "selected_discipline": discipline,
+        "selected_athlete_ids": athlete_ids,
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /projections/{event_id}  — projection for a past/in-progress event
+# ---------------------------------------------------------------------------
+
+@router.get("/projections/{event_id}", response_class=HTMLResponse)
+async def event_projections(request: Request, event_id: int, gender: str = "M"):
+    templates = request.app.state.templates
+    with _get_session() as session:
+        event = session.get(Event, event_id)
+        if not event:
+            return HTMLResponse("Event not found", status_code=404)
+
+        # Resolve gender filter
+        try:
+            gender_enum = Gender(gender.upper())
+        except ValueError:
+            gender_enum = Gender.M
+
+        # Collect unique athletes from all rounds of this event (for the gender)
+        # Use qualification round first, fall back to any round if needed.
+        athlete_ids_ordered: list[int] = []
+        seen: set[int] = set()
+
+        round_priority = [RoundType.QUALIFICATION, RoundType.SEMI, RoundType.FINAL]
+        rounds_by_type: dict[RoundType, Round] = {
+            rnd.round_type: rnd
+            for rnd in event.rounds
+            if rnd.gender == gender_enum
+        }
+
+        for rt in round_priority:
+            rnd = rounds_by_type.get(rt)
+            if rnd is None:
+                continue
+            results = list(
+                session.execute(
+                    select(Result)
+                    .where(Result.round_id == rnd.id)
+                ).scalars()
+            )
+            for res in results:
+                if not res.dns and res.athlete_id not in seen:
+                    athlete_ids_ordered.append(res.athlete_id)
+                    seen.add(res.athlete_id)
+
+        if not athlete_ids_ordered:
+            return templates.TemplateResponse(request, "projections.html", {
+                "event": {
+                    "id": event.id,
+                    "name": event.name,
+                    "season": event.season,
+                    "tier": event.tier.value.replace("_", " ").title(),
+                },
+                "discipline": _DISCIPLINE_DISPLAY.get(event.discipline, event.discipline.value),
+                "gender": gender_enum.value,
+                "rows": [],
+                "winner": None,
+                "error": "No athlete results found for this event.",
+            })
+
+        # Build projection inputs
+        proj_inputs: list[AthleteProjectionInput] = []
+        for aid in athlete_ids_ordered:
+            athlete = session.get(Athlete, aid)
+            if not athlete:
+                continue
+            # Use the rating BEFORE the event if available, otherwise current rating
+            # For simplicity we use the current rating (post-event) — for past events
+            # this is fine as context; for live events there is no post rating yet.
+            rating = session.execute(
+                select(Rating).where(
+                    Rating.athlete_id == aid,
+                    Rating.discipline == event.discipline,
+                )
+            ).scalar_one_or_none()
+            if rating is None:
+                from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+                mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
+            else:
+                mu, sigma = rating.mu, rating.sigma
+            proj_inputs.append(AthleteProjectionInput(
+                athlete_id=aid,
+                mu=mu,
+                sigma=sigma,
+                name=athlete.name,
+            ))
+
+        probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
+        rows = _build_projection_rows(session, proj_inputs, probs)
+        winner_id = predict_winner(proj_inputs)
+        winner_name = next(
+            (r["name"] for r in rows if r["athlete_id"] == winner_id), None
+        )
+
+        # Available genders for this event
+        available_genders = sorted({rnd.gender.value for rnd in event.rounds})
+
+    return templates.TemplateResponse(request, "projections.html", {
+        "event": {
+            "id": event.id,
+            "name": event.name,
+            "season": event.season,
+            "tier": event.tier.value.replace("_", " ").title(),
+        },
+        "discipline": _DISCIPLINE_DISPLAY.get(event.discipline, event.discipline.value),
+        "gender": gender_enum.value,
+        "available_genders": available_genders,
+        "rows": rows,
+        "winner": winner_name,
+        "error": None,
     })
