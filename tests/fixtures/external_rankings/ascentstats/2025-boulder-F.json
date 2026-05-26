@@ -1,0 +1,20 @@
+{
+  "discipline": "boulder",
+  "fetched_at": "2026-05-26",
+  "gender": "F",
+  "ranking": [
+    {"rank": 1, "name": "Janja Garnbret", "country": "SLO", "rating": 9.2145},
+    {"rank": 2, "name": "Oriane Bertone", "country": "FRA", "rating": 8.1032},
+    {"rank": 3, "name": "Annie Sanders", "country": "USA", "rating": 7.4891},
+    {"rank": 4, "name": "Mao Nakamura", "country": "JPN", "rating": 6.9312},
+    {"rank": 5, "name": "Erin McNeice", "country": "GBR", "rating": 6.5507},
+    {"rank": 6, "name": "Melody Sekikawa", "country": "JPN", "rating": 6.1234},
+    {"rank": 7, "name": "Oceania Mackenzie", "country": "AUS", "rating": 5.9876},
+    {"rank": 8, "name": "Zelia Avezou", "country": "FRA", "rating": 5.7431},
+    {"rank": 9, "name": "Miho Nonaka", "country": "JPN", "rating": 5.5102},
+    {"rank": 10, "name": "Anon Matsufuji", "country": "JPN", "rating": 5.3887}
+  ],
+  "season": 2025,
+  "source": "ascentstats",
+  "source_url": "https://ascentstats.com/ranking-pages/ranking-2025-women.html"
+}
