@@ -118,23 +118,11 @@ def _parse_boulder_score(
     """Parse a Boulder round score into (raw_str, normalized_float).
 
     Normalized score = tops * 1000 + zones * 100 - top_attempts * 10 - zone_attempts
-
-    This produces an ordinal ranking value where:
-      - More tops is always better
-      - More zones is better (secondary)
-      - Fewer attempts is better (tertiary)
-
-    Handles three historical score formats:
-      - Pre-2021: "4t5 5b12"  (tops t top_attempts  bonuses b bonus_attempts)
-      - 2021-2024: "4T5z 6 7" (tops T zones z total_top_attempts total_zone_attempts)
-      - 2025+: floating-point total like "124.9" — derive from per-ascent data
     """
     raw = (score_str or "").strip()
     if not raw or raw.upper() in ("DNF", "DNS", "-", ""):
         return (raw, None)
 
-    # If ascent-level structured data is available, compute directly from it.
-    # This handles 2025+ format and is the most accurate for any year.
     if ascents:
         try:
             tops = sum(1 for a in ascents if a.get("top"))
@@ -150,28 +138,16 @@ def _parse_boulder_score(
         except (TypeError, ValueError):
             log.debug("Malformed ascent data, falling back to score string parse")
 
-    # Fall back to parsing the score string (older data with no ascent details).
-
-    # 2021-2024: "4T5z 6 7"
-    m = re.match(
-        r"(\d+)[Tt](\d+)[Zz]\s+(\d+)\s+(\d+)",
-        raw,
-    )
+    m = re.match(r"(\d+)[Tt](\d+)[Zz]\s+(\d+)\s+(\d+)", raw)
     if m:
         tops, zones, top_att, zone_att = (int(x) for x in m.groups())
         return (raw, float(tops * 1000 + zones * 100 - top_att * 10 - zone_att))
 
-    # Pre-2021: "4t5 5b12"  (t=tops, b=bonus/zone)
-    m = re.match(
-        r"(\d+)[Tt](\d+)\s+(\d+)[Bb](\d+)",
-        raw,
-    )
+    m = re.match(r"(\d+)[Tt](\d+)\s+(\d+)[Bb](\d+)", raw)
     if m:
         tops, top_att, zones, zone_att = (int(x) for x in m.groups())
         return (raw, float(tops * 1000 + zones * 100 - top_att * 10 - zone_att))
 
-    # 2025+ numeric-only total points — rank is already encoded in the rank field;
-    # try to convert directly to a float for use as normalized score.
     try:
         return (raw, float(raw))
     except ValueError:
@@ -179,6 +155,32 @@ def _parse_boulder_score(
 
     log.debug("Could not parse boulder score: %r", raw)
     return (raw, None)
+
+
+def _parse_speed_score(score_str: str | None) -> tuple[str, float | None, bool, bool]:
+    """Parse a speed climbing time string.
+
+    Returns (raw_str, seconds_float | None, dnf, dns).
+    DNS/DNF/FS (false start) are treated as did-not-finish; score is None.
+    Rejects NaN/Inf which would silently corrupt ELO margin math.
+    """
+    import math
+
+    if not score_str:
+        return ("", None, False, True)
+    raw = score_str.strip()
+    upper = raw.upper()
+    if upper in ("DNS",):
+        return (raw, None, False, True)
+    if upper in ("DNF", "FS", "FALSE START", "DQ"):
+        return (raw, None, True, False)
+    try:
+        value = float(raw)
+    except ValueError:
+        return (raw, None, False, False)
+    if not math.isfinite(value) or value <= 0:
+        return (raw, None, True, False)
+    return (raw, value, False, False)
 
 
 def _get_or_create_athlete(
@@ -230,7 +232,7 @@ def scrape_season(
     """Scrape results for one season's World Cup league.
 
     Args:
-        discipline: The discipline to scrape — "lead" or "boulder" (case-insensitive).
+        discipline: "lead", "boulder", or "speed" (case-insensitive).
                     Matched against the d_cat discipline field from the API.
     """
     report = ScrapeReport()
@@ -257,8 +259,8 @@ def scrape_season(
 
     d_cats = league_data.get("d_cats", [])
 
-    # Filter d_cats to only the requested discipline.
-    # For "boulder" we explicitly exclude "boulder&lead" combined categories.
+    # Filter d_cats. Exclude "boulder&lead" combined categories from both
+    # lead-only and boulder-only scrapes (they're a different competition format).
     if disc_lower == "boulder":
         target_dcats = {
             dc["id"]: ("M" if "Men" in dc["name"] else "F")
@@ -266,12 +268,18 @@ def scrape_season(
             if "boulder" in dc.get("discipline", "").lower()
             and "lead" not in dc.get("discipline", "").lower()
         }
-    else:
+    elif disc_lower == "lead":
         target_dcats = {
             dc["id"]: ("M" if "Men" in dc["name"] else "F")
             for dc in d_cats
-            if disc_lower in dc.get("discipline", "").lower()
+            if "lead" in dc.get("discipline", "").lower()
             and "boulder" not in dc.get("discipline", "").lower()
+        }
+    else:  # speed
+        target_dcats = {
+            dc["id"]: ("M" if "Men" in dc["name"] else "F")
+            for dc in d_cats
+            if "speed" in dc.get("discipline", "").lower()
         }
 
     if not target_dcats:
@@ -364,16 +372,23 @@ def scrape_season(
                     score_raw = rnd_data.get("score", "")
                     ascents = rnd_data.get("ascents", [])
 
-                    if db_discipline == Discipline.BOULDER:
+                    if db_discipline == Discipline.SPEED:
+                        raw_str, normalized, dnf, dns = _parse_speed_score(score_raw)
+                        if rank is None and not dnf:
+                            dns = True
+                    elif db_discipline == Discipline.BOULDER:
                         raw_str, normalized = _parse_boulder_score(score_raw, ascents or None)
+                        dns = rank is None
+                        dnf = False
                     else:
-                        # Lead score parsing (original logic)
                         if ascents and round_type != RoundType.QUALIFICATION:
                             last_ascent = ascents[-1] if ascents else {}
                             ascent_score = last_ascent.get("score", score_raw)
                             raw_str, normalized = _parse_lead_score(ascent_score)
                         else:
                             raw_str, normalized = _parse_lead_score(score_raw)
+                        dns = rank is None
+                        dnf = False
 
                     existing_result = session.execute(
                         select(Result).where(
@@ -384,9 +399,6 @@ def scrape_season(
 
                     if existing_result:
                         continue
-
-                    dns = rank is None
-                    dnf = False
 
                     try:
                         rank_int = int(rank) if rank is not None else 999
@@ -430,7 +442,7 @@ def scrape_all_seasons(
     """Scrape results for all seasons in the given year range.
 
     Args:
-        discipline: "lead" or "boulder" (case-insensitive).
+        discipline: "lead", "boulder", or "speed" (case-insensitive).
     """
     total_report = ScrapeReport()
 

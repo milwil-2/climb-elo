@@ -10,28 +10,32 @@ from climbing_elo.models import Discipline
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
+DISCIPLINE_MAP = {
+    "lead": Discipline.LEAD,
+    "boulder": Discipline.BOULDER,
+    "speed": Discipline.SPEED,
+}
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run ELO backfill for a discipline")
+    parser = argparse.ArgumentParser(description="Compute ELO ratings from scraped results")
     parser.add_argument(
         "--discipline",
-        type=str,
+        choices=list(DISCIPLINE_MAP.keys()),
         default="lead",
-        choices=["lead", "boulder"],
         help="Discipline to backfill (default: lead)",
     )
     args = parser.parse_args()
 
-    discipline = Discipline.BOULDER if args.discipline == "boulder" else Discipline.LEAD
-
+    discipline = DISCIPLINE_MAP[args.discipline]
     SessionFactory = init_db()
 
-    print(f"Running backfill for {args.discipline.capitalize()}...")
+    print(f"Running backfill for {args.discipline.capitalize()} discipline...")
 
     with SessionFactory() as session:
         report = run_backfill(session, discipline=discipline)
 
-    print(f"\nBackfill complete:")
+    print("\nBackfill complete:")
     print(f"  Discipline:       {args.discipline}")
     print(f"  Events processed: {report.events_processed}")
     print(f"  Rounds processed: {report.rounds_processed}")
