@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import date
 
-from climbing_elo.models import EventTier, RoundType
+from climbing_elo.models import Discipline, EventTier, RoundType
 
 DEFAULT_MU = 1500.0
 DEFAULT_SIGMA = 350.0
@@ -98,6 +98,29 @@ def compute_margin_multiplier(
     return min(1.0 + gap / max_gap, MARGIN_CAP)
 
 
+# Boulder normalized score: tops*1000 + zones*100 - top_attempts*10 - zone_attempts
+# The dominant signal is tops differential (1000 per top).
+# A 1-top gap alone gives 1000 - worst_case_attempts ~ 900 gap.
+# We set max_gap = 1000 so that a 1-top margin gives ≈ 1.9× multiplier,
+# and a clean flash (0 extra attempts) vs a 2-top gap caps at 2.0×.
+BOULDER_MARGIN_MAX_GAP = 1000.0
+
+
+def compute_boulder_margin_multiplier(
+    score_a: float | None,
+    score_b: float | None,
+) -> float:
+    """Margin multiplier for Boulder discipline.
+
+    Boulder normalized scores use: tops * 1000 + zones * 100 - top_att * 10 - zone_att
+
+    The gap between athletes who differ by one top is ~900-1000 points.
+    Using BOULDER_MARGIN_MAX_GAP=1000 means a one-top margin gives ≈1.9× multiplier,
+    which appropriately rewards significant dominance while preserving the zero-sum property.
+    """
+    return compute_margin_multiplier(score_a, score_b, max_gap=BOULDER_MARGIN_MAX_GAP)
+
+
 def apply_time_decay(sigma: float, last_event_at: date | None, current_date: date) -> float:
     if last_event_at is None:
         return sigma
@@ -114,6 +137,7 @@ def calculate_round_updates(
     event_tier: EventTier,
     round_type: RoundType,
     event_date: date,
+    discipline: Discipline = Discipline.LEAD,
 ) -> list[RatingUpdate]:
     active = [r for r in results if not r.dns]
     if len(active) < 2:
@@ -152,6 +176,10 @@ def calculate_round_updates(
 
             if res_i.dnf:
                 margin_mult = 1.0
+            elif discipline == Discipline.BOULDER:
+                margin_mult = compute_boulder_margin_multiplier(
+                    res_i.score_normalized, res_j.score_normalized
+                )
             else:
                 margin_mult = compute_margin_multiplier(
                     res_i.score_normalized, res_j.score_normalized
