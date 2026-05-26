@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -104,6 +105,61 @@ def compute_margin_multiplier(
 
 
 BOULDER_MARGIN_MAX_GAP = 1000.0
+
+# Regex for the old-format ordinal Boulder score: e.g. "1T2z 3 4" or "2T2 3B4"
+_OLD_BOULDER_RE = re.compile(
+    r"(\d+)[Tt](\d+)[Zz]\s+(\d+)\s+(\d+)"  # "NTMz A B"
+    r"|(\d+)[Tt](\d+)\s+(\d+)[Bb](\d+)",    # "NT A MBB"
+)
+
+
+def _is_new_boulder_format(raw_score: str) -> bool:
+    """Return True if *raw_score* is a numeric/decimal value (new 2025+ format).
+
+    The new IFSC scoring system (2025+) reports a points-based decimal like
+    ``"34.5"`` or ``"25.0"``.  The old format is an ordinal string such as
+    ``"1T2z 3 4"`` (tops / zones / top-attempts / zone-attempts).
+    """
+    raw = raw_score.strip()
+    try:
+        float(raw)
+        return True
+    except ValueError:
+        return False
+
+
+def normalize_boulder_score(raw_score: str) -> float | None:
+    """Normalize a Boulder raw score to a comparable float.
+
+    Handles both score formats:
+
+    * **New format (2025+):** a decimal string like ``"34.5"`` — returned as-is
+      as a float.  These scores are already on a common scale.
+    * **Old format (pre-2025):** an ordinal string like ``"1T2z 3 4"`` or
+      ``"2T2 3B4"`` — parsed into
+      ``tops * 1000 + zones * 100 - top_att * 10 - zone_att`` so that the
+      margin multiplier sees a consistent numeric scale across both eras.
+
+    Returns ``None`` if the score cannot be parsed.
+    """
+    raw = (raw_score or "").strip()
+    if not raw or raw.upper() in ("DNF", "DNS", "-"):
+        return None
+
+    if _is_new_boulder_format(raw):
+        return float(raw)
+
+    m = re.match(r"(\d+)[Tt](\d+)[Zz]\s+(\d+)\s+(\d+)", raw)
+    if m:
+        tops, zones, top_att, zone_att = (int(x) for x in m.groups())
+        return float(tops * 1000 + zones * 100 - top_att * 10 - zone_att)
+
+    m = re.match(r"(\d+)[Tt](\d+)\s+(\d+)[Bb](\d+)", raw)
+    if m:
+        tops, top_att, zones, zone_att = (int(x) for x in m.groups())
+        return float(tops * 1000 + zones * 100 - top_att * 10 - zone_att)
+
+    return None
 
 
 def compute_boulder_margin_multiplier(
