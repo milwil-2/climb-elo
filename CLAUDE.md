@@ -23,6 +23,26 @@ uv run python scripts/health_check_cli.py --quiet     # no output (for cron)
 uv run python scripts/health_check_cli.py --webhook "$DISCORD_WEBHOOK_URL"  # alert on failure
 ```
 
+## Rate Limiting (Issue #34)
+
+Application-level per-IP rate limiting is implemented via **slowapi** (in-memory backend) as a belt-and-suspenders fallback before the reverse-proxy deployment (Issue #29) lands.
+
+| Endpoint | Limit |
+|---|---|
+| `POST /api/v1/projections` | 10 req/min |
+| `GET /api/v1/predictions/upcoming` | 60 req/min |
+| All other `GET /api/v1/*` | 120 req/min (default) |
+| HTML routes (`/`, `/athletes/*`, etc.) | 120 req/min (default) |
+| `GET /live/{event_id}/stream` (SSE) | 100-connection cap; no per-request limit |
+
+Exceeded limits return HTTP 429 with `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers.
+
+**Key files**: `src/climbing_elo/api/limiter.py` (shared `Limiter` instance), `src/climbing_elo/api/app.py` (wires `SlowAPIMiddleware` + exception handler), `src/climbing_elo/api/v1_routes.py` (`@limiter.limit()` decorators on the two stricter endpoints).
+
+**Security note**: `get_remote_address` reads `request.client.host`. Behind a reverse proxy this returns the proxy IP, not the real client. Production deployments should either use `X-Forwarded-For` with a trusted-proxy-validated custom key func, OR rely on the reverse-proxy's own rate limiting (preferred — Issue #29). The in-memory backend is per-worker; multi-worker deploys get per-worker limits (acceptable for Issue #29 single-worker target).
+
+**Superseded by**: the reverse-proxy rate limiter once Issue #29 lands.
+
 ## Monitoring
 
 The IFSC API health check runs **every 30 minutes** via `.github/workflows/health-check.yml`.
