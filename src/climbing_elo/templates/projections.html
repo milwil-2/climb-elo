@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block title %}Projections — {{ event.name }} — Climbing ELO{% endblock %}
+{% block head %}
+<style>
+    .proj-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    .proj-meta {
+        color: #808890;
+        font-size: 0.9rem;
+        margin-top: 0.3rem;
+    }
+    .winner-card {
+        background: linear-gradient(135deg, #1a1d28 0%, #1e2138 100%);
+        border: 1px solid #3a3f5c;
+        border-radius: 8px;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 1.5rem;
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+    .winner-trophy {
+        font-size: 2rem;
+        line-height: 1;
+    }
+    .winner-label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #808890;
+        margin-bottom: 0.2rem;
+    }
+    .winner-name {
+        font-size: 1.3rem;
+        font-weight: 700;
+        color: #fff;
+    }
+    .gender-tabs {
+        display: flex;
+        gap: 0;
+        border-bottom: 2px solid #2a2d3a;
+        margin-bottom: 1.25rem;
+    }
+    .gender-tab {
+        padding: 0.5rem 1.1rem;
+        color: #808890;
+        font-size: 0.88rem;
+        font-weight: 600;
+        text-decoration: none;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        transition: color 0.15s, border-color 0.15s;
+    }
+    .gender-tab:hover { color: #c0c0c0; }
+    .gender-tab.active {
+        color: #7c8aff;
+        border-bottom-color: #7c8aff;
+    }
+    .prob-bar-wrap {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .prob-bar {
+        height: 6px;
+        border-radius: 3px;
+        background: #7c8aff;
+        min-width: 2px;
+        flex-shrink: 0;
+    }
+    .prob-text {
+        font-size: 0.85rem;
+        color: #c0c8ff;
+        white-space: nowrap;
+    }
+    .rank-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.8rem;
+        height: 1.8rem;
+        border-radius: 50%;
+        font-size: 0.8rem;
+        font-weight: 700;
+    }
+    .rank-1 { background: #b8860b; color: #fff; }
+    .rank-2 { background: #708090; color: #fff; }
+    .rank-3 { background: #7c4f2a; color: #fff; }
+    .rank-other { background: #1e2130; color: #808890; }
+    .table-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .back-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        color: #7c8aff;
+        text-decoration: none;
+        font-size: 0.88rem;
+        margin-bottom: 1rem;
+    }
+    .back-link:hover { text-decoration: underline; }
+    .error-card {
+        background: #1e1215;
+        border: 1px solid #5a2535;
+        border-radius: 8px;
+        padding: 1.25rem 1.5rem;
+        color: #f87171;
+        margin: 1rem 0;
+    }
+    .note-text {
+        font-size: 0.78rem;
+        color: #505560;
+        margin-top: 0.75rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<a href="/events/{{ event.id }}" class="back-link">&larr; Back to event</a>
+
+<div class="proj-header">
+    <div>
+        <h1>{{ event.name }} ({{ event.season }})</h1>
+        <div class="proj-meta">{{ event.tier }} &middot; {{ discipline }} &middot; Projected outcomes</div>
+    </div>
+    <a href="/projections/new" style="color:#7c8aff;font-size:0.85rem;text-decoration:none;padding-top:0.3rem;">Custom projection &rarr;</a>
+</div>
+
+{% if error %}
+<div class="error-card">{{ error }}</div>
+{% else %}
+
+{% if winner %}
+<div class="winner-card">
+    <div class="winner-trophy">&#127942;</div>
+    <div>
+        <div class="winner-label">Predicted winner</div>
+        <div class="winner-name">{{ winner }}</div>
+    </div>
+</div>
+{% endif %}
+
+{% if available_genders and available_genders|length > 1 %}
+<div class="gender-tabs">
+    {% for g in available_genders %}
+    <a class="gender-tab {% if g == gender %}active{% endif %}"
+       href="/projections/{{ event.id }}?gender={{ g }}">
+        {{ "Men" if g == "M" else "Women" }}
+    </a>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="table-scroll">
+<table>
+    <thead>
+        <tr>
+            <th style="width:3rem">#</th>
+            <th>Athlete</th>
+            <th>Rating</th>
+            <th>&sigma;</th>
+            <th>Win %</th>
+            <th>Podium %</th>
+            <th>Top-8 %</th>
+            <th>Exp. Rank</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td>
+                <span class="rank-badge {% if row.proj_rank == 1 %}rank-1{% elif row.proj_rank == 2 %}rank-2{% elif row.proj_rank == 3 %}rank-3{% else %}rank-other{% endif %}">
+                    {{ row.proj_rank }}
+                </span>
+            </td>
+            <td><a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a></td>
+            <td><strong>{{ row.mu }}</strong></td>
+            <td style="color:#808890">{{ row.sigma }}</td>
+            <td>
+                <div class="prob-bar-wrap">
+                    <div class="prob-bar" style="width:{{ [row.win_raw * 200, 100]|min }}px"></div>
+                    <span class="prob-text">{{ row.win }}</span>
+                </div>
+            </td>
+            <td>
+                <div class="prob-bar-wrap">
+                    <div class="prob-bar" style="width:{{ [row.podium_raw * 100, 100]|min }}px;opacity:0.65"></div>
+                    <span class="prob-text">{{ row.podium }}</span>
+                </div>
+            </td>
+            <td style="color:#a0a8c0">{{ row.top_8 }}</td>
+            <td style="color:#808890">{{ "%.1f"|format(row.expected_rank) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+
+<p class="note-text">
+    Probabilities estimated via 10,000 Monte Carlo simulations drawing performance
+    from N(&mu;, &sigma;) for each athlete. Athletes marked DNS are excluded.
+    Ratings shown are current (post-event) and may differ from pre-event values.
+</p>
+
+{% endif %}
+{% endblock %}
