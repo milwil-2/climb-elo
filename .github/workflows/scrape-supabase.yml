@@ -7,8 +7,11 @@ name: Scrape IFSC → Supabase
 #      any new results — idempotent thanks to uq_rating_history_athlete_round).
 #   4. Refreshes the combined Boulder+Lead ratings.
 #
-# Schedule: every 6 hours (00/06/12/18 UTC). World Cup events typically finish
-# mid-afternoon UTC, so the next scrape picks them up within a few hours.
+# Schedule: daily at 04:00 UTC. World Cup events happen on weekends during the
+# April-October season, and finish by ~16:00 UTC — Monday's 04:00 UTC run picks
+# up Saturday/Sunday results. During the off-season the run is mostly a no-op
+# (idempotent skips on existing rows). Use workflow_dispatch for ad-hoc refreshes
+# during live event weekends.
 #
 # Required secret: DATABASE_URL — the **direct** Supabase connection string
 #   (port 5432, NOT the pooler). Bulk inserts + long-lived connections do not
@@ -16,7 +19,7 @@ name: Scrape IFSC → Supabase
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 4 * * *"
   workflow_dispatch:
     inputs:
       historical_backfill:
