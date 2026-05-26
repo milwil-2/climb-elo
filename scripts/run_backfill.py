@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Run historical backfill: compute Lead ELO ratings from all results in the DB."""
+"""Run historical backfill: compute ELO ratings from all results in the DB."""
+import argparse
 import logging
 import sys
 
@@ -11,12 +12,27 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Run ELO backfill for a discipline")
+    parser.add_argument(
+        "--discipline",
+        type=str,
+        default="lead",
+        choices=["lead", "boulder"],
+        help="Discipline to backfill (default: lead)",
+    )
+    args = parser.parse_args()
+
+    discipline = Discipline.BOULDER if args.discipline == "boulder" else Discipline.LEAD
+
     SessionFactory = init_db()
 
+    print(f"Running backfill for {args.discipline.capitalize()}...")
+
     with SessionFactory() as session:
-        report = run_backfill(session, discipline=Discipline.LEAD)
+        report = run_backfill(session, discipline=discipline)
 
     print(f"\nBackfill complete:")
+    print(f"  Discipline:       {args.discipline}")
     print(f"  Events processed: {report.events_processed}")
     print(f"  Rounds processed: {report.rounds_processed}")
     print(f"  Athletes rated:   {len(report.athletes_rated)}")
