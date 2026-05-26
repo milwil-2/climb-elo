@@ -1,0 +1,745 @@
+{% extends "base.html" %}
+{% block title %}Live — {{ event.name }} — Climbing ELO{% endblock %}
+{% block head %}
+<style>
+    /* -----------------------------------------------------------------------
+       Live page layout
+    ----------------------------------------------------------------------- */
+    .live-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-bottom: 1.25rem;
+    }
+    .live-meta {
+        color: #808890;
+        font-size: 0.9rem;
+        margin-top: 0.3rem;
+    }
+
+    /* Status indicator */
+    .status-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.5rem 1rem;
+        background: #1a1d28;
+        border: 1px solid #2a2d3a;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        color: #a0a8c0;
+        margin-bottom: 1.5rem;
+        width: fit-content;
+    }
+    .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background: #505870;
+        transition: background 0.3s;
+    }
+    .status-dot.connecting { background: #fbbf24; }
+    .status-dot.live {
+        background: #4ade80;
+        box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7);
+        animation: pulse-dot 2s ease-out infinite;
+    }
+    .status-dot.disconnected { background: #f87171; }
+    @keyframes pulse-dot {
+        0%   { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7); }
+        70%  { box-shadow: 0 0 0 6px rgba(74, 222, 128, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+    }
+    #status-text { font-weight: 600; }
+    #reconnect-btn {
+        display: none;
+        margin-left: 0.5rem;
+        padding: 0.25rem 0.75rem;
+        background: #252840;
+        border: 1px solid #3a3f5c;
+        border-radius: 4px;
+        color: #7c8aff;
+        font-size: 0.8rem;
+        cursor: pointer;
+    }
+    #reconnect-btn:hover { background: #2e3358; }
+
+    /* Two-panel layout */
+    .live-panels {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+        align-items: start;
+    }
+    @media (max-width: 768px) {
+        .live-panels { grid-template-columns: 1fr; }
+    }
+
+    /* Panel cards */
+    .panel-card {
+        background: #1a1d28;
+        border: 1px solid #2a2d3a;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    .panel-header {
+        padding: 0.85rem 1.2rem;
+        background: #1e2138;
+        border-bottom: 1px solid #2a2d3a;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .panel-title {
+        font-weight: 700;
+        font-size: 0.9rem;
+        color: #c0c8ff;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+    }
+    .panel-body { padding: 0; }
+
+    /* Leaderboard table */
+    .lb-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .lb-table th {
+        background: #1a1d28;
+        color: #606870;
+        font-weight: 600;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        padding: 0.55rem 0.9rem;
+        border-bottom: 1px solid #2a2d3a;
+        text-align: left;
+    }
+    .lb-table td {
+        padding: 0.55rem 0.9rem;
+        border-bottom: 1px solid #1e2130;
+        font-size: 0.88rem;
+        color: #d0d8e8;
+        vertical-align: middle;
+    }
+    .lb-table tr:last-child td { border-bottom: none; }
+    .lb-table tr:hover td { background: #1e2138; }
+
+    /* Row flash animation on new result */
+    @keyframes row-flash {
+        0%   { background: rgba(124, 138, 255, 0.35); }
+        100% { background: transparent; }
+    }
+    .row-flash td { animation: row-flash 1.5s ease-out forwards; }
+
+    /* Rank badge */
+    .rank-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.7rem;
+        height: 1.7rem;
+        border-radius: 50%;
+        font-size: 0.78rem;
+        font-weight: 700;
+        flex-shrink: 0;
+    }
+    .rank-1 { background: #b8860b; color: #fff; }
+    .rank-2 { background: #708090; color: #fff; }
+    .rank-3 { background: #7c4f2a; color: #fff; }
+    .rank-other { background: #1e2130; color: #808890; }
+
+    /* Round type pill */
+    .round-pill {
+        display: inline-block;
+        padding: 0.1rem 0.45rem;
+        border-radius: 3px;
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        background: #252840;
+        color: #9098d0;
+    }
+    .round-pill.final   { background: #2a1d40; color: #a87fff; }
+    .round-pill.semi    { background: #1d2a40; color: #7fc8ff; }
+    .round-pill.qual    { background: #1d2d20; color: #7fcc88; }
+
+    /* Score column */
+    .score-cell { font-family: monospace; letter-spacing: 0.02em; }
+
+    /* Gender tabs */
+    .gender-tabs {
+        display: flex;
+        gap: 0;
+        border-bottom: 2px solid #2a2d3a;
+        margin-bottom: 1.25rem;
+    }
+    .gender-tab {
+        padding: 0.5rem 1.1rem;
+        color: #808890;
+        font-size: 0.88rem;
+        font-weight: 600;
+        text-decoration: none;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        transition: color 0.15s, border-color 0.15s;
+    }
+    .gender-tab:hover { color: #c0c0c0; }
+    .gender-tab.active { color: #7c8aff; border-bottom-color: #7c8aff; }
+
+    /* Empty state */
+    .empty-state {
+        padding: 2rem;
+        text-align: center;
+        color: #505870;
+        font-size: 0.9rem;
+    }
+
+    /* Projection table */
+    .proj-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .proj-table th {
+        background: #1a1d28;
+        color: #606870;
+        font-weight: 600;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        padding: 0.55rem 0.9rem;
+        border-bottom: 1px solid #2a2d3a;
+        text-align: left;
+    }
+    .proj-table td {
+        padding: 0.55rem 0.9rem;
+        border-bottom: 1px solid #1e2130;
+        font-size: 0.85rem;
+        color: #d0d8e8;
+    }
+    .proj-table tr:last-child td { border-bottom: none; }
+    .prob-bar-wrap {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+    }
+    .prob-bar {
+        height: 5px;
+        border-radius: 2px;
+        background: #7c8aff;
+        min-width: 2px;
+        flex-shrink: 0;
+    }
+    .prob-text {
+        font-size: 0.82rem;
+        color: #c0c8ff;
+        white-space: nowrap;
+    }
+    .locked-badge {
+        font-size: 0.7rem;
+        color: #505870;
+        font-style: italic;
+    }
+    .proj-note {
+        font-size: 0.75rem;
+        color: #404550;
+        padding: 0.6rem 0.9rem;
+        border-top: 1px solid #1e2130;
+    }
+    .updating-badge {
+        display: none;
+        font-size: 0.7rem;
+        color: #fbbf24;
+        font-weight: 600;
+        padding: 0.1rem 0.4rem;
+        background: #2a2200;
+        border-radius: 3px;
+        animation: blink 1s step-end infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    .updating-badge.show { display: inline-block; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="live-header">
+    <div>
+        <h1>{{ event.name }} ({{ event.season }})</h1>
+        <div class="live-meta">{{ event.tier }} &middot; {{ event.discipline }} &middot; Live</div>
+    </div>
+    <a href="/events/{{ event.id }}" style="color:#7c8aff;font-size:0.85rem;text-decoration:none;padding-top:0.3rem;">View full event &rarr;</a>
+</div>
+
+<div class="status-bar">
+    <div class="status-dot connecting" id="status-dot"></div>
+    <span id="status-text">Connecting&hellip;</span>
+    <button id="reconnect-btn" onclick="reconnectNow()">Reconnect</button>
+</div>
+
+{% if available_genders and available_genders|length > 1 %}
+<div class="gender-tabs">
+    {% for g in available_genders %}
+    <a class="gender-tab {% if g == gender %}active{% endif %}"
+       href="/live/{{ event.id }}?gender={{ g }}">
+        {{ "Men" if g == "M" else "Women" }}
+    </a>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="live-panels">
+    <!-- Left panel: leaderboard -->
+    <div class="panel-card">
+        <div class="panel-header">
+            <span class="panel-title">Live Leaderboard</span>
+            <span class="updating-badge" id="lb-updating">updating&hellip;</span>
+        </div>
+        <div class="panel-body">
+            {% if leaderboard %}
+            <table class="lb-table" id="leaderboard-table">
+                <thead>
+                    <tr>
+                        <th style="width:3rem">Rank</th>
+                        <th>Athlete</th>
+                        <th>Score</th>
+                        <th>Round</th>
+                    </tr>
+                </thead>
+                <tbody id="leaderboard-body">
+                {% for row in leaderboard %}
+                    <tr id="athlete-row-{{ row.athlete_id }}" data-athlete-id="{{ row.athlete_id }}" data-rank="{{ row.rank if row.rank else '' }}">
+                        <td>
+                            <span class="rank-badge {% if row.rank == 1 %}rank-1{% elif row.rank == 2 %}rank-2{% elif row.rank == 3 %}rank-3{% else %}rank-other{% endif %}" id="rank-{{ row.athlete_id }}">
+                                {{ row.rank if row.rank else "—" }}
+                            </span>
+                        </td>
+                        <td><a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a></td>
+                        <td class="score-cell" id="score-{{ row.athlete_id }}">{{ row.score }}</td>
+                        <td>
+                            <span class="round-pill {% if row.round_type == 'final' %}final{% elif row.round_type == 'semi' %}semi{% else %}qual{% endif %}" id="round-{{ row.athlete_id }}">
+                                {{ row.round_type | title }}
+                            </span>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state" id="lb-empty">
+                No results yet. Waiting for live data&hellip;
+            </div>
+            <table class="lb-table" id="leaderboard-table" style="display:none">
+                <thead>
+                    <tr>
+                        <th style="width:3rem">Rank</th>
+                        <th>Athlete</th>
+                        <th>Score</th>
+                        <th>Round</th>
+                    </tr>
+                </thead>
+                <tbody id="leaderboard-body"></tbody>
+            </table>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Right panel: projections -->
+    <div class="panel-card">
+        <div class="panel-header">
+            <span class="panel-title">Live Projections</span>
+            <span class="updating-badge" id="proj-updating">recalculating&hellip;</span>
+        </div>
+        <div class="panel-body">
+            {% if projections %}
+            <table class="proj-table" id="projections-table">
+                <thead>
+                    <tr>
+                        <th style="width:3rem">#</th>
+                        <th>Athlete</th>
+                        <th>Win %</th>
+                        <th>Podium %</th>
+                    </tr>
+                </thead>
+                <tbody id="projections-body">
+                {% for row in projections %}
+                    <tr id="proj-row-{{ row.athlete_id }}">
+                        <td>
+                            <span class="rank-badge {% if row.proj_rank == 1 %}rank-1{% elif row.proj_rank == 2 %}rank-2{% elif row.proj_rank == 3 %}rank-3{% else %}rank-other{% endif %}">
+                                {{ row.proj_rank }}
+                            </span>
+                        </td>
+                        <td>
+                            <a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a>
+                            {% if row.is_completed %}<br><span class="locked-badge">finished</span>{% endif %}
+                        </td>
+                        <td>
+                            <div class="prob-bar-wrap">
+                                <div class="prob-bar" style="width:{{ [row.win_raw * 200, 100]|min | int }}px"></div>
+                                <span class="prob-text">{{ row.win }}</span>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="prob-bar-wrap">
+                                <div class="prob-bar" style="width:{{ [row.podium_raw * 100, 100]|min | int }}px;opacity:0.65"></div>
+                                <span class="prob-text">{{ row.podium }}</span>
+                            </div>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state" id="proj-empty">
+                Projections will appear once results arrive.
+            </div>
+            <table class="proj-table" id="projections-table" style="display:none">
+                <thead>
+                    <tr>
+                        <th style="width:3rem">#</th>
+                        <th>Athlete</th>
+                        <th>Win %</th>
+                        <th>Podium %</th>
+                    </tr>
+                </thead>
+                <tbody id="projections-body"></tbody>
+            </table>
+            {% endif %}
+            <div class="proj-note" id="proj-note">
+                Probabilities estimated via Monte Carlo simulation.
+                Finished athletes are locked at their actual rank.
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    "use strict";
+
+    // ----------------------------------------------------------------
+    // Config
+    // ----------------------------------------------------------------
+    var STREAM_URL = {{ stream_url | tojson }};
+    var EVENT_ID   = {{ event.id }};
+
+    var MAX_RECONNECT_ATTEMPTS = 10;
+    var RECONNECT_BASE_MS      = 1000;
+    var RECONNECT_MAX_MS       = 30000;
+    var PROJECTION_THROTTLE_MS = 2000;
+
+    // ----------------------------------------------------------------
+    // State
+    // ----------------------------------------------------------------
+
+    // athlete_id (int) → { name, rank, score, round_type }
+    var athleteState = {};
+
+    // Seed from server-rendered initial state (safe — server builds this dict)
+    var initialAthletes = {{ initial_athletes | tojson }};
+    Object.keys(initialAthletes).forEach(function (id) {
+        athleteState[parseInt(id, 10)] = initialAthletes[id];
+    });
+
+    var reconnectAttempts = 0;
+    var reconnectTimer    = null;
+    var es                = null;
+    var projThrottleTimer = null;
+    var projPending       = false;  // a re-render is queued
+
+    // ----------------------------------------------------------------
+    // Status helpers
+    // ----------------------------------------------------------------
+    var dot        = document.getElementById("status-dot");
+    var statusText = document.getElementById("status-text");
+    var reconnBtn  = document.getElementById("reconnect-btn");
+
+    function setStatus(state, msg) {
+        dot.className = "status-dot " + state;
+        statusText.textContent = msg;
+        reconnBtn.style.display = (state === "disconnected") ? "inline-block" : "none";
+    }
+
+    // ----------------------------------------------------------------
+    // Leaderboard DOM helpers
+    // ----------------------------------------------------------------
+    var lbBody  = document.getElementById("leaderboard-body");
+    var lbTable = document.getElementById("leaderboard-table");
+    var lbEmpty = document.getElementById("lb-empty");
+    var lbUpdating = document.getElementById("lb-updating");
+
+    function rankBadgeClass(rank) {
+        if (rank === 1) return "rank-badge rank-1";
+        if (rank === 2) return "rank-badge rank-2";
+        if (rank === 3) return "rank-badge rank-3";
+        return "rank-badge rank-other";
+    }
+
+    function roundPillClass(roundType) {
+        if (roundType === "final")        return "round-pill final";
+        if (roundType === "semi")         return "round-pill semi";
+        return "round-pill qual";
+    }
+
+    function showLbTable() {
+        if (lbEmpty)  lbEmpty.style.display = "none";
+        if (lbTable)  lbTable.style.display = "";
+    }
+
+    function flashRow(row) {
+        row.classList.remove("row-flash");
+        // Force reflow so the animation restarts
+        void row.offsetWidth;
+        row.classList.add("row-flash");
+        setTimeout(function () { row.classList.remove("row-flash"); }, 1500);
+    }
+
+    function upsertLeaderboardRow(data) {
+        // data: { athlete_id, name, rank, score, round_type }
+        var aid  = data.athlete_id;
+        var row  = document.getElementById("athlete-row-" + aid);
+
+        if (row) {
+            // Update existing row in-place
+            var rankEl  = document.getElementById("rank-"  + aid);
+            var scoreEl = document.getElementById("score-" + aid);
+            var roundEl = document.getElementById("round-" + aid);
+
+            if (rankEl) {
+                rankEl.className = rankBadgeClass(data.rank);
+                rankEl.textContent = data.rank !== null ? data.rank : "—";
+            }
+            if (scoreEl) scoreEl.textContent = data.score || "—";
+            if (roundEl) {
+                roundEl.className = roundPillClass(data.round_type);
+                // Capitalise first letter safely (textContent, not innerHTML)
+                var rt = data.round_type || "";
+                roundEl.textContent = rt.charAt(0).toUpperCase() + rt.slice(1);
+            }
+            row.dataset.rank = data.rank !== null ? data.rank : "";
+            flashRow(row);
+        } else {
+            // New athlete — append a row
+            showLbTable();
+            row = document.createElement("tr");
+            row.id = "athlete-row-" + aid;
+            row.dataset.athleteId = aid;
+            row.dataset.rank = data.rank !== null ? data.rank : "";
+
+            // Rank cell
+            var tdRank = document.createElement("td");
+            var badge = document.createElement("span");
+            badge.id = "rank-" + aid;
+            badge.className = rankBadgeClass(data.rank);
+            badge.textContent = data.rank !== null ? data.rank : "—";
+            tdRank.appendChild(badge);
+
+            // Name cell
+            var tdName = document.createElement("td");
+            var link = document.createElement("a");
+            link.href = "/athletes/" + aid;
+            link.textContent = data.name;
+            tdName.appendChild(link);
+
+            // Score cell
+            var tdScore = document.createElement("td");
+            tdScore.id = "score-" + aid;
+            tdScore.className = "score-cell";
+            tdScore.textContent = data.score || "—";
+
+            // Round cell
+            var tdRound = document.createElement("td");
+            var pill = document.createElement("span");
+            pill.id = "round-" + aid;
+            pill.className = roundPillClass(data.round_type);
+            var rt2 = data.round_type || "";
+            pill.textContent = rt2.charAt(0).toUpperCase() + rt2.slice(1);
+            tdRound.appendChild(pill);
+
+            row.appendChild(tdRank);
+            row.appendChild(tdName);
+            row.appendChild(tdScore);
+            row.appendChild(tdRound);
+            lbBody.appendChild(row);
+            flashRow(row);
+        }
+
+        // Re-sort the table rows by rank ascending
+        var rows = Array.prototype.slice.call(lbBody.querySelectorAll("tr"));
+        rows.sort(function (a, b) {
+            var ra = parseInt(a.dataset.rank, 10) || 9999;
+            var rb = parseInt(b.dataset.rank, 10) || 9999;
+            return ra - rb;
+        });
+        rows.forEach(function (r) { lbBody.appendChild(r); });
+    }
+
+    // ----------------------------------------------------------------
+    // Projection re-rendering (client-side simplified view)
+    // ----------------------------------------------------------------
+    // For v1, the projection panel shows server-rendered data on load and
+    // shows a "recalculating" badge when new results arrive.
+    // The actual projection numbers require a server round-trip (Monte Carlo
+    // is compute-bound), so we reload the projection section via fetch.
+
+    var projBody     = document.getElementById("projections-body");
+    var projTable    = document.getElementById("projections-table");
+    var projEmpty    = document.getElementById("proj-empty");
+    var projUpdating = document.getElementById("proj-updating");
+
+    function showProjUpdating(show) {
+        projUpdating.className = "updating-badge" + (show ? " show" : "");
+    }
+
+    function showProjTable() {
+        if (projEmpty) projEmpty.style.display = "none";
+        if (projTable) projTable.style.display = "";
+    }
+
+    function scheduleProjectionRefresh() {
+        if (projThrottleTimer !== null) {
+            // A timer is already running — mark that we need another refresh afterwards
+            projPending = true;
+            return;
+        }
+        showProjUpdating(true);
+        projThrottleTimer = setTimeout(function () {
+            projThrottleTimer = null;
+            doProjectionRefresh();
+            if (projPending) {
+                projPending = false;
+                scheduleProjectionRefresh();
+            }
+        }, PROJECTION_THROTTLE_MS);
+    }
+
+    function doProjectionRefresh() {
+        // Reload the full page fragment for the projections panel by fetching
+        // the same route and extracting the projections-body content.
+        var url = window.location.pathname + window.location.search;
+        fetch(url, { headers: { "Accept": "text/html" } })
+            .then(function (resp) {
+                if (!resp.ok) throw new Error("HTTP " + resp.status);
+                return resp.text();
+            })
+            .then(function (html) {
+                var parser = new DOMParser();
+                var doc = parser.parseFromString(html, "text/html");
+                var newBody = doc.getElementById("projections-body");
+                var newTable = doc.getElementById("projections-table");
+                if (newBody && projBody) {
+                    projBody.innerHTML = newBody.innerHTML;
+                    showProjTable();
+                } else if (newTable && projTable) {
+                    // Fallback: whole table
+                    projTable.innerHTML = newTable.innerHTML;
+                }
+                showProjUpdating(false);
+            })
+            .catch(function (err) {
+                console.warn("Projection refresh failed:", err);
+                showProjUpdating(false);
+            });
+    }
+
+    // ----------------------------------------------------------------
+    // SSE connection
+    // ----------------------------------------------------------------
+    function connect() {
+        setStatus("connecting", "Connecting…");
+
+        if (es) {
+            es.close();
+            es = null;
+        }
+
+        es = new EventSource(STREAM_URL);
+
+        es.onopen = function () {
+            setStatus("live", "Live");
+            reconnectAttempts = 0;
+        };
+
+        es.onmessage = function (evt) {
+            var data;
+            try {
+                data = JSON.parse(evt.data);
+            } catch (e) {
+                return;  // Malformed — ignore
+            }
+
+            if (data.type !== "new_result") return;
+
+            // Update internal state
+            var aid = data.athlete_id;
+            athleteState[aid] = {
+                name:       data.name,
+                rank:       data.rank,
+                score:      data.score || "—",
+                round_type: data.round_type,
+            };
+
+            // Flash updating badge briefly
+            lbUpdating.className = "updating-badge show";
+            setTimeout(function () {
+                lbUpdating.className = "updating-badge";
+            }, 2000);
+
+            // Update leaderboard DOM
+            upsertLeaderboardRow({
+                athlete_id: aid,
+                name:       data.name,
+                rank:       data.rank,
+                score:      data.score || "—",
+                round_type: data.round_type,
+            });
+
+            // Schedule projection recalculation (throttled)
+            scheduleProjectionRefresh();
+        };
+
+        es.onerror = function () {
+            es.close();
+            es = null;
+
+            if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                setStatus("disconnected", "Disconnected · Max retries reached");
+                return;
+            }
+
+            var delay = Math.min(
+                RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts),
+                RECONNECT_MAX_MS
+            );
+            reconnectAttempts++;
+            var secsLeft = Math.round(delay / 1000);
+            setStatus("disconnected", "Disconnected · Retrying in " + secsLeft + "s");
+
+            reconnectTimer = setTimeout(function () {
+                reconnectTimer = null;
+                connect();
+            }, delay);
+        };
+    }
+
+    // Manual reconnect button
+    window.reconnectNow = function () {
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+        reconnectAttempts = 0;
+        connect();
+    };
+
+    // Start connecting immediately on page load
+    connect();
+
+})();
+</script>
+{% endblock %}

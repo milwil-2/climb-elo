@@ -15,6 +15,7 @@ from climbing_elo.engine.projections import (
     AthleteProjectionInput,
     ProgressionResult,
     RoundConfig,
+    compute_partial_event_probabilities,
     compute_podium_probabilities,
     default_event_format,
     predict_winner,
@@ -954,6 +955,155 @@ async def head_to_head_result(
                 ("combined", "Combined"),
             ]
         ],
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /live/{event_id}  — live event view (auto-updating leaderboard + projections)
+# ---------------------------------------------------------------------------
+
+@router.get("/live/{event_id}", response_class=HTMLResponse)
+async def live_event_view(request: Request, event_id: int, gender: str = "M"):
+    """Render the live event page for a given event_id.
+
+    Loads event metadata, current leaderboard state (Result rows ordered by rank),
+    and computes initial projections.  The page then subscribes to
+    /live/{event_id}/stream via JavaScript EventSource for real-time updates.
+    """
+    templates = request.app.state.templates
+    with _get_session() as session:
+        event = session.get(Event, event_id)
+        if not event:
+            return HTMLResponse("Event not found", status_code=404)
+
+        # Resolve gender filter
+        try:
+            gender_enum = Gender(gender.upper())
+        except ValueError:
+            gender_enum = Gender.M
+
+        available_genders = sorted({rnd.gender.value for rnd in event.rounds})
+
+        # Build current leaderboard: all results ordered by (round_type, rank)
+        # We want the most recent / highest round first (final > semi > qual).
+        _rt_order = {
+            RoundType.FINAL: 0,
+            RoundType.SEMI: 1,
+            RoundType.QUALIFICATION: 2,
+        }
+        sorted_rounds = sorted(
+            [r for r in event.rounds if r.gender == gender_enum],
+            key=lambda r: _rt_order.get(r.round_type, 99),
+        )
+
+        # Collect the current state per athlete — prefer the latest round result.
+        # Maps athlete_id → {rank, score, round_type, name, athlete_id}
+        athlete_best: dict[int, dict] = {}
+        for rnd in sorted_rounds:
+            results = list(
+                session.execute(
+                    select(Result, Athlete)
+                    .join(Athlete, Result.athlete_id == Athlete.id)
+                    .where(Result.round_id == rnd.id, Result.dns.is_(False))
+                    .order_by(Result.rank.asc())
+                ).all()
+            )
+            for res, athlete in results:
+                if athlete.id not in athlete_best:
+                    athlete_best[athlete.id] = {
+                        "athlete_id": athlete.id,
+                        "name": athlete.name,
+                        "rank": res.rank,
+                        "score": res.raw_score or "—",
+                        "round_type": rnd.round_type.value,
+                    }
+
+        leaderboard_rows = sorted(
+            athlete_best.values(),
+            key=lambda r: (r["rank"] if r["rank"] is not None else 9999),
+        )
+
+        # Build projection inputs from leaderboard.
+        # Athletes with a finished rank are "completed"; the rest are "remaining".
+        # For this initial render all athletes in DB are "completed" since we only
+        # have stored results (not live mid-round state).  We use
+        # compute_partial_event_probabilities for correctness.
+        completed: list[tuple[AthleteProjectionInput, int]] = []
+        remaining: list[AthleteProjectionInput] = []
+
+        for row in leaderboard_rows:
+            aid = row["athlete_id"]
+            rating = session.execute(
+                select(Rating).where(
+                    Rating.athlete_id == aid,
+                    Rating.discipline == event.discipline,
+                )
+            ).scalar_one_or_none()
+            if rating is None:
+                from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+                mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
+            else:
+                mu, sigma = rating.mu, rating.sigma
+            athlete_obj = session.get(Athlete, aid)
+            inp = AthleteProjectionInput(
+                athlete_id=aid,
+                mu=mu,
+                sigma=sigma,
+                name=athlete_obj.name if athlete_obj else str(aid),
+            )
+            if row["rank"] is not None:
+                completed.append((inp, row["rank"]))
+            else:
+                remaining.append(inp)
+
+        projection_rows: list[dict] = []
+        if completed or remaining:
+            probs = compute_partial_event_probabilities(
+                completed_athletes=completed,
+                remaining_athletes=remaining,
+                n_simulations=10_000,
+            )
+            all_inputs = [inp for inp, _ in completed] + remaining
+            for inp in sorted(all_inputs, key=lambda a: probs[a.athlete_id]["expected_rank"]):
+                p = probs[inp.athlete_id]
+                projection_rows.append({
+                    "athlete_id": inp.athlete_id,
+                    "name": inp.name,
+                    "mu": round(inp.mu, 1),
+                    "win": f"{p['win'] * 100:.1f}%",
+                    "podium": f"{p['podium'] * 100:.1f}%",
+                    "expected_rank": p["expected_rank"],
+                    "win_raw": p["win"],
+                    "podium_raw": p["podium"],
+                    "is_completed": inp.athlete_id in {aid for inp, _ in completed},
+                })
+            for i, row in enumerate(projection_rows):
+                row["proj_rank"] = i + 1
+
+    return templates.TemplateResponse(request, "live.html", {
+        "event": {
+            "id": event.id,
+            "name": event.name,
+            "season": event.season,
+            "tier": event.tier.value.replace("_", " ").title(),
+            "discipline": _DISCIPLINE_DISPLAY.get(event.discipline, event.discipline.value),
+        },
+        "gender": gender_enum.value,
+        "available_genders": available_genders,
+        "leaderboard": leaderboard_rows,
+        "projections": projection_rows,
+        "stream_url": f"/live/{event_id}/stream",
+        # Initial athlete data for JS to seed the leaderboard state
+        # (serialised to JSON in the template via |tojson)
+        "initial_athletes": {
+            row["athlete_id"]: {
+                "name": row["name"],
+                "rank": row["rank"],
+                "score": row["score"],
+                "round_type": row["round_type"],
+            }
+            for row in leaderboard_rows
+        },
     })
 
 
