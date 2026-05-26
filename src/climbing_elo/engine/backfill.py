@@ -26,6 +26,15 @@ from climbing_elo.models import (
 
 log = logging.getLogger(__name__)
 
+
+def _is_postgres(session: Session) -> bool:
+    """Return True when the session is backed by a PostgreSQL engine."""
+    try:
+        return session.get_bind().dialect.name == "postgresql"
+    except Exception:
+        return False
+
+
 ROUND_ORDER = {
     RoundType.QUALIFICATION: 0,
     RoundType.SEMI: 1,
@@ -124,6 +133,16 @@ def run_backfill(
             if not results:
                 continue
 
+            # Idempotency guard: skip rounds that have already been rated.
+            # On Postgres the ON CONFLICT DO NOTHING handles duplicates; on
+            # SQLite (tests) we detect them here to avoid IntegrityError.
+            already_rated = session.execute(
+                select(RatingHistory).where(RatingHistory.round_id == rnd.id).limit(1)
+            ).scalar_one_or_none()
+            if already_rated is not None:
+                log.debug("Round %d already rated, skipping", rnd.id)
+                continue
+
             athlete_results = []
             for res in results:
                 _get_or_create_rating(
@@ -179,18 +198,39 @@ def run_backfill(
                     }
                     for p in upd.contributing_pairs
                 ]
-                session.add(
-                    RatingHistory(
-                        athlete_id=upd.athlete_id,
-                        event_id=event.id,
-                        round_id=rnd.id,
-                        mu_before=upd.mu_before,
-                        mu_after=upd.mu_after,
-                        sigma_before=upd.sigma_before,
-                        sigma_after=upd.sigma_after,
-                        contributing_pairs=pairs_json,
+                if _is_postgres(session):
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                    stmt = (
+                        pg_insert(RatingHistory)
+                        .values(
+                            athlete_id=upd.athlete_id,
+                            event_id=event.id,
+                            round_id=rnd.id,
+                            mu_before=upd.mu_before,
+                            mu_after=upd.mu_after,
+                            sigma_before=upd.sigma_before,
+                            sigma_after=upd.sigma_after,
+                            contributing_pairs=pairs_json,
+                        )
+                        .on_conflict_do_nothing(
+                            index_elements=["athlete_id", "round_id"]
+                        )
                     )
-                )
+                    session.execute(stmt)
+                else:
+                    session.add(
+                        RatingHistory(
+                            athlete_id=upd.athlete_id,
+                            event_id=event.id,
+                            round_id=rnd.id,
+                            mu_before=upd.mu_before,
+                            mu_after=upd.mu_after,
+                            sigma_before=upd.sigma_before,
+                            sigma_after=upd.sigma_after,
+                            contributing_pairs=pairs_json,
+                        )
+                    )
 
                 report.athletes_rated.add(upd.athlete_id)
 

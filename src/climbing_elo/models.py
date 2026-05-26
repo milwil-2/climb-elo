@@ -92,6 +92,12 @@ class Event(Base):
     )
     rating_history: Mapped[list[RatingHistory]] = relationship(back_populates="event")
 
+    __table_args__ = (
+        UniqueConstraint(
+            "name", "season", "discipline", name="uq_event_name_season_discipline"
+        ),
+    )
+
 
 class Round(Base):
     __tablename__ = "rounds"
@@ -178,3 +184,9 @@ class RatingHistory(Base):
 
     athlete: Mapped[Athlete] = relationship(back_populates="rating_history")
     event: Mapped[Event] = relationship(back_populates="rating_history")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "athlete_id", "round_id", name="uq_rating_history_athlete_round"
+        ),
+    )
