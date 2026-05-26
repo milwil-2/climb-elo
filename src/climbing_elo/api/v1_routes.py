@@ -118,7 +118,7 @@ async def leaderboard(
     discipline: str = Query("lead", description="Discipline: lead, boulder, speed, boulder_lead / combined"),
     gender: str = Query("M", description="Gender: M or F"),
     limit: int = Query(50, ge=1, le=100, description="Number of results (1–100)"),
-    offset: int = Query(0, ge=0, description="Pagination offset"),
+    offset: int = Query(0, ge=0, le=10000, description="Pagination offset (max 10000)"),
 ) -> LeaderboardResponse:
     """
     Return paginated ELO leaderboard for the requested discipline and gender.
@@ -311,7 +311,7 @@ async def list_events(
     discipline: Optional[str] = Query(None, description="Filter by discipline"),
     season: Optional[int] = Query(None, ge=2000, le=2100, description="Filter by season year"),
     limit: int = Query(50, ge=1, le=100, description="Number of results (1–100)"),
-    offset: int = Query(0, ge=0, description="Pagination offset"),
+    offset: int = Query(0, ge=0, le=10000, description="Pagination offset (max 10000)"),
 ) -> EventsResponse:
     """
     Return a paginated list of competition events, optionally filtered by
@@ -376,15 +376,20 @@ async def event_detail(event_id: int) -> EventDetail:
                 .order_by(Result.rank.asc())
             ).all()
 
+            athlete_ids_in_round = [ath.id for _, ath in result_rows_raw]
+            rh_by_athlete: dict[int, RatingHistory] = {}
+            if athlete_ids_in_round:
+                for rh in session.execute(
+                    select(RatingHistory).where(
+                        RatingHistory.round_id == rnd.id,
+                        RatingHistory.athlete_id.in_(athlete_ids_in_round),
+                    )
+                ).scalars():
+                    rh_by_athlete[rh.athlete_id] = rh
+
             results_out: list[ResultRow] = []
             for res, ath in result_rows_raw:
-                rh = session.execute(
-                    select(RatingHistory).where(
-                        RatingHistory.athlete_id == ath.id,
-                        RatingHistory.round_id == rnd.id,
-                    )
-                ).scalar_one_or_none()
-
+                rh = rh_by_athlete.get(ath.id)
                 delta = round(rh.mu_after - rh.mu_before, 2) if rh else None
                 results_out.append(ResultRow(
                     athlete_id=ath.id,
