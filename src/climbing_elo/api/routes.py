@@ -10,8 +10,10 @@ import math
 from datetime import date
 from typing import Optional
 
+from pathlib import Path
+
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import func, select
 
 from climbing_elo.cache import likely_roster_cache, predictions_cache
@@ -47,7 +49,6 @@ _TEMPLATES_DIR_NAME = "templates"
 def _templates(request: Request):
     """Return Jinja2Templates pointed at templates/."""
     from fastapi.templating import Jinja2Templates
-    from pathlib import Path
 
     d = Path(__file__).resolve().parent.parent / _TEMPLATES_DIR_NAME
     return Jinja2Templates(directory=str(d))
@@ -298,6 +299,25 @@ def _ticker_context(session) -> dict:
 def _nav_context(active_page: str) -> dict:
     """Return navigation context (which page is active)."""
     return {"active_page": active_page}
+
+
+# ---------------------------------------------------------------------------
+# GET /favicon.ico  — silence browser-tab requests (Issue #73)
+# ---------------------------------------------------------------------------
+
+_FAVICON_PATH = Path(__file__).resolve().parent.parent / "static" / "favicon.svg"
+
+
+@router.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Serve the site favicon.
+
+    Browsers request /favicon.ico on every page load regardless of whether a
+    <link rel="icon"> tag is present.  Without this route the request falls
+    through to the catch-all and returns 500.  Modern browsers accept SVG
+    favicons served under the .ico path.
+    """
+    return FileResponse(_FAVICON_PATH, media_type="image/svg+xml")
 
 
 # ---------------------------------------------------------------------------
