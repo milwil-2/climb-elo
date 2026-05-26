@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
+from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from climbing_elo.models import Discipline, Gender
 
@@ -154,3 +154,133 @@ class EventDetail(BaseModel):
     start_date: date
     discipline: str
     rounds: list[RoundDetail]
+
+
+# ---------------------------------------------------------------------------
+# Combined (Boulder+Lead) ratings
+# ---------------------------------------------------------------------------
+
+class CombinedLeaderboardEntry(LeaderboardEntry):
+    """Leaderboard entry for the BOULDER_LEAD combined discipline.
+
+    Extends LeaderboardEntry with the per-discipline breakdown so API consumers
+    can see the individual boulder and lead ratings alongside the combined score.
+    """
+
+    mu_boulder: float
+    mu_lead: float
+    sigma_boulder: float
+    sigma_lead: float
+
+
+class CombinedLeaderboardResponse(BaseModel):
+    gender: str
+    limit: int
+    offset: int
+    total: int
+    items: list[CombinedLeaderboardEntry]
+
+
+class AthleteCombined(BaseModel):
+    """Single-athlete combined rating with per-discipline breakdown."""
+
+    athlete_id: int
+    name: str
+    nationality: Optional[str]
+    gender: str
+    mu_combined: float
+    sigma_combined: float
+    n_events_combined: int
+    provisional_combined: bool
+    mu_boulder: float
+    mu_lead: float
+    sigma_boulder: float
+    sigma_lead: float
+    last_event_at: Optional[date]
+
+
+# ---------------------------------------------------------------------------
+# Projections
+# ---------------------------------------------------------------------------
+
+class ProjectionRequest(BaseModel):
+    """Request body for POST /api/v1/projections."""
+
+    discipline: str = Field(
+        ...,
+        description="Discipline code: lead, boulder, speed, boulder_lead / combined",
+    )
+    athlete_ids: List[int] = Field(
+        ...,
+        min_length=2,
+        max_length=64,
+        description="List of athlete IDs to project (2–64, no duplicates)",
+    )
+
+
+class ProjectionEntry(BaseModel):
+    """Per-athlete projection result."""
+
+    athlete_id: int
+    name: str
+    mu: float
+    sigma: float
+    win: float
+    podium: float
+    top_8: float
+    expected_rank: float
+
+
+class ProjectionResponse(BaseModel):
+    """Response for POST /api/v1/projections."""
+
+    discipline: str
+    n_athletes: int
+    n_simulations: int
+    items: list[ProjectionEntry]
+
+
+# ---------------------------------------------------------------------------
+# Upcoming predictions
+# ---------------------------------------------------------------------------
+
+class PredictedAthlete(BaseModel):
+    """One athlete in a predicted top-3."""
+
+    athlete_id: int
+    name: str
+    win: float
+    podium: float
+    expected_rank: float
+
+
+class GenderPrediction(BaseModel):
+    """Predictions for one gender within an upcoming event."""
+
+    gender: str
+    total_athletes: int
+    top_3: list[PredictedAthlete]
+
+
+class UpcomingPredictionEntry(BaseModel):
+    """One upcoming event with predicted top-3 per gender."""
+
+    event_id: int
+    event_name: str
+    discipline: str
+    season: int
+    start_date: date
+    tier: str
+    country: Optional[str]
+    has_registered_athletes: bool
+    from_likely_roster: bool
+    genders: list[GenderPrediction]
+
+
+class UpcomingPredictionsResponse(BaseModel):
+    """Response for GET /api/v1/predictions/upcoming."""
+
+    discipline: Optional[str]
+    season: Optional[int]
+    total: int
+    items: list[UpcomingPredictionEntry]
