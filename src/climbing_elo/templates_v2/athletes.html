@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block title %}Athletes &mdash; Climbing ELO{% endblock %}
+
+{% block head %}
+<style>
+  .page-head{padding:80px 0 32px;border-bottom:1px solid var(--line)}
+  .page-head h1{font-size:clamp(34px,4.4vw,46px);line-height:1.1;letter-spacing:-0.025em;font-weight:600}
+  .page-head h1 em{font-style:italic;font-weight:400}
+  .page-head .crumbs{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:20px;font-weight:500}
+  .page-head .lead{margin-top:22px;max-width:560px;color:var(--ink-2);font-size:15.5px;line-height:1.6}
+
+  .athlete-page{display:grid;grid-template-columns:280px 1fr;gap:28px;padding:32px 0 88px}
+  @media (max-width:920px){.athlete-page{grid-template-columns:1fr}}
+
+  .athlete-list{
+    background:var(--paper);border:1px solid var(--line);border-radius:0;
+    overflow:hidden;align-self:start;position:sticky;top:88px;max-height:calc(100vh - 110px);
+    display:flex;flex-direction:column;
+  }
+  @media (max-width:920px){.athlete-list{position:static;max-height:none}}
+  .athlete-list .head{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+  .athlete-list .head .ttl{font-size:10.5px;color:var(--dim);letter-spacing:0.14em;text-transform:uppercase}
+  .athlete-list .scroll{overflow:auto;flex:1}
+  .athlete-list .row{
+    display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;
+    padding:10px 16px;border-bottom:1px solid var(--line);cursor:pointer;
+    text-decoration:none;transition:background .15s;font-size:13.5px;color:var(--ink);
+  }
+  .athlete-list .row:hover{background:var(--paper-2)}
+  .athlete-list .row.active{background:var(--paper-2);border-left:2px solid var(--ink);padding-left:14px}
+  .athlete-list .row.active .nm{color:var(--ink);font-weight:600}
+  .athlete-list .row .rk{font-size:11px;color:var(--dim)}
+  .athlete-list .row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .athlete-list .row .mu{font-size:12px;color:var(--ink-2)}
+
+  .athlete-card{padding:32px}
+  .athlete-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;gap:24px}
+  .athlete-name{font-size:clamp(22px,2.6vw,30px);font-weight:600;letter-spacing:-0.015em;line-height:1.1;margin-bottom:8px}
+  .athlete-sub{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--ink-2)}
+  .athlete-sub .sep{color:var(--line-2)}
+  .athlete-rating .mu{font-size:42px;font-weight:600;letter-spacing:-0.03em;line-height:1;font-variant-numeric:tabular-nums}
+  .athlete-rating .label{font-size:11px;color:var(--dim);letter-spacing:0.12em;text-transform:uppercase;margin-top:4px}
+
+  .disc-badges{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px}
+  .disc-badge{
+    padding:8px 14px;border:1px solid var(--line);font-size:12px;color:var(--ink-2);
+    display:flex;flex-direction:column;gap:4px;min-width:72px;
+  }
+  .disc-badge.primary{border-color:var(--ink-2);color:var(--ink)}
+  .disc-badge .v{font-size:20px;font-weight:600;letter-spacing:-0.01em;color:var(--ink);font-variant-numeric:tabular-nums}
+
+  .chart-wrap{margin-bottom:32px}
+  .chart-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:12px;color:var(--dim)}
+  .chart-meta b{color:var(--ink);font-size:14px}
+  .chart-canvas-wrap{width:100%;height:200px}
+
+  .recent h4{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:12px}
+  .recent-row{
+    display:grid;grid-template-columns:72px 1fr 64px 48px 64px;gap:10px 16px;align-items:center;
+    padding:11px 0;border-bottom:1px solid var(--line);font-size:13.5px;
+  }
+  .recent-row:first-of-type{border-top:1px solid var(--line)}
+  .recent-row .date{color:var(--dim);font-size:12px}
+  .recent-row .disc-label{color:var(--dim);font-size:11px;letter-spacing:0.06em}
+  .recent-row .pos{font-weight:600;font-variant-numeric:tabular-nums}
+  .recent-row .delta-pos{color:var(--ink);font-weight:500;font-size:12px;text-align:right}
+  .recent-row .delta-neg{color:var(--ink-2);font-weight:500;font-size:12px;text-align:right}
+</style>
+{% endblock %}
+
+{% block body %}
+<main>
+  <section class="page-head">
+    <div class="crumbs reveal"><a href="/v2/">Home</a> / Athletes</div>
+    <h1 class="reveal d2">Every climb,<br/>every rating <em>change</em>.</h1>
+    <p class="lead reveal d3">
+      Each profile is a full audit trail &mdash; rating history, &sigma; decay,
+      and the K-factor applied at every round. Pick an athlete from the sidebar.
+    </p>
+  </section>
+
+  <div class="athlete-page">
+    <!-- Sidebar -->
+    <aside class="athlete-list">
+      <div class="head">
+        <span class="ttl">Top Athletes</span>
+      </div>
+      <div class="scroll">
+        {%- for row in sidebar_athletes -%}
+        <a href="/v2/athletes/{{ row.id }}"
+           class="row{% if row.id == current_athlete_id %} active{% endif %}">
+          <span class="rk">{{ '%02d' % row.rank }}</span>
+          <span class="nm">{{ row.name }}</span>
+          <span class="mu num">{{ row.mu }}</span>
+        </a>
+        {%- endfor -%}
+      </div>
+    </aside>
+
+    <!-- Profile -->
+    <div>
+      {%- if athlete -%}
+      <div class="card athlete-card">
+        <div class="athlete-head">
+          <div>
+            <div class="athlete-name">{{ athlete.name }}</div>
+            <div class="athlete-sub">
+              <span>{{ athlete.nationality }}</span>
+              <span class="sep">&middot;</span>
+              {%- if athlete.year_of_birth -%}
+              <span>Born {{ athlete.year_of_birth }}</span>
+              <span class="sep">&middot;</span>
+              {%- endif -%}
+              <span>{{ athlete.gender }}</span>
+            </div>
+          </div>
+          {%- if primary_rating.mu -%}
+          <div class="athlete-rating">
+            <div class="mu num">{{ primary_rating.mu }}</div>
+            <div class="label">&mu; {{ primary_disc_label }} &middot; &sigma; {{ primary_rating.sigma }}</div>
+          </div>
+          {%- endif -%}
+        </div>
+
+        <!-- Discipline badges -->
+        <div class="disc-badges">
+          {%- for key, label in [('B','Boulder'),('L','Lead'),('S','Speed'),('BL','B+L')] -%}
+          {%- if ratings_by_disc.get(key) -%}
+          <div class="disc-badge{% if key == primary_disc_key %} primary{% endif %}">
+            {{ label }}
+            <span class="v">{{ ratings_by_disc[key].mu }}</span>
+          </div>
+          {%- else -%}
+          <div class="disc-badge" style="opacity:0.4">
+            {{ label }}
+            <span class="v">&mdash;</span>
+          </div>
+          {%- endif -%}
+          {%- endfor -%}
+        </div>
+
+        <!-- Rating history chart -->
+        {%- if chart_mu and chart_mu != '[]' -%}
+        <div class="chart-wrap">
+          <div class="chart-meta">
+            <span>{{ primary_disc_label }} rating history</span>
+          </div>
+          <div class="chart-canvas-wrap">
+            <canvas id="athlete-chart"></canvas>
+          </div>
+        </div>
+        {%- endif -%}
+
+        <!-- Recent events -->
+        {%- if recent_events -%}
+        <div class="recent">
+          <h4>Recent events</h4>
+          {%- for ev in recent_events -%}
+          <div class="recent-row">
+            <span class="date">{{ ev.date }}</span>
+            <span>{{ ev.event_name }}</span>
+            <span class="disc-label">&middot;{{ ev.discipline }}&middot;</span>
+            <span class="pos">{%- if ev.place %}#{{ ev.place }}{% else %}&mdash;{% endif -%}</span>
+            <span class="{% if ev.delta > 0 %}delta-pos{% elif ev.delta < 0 %}delta-neg{% else %}delta-neg{% endif %}">
+              {% if ev.delta > 0 %}+{% elif ev.delta < 0 %}&minus;{% endif %}{{ ev.delta_abs }}
+            </span>
+          </div>
+          {%- endfor -%}
+        </div>
+        {%- endif -%}
+      </div>
+      {%- else -%}
+      <div class="card" style="padding:48px;text-align:center;color:var(--dim)">
+        Select an athlete from the sidebar.
+      </div>
+      {%- endif -%}
+    </div>
+  </div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+{%- if chart_mu and chart_mu != '[]' -%}
+<script>
+(function() {
+  var labels = {{ chart_labels | tojson }};
+  var mus    = {{ chart_mu    | tojson }};
+
+  var ctx = document.getElementById('athlete-chart');
+  if (!ctx || !mus.length) return;
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: mus,
+        borderColor: 'var(--ink)',
+        borderWidth: 1.25,
+        pointRadius: 0,
+        pointHoverRadius: 3,
+        tension: 0.3,
+        fill: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: function() { return ''; },
+            label: function(ctx) { return 'μ ' + ctx.parsed.y; }
+          }
+        }
+      },
+      scales: {
+        x: {
+          display: false,
+          ticks: { maxTicksLimit: 6, font: { family: 'Manrope', size: 10 }, color: 'var(--dim)' },
+          grid: { display: false }
+        },
+        y: {
+          ticks: { font: { family: 'Manrope', size: 10 }, color: 'var(--dim)', maxTicksLimit: 5 },
+          grid: {
+            color: 'var(--line)',
+            borderDash: [2, 4],
+          }
+        }
+      }
+    }
+  });
+})();
+</script>
+{%- endif -%}
+{% endblock %}

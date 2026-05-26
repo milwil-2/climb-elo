@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% block title %}Climbing ELO{% endblock %}
+
+{% block head %}
+<style>
+  .stat-list {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0 64px;
+    border-top: 1px solid var(--line);
+  }
+  @media (max-width: 760px) { .stat-list { grid-template-columns: 1fr; gap: 0 } }
+  .stat-row {
+    padding: 22px 0; border-bottom: 1px solid var(--line);
+    display: grid; grid-template-columns: 1fr auto; gap: 8px 24px; align-items: baseline;
+  }
+  .stat-row .l {
+    font-size: 11px; color: var(--dim); font-weight: 500;
+    letter-spacing: 0.16em; text-transform: uppercase;
+  }
+  .stat-row .v {
+    font-size: 26px; font-weight: 600; letter-spacing: -0.02em; line-height: 1;
+    font-variant-numeric: tabular-nums; color: var(--ink);
+  }
+  .stat-row .v small {
+    font-size: 12px; font-weight: 500; color: var(--dim);
+    margin-left: 6px; letter-spacing: 0;
+  }
+  .stat-row .s {
+    grid-column: 1 / -1; color: var(--ink-2); font-size: 13.5px;
+    line-height: 1.55; max-width: 460px;
+  }
+  .compact-status {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 56px;
+    padding: 80px 0 96px;
+  }
+  @media (max-width: 900px) { .compact-status { grid-template-columns: 1fr; gap: 40px } }
+  .view-all {
+    display: flex; justify-content: flex-end; margin-top: 22px;
+    font-size: 13.5px; color: var(--ink-2);
+  }
+  .view-all a {
+    color: var(--ink); font-weight: 500;
+    border-bottom: 1px solid var(--line-2); padding-bottom: 3px;
+    transition: border-color .15s;
+  }
+  .view-all a:hover { border-bottom-color: var(--ink) }
+</style>
+{% endblock %}
+
+{% block body %}
+
+<section id="top" class="hero">
+  <div class="hero-grid">
+    <div>
+      <div class="eyebrow reveal"><span class="dash"></span>IFSC &middot; Competition climbing</div>
+      <h1 class="reveal d2">Ratings, not <em>rankings</em>.</h1>
+      <p class="lead reveal d3">
+        ELO for IFSC competition climbing across Boulder, Lead, Speed,
+        and the combined format. Field-quality-aware. Updated after every round.
+      </p>
+      <div class="ctas reveal d4">
+        <a href="/v2/leaderboard" class="btn btn-primary">
+          View the leaderboard <span class="arrow">&rarr;</span>
+        </a>
+      </div>
+      <div class="hero-meta reveal d4">
+        <span>Athletes <b>{{ stats.total_athletes }}</b></span>
+        <span>Events scored <b>{{ stats.total_events }}</b></span>
+        <span>Backtest log-loss <b>0.61</b></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<main>
+
+  <section id="leaderboard">
+    <div class="section-head">
+      <div class="reveal">
+        <div class="eyebrow"><span class="dash"></span>Leaderboard &middot; preview</div>
+        <h2 class="h2">Top eight, by current <em>&mu;</em>.</h2>
+      </div>
+      <p class="blurb reveal d2">
+        Pairwise Plackett-Luce decomposition over every World Cup round.
+        K-factors tier by event prestige; new athletes converge on a 2&times; schedule.
+      </p>
+    </div>
+
+    <!-- Filter pills -->
+    <div class="filters reveal d3" id="lb-filters">
+      <button class="pill active" data-disc="B">Boulder</button>
+      <button class="pill" data-disc="L">Lead</button>
+      <button class="pill" data-disc="S">Speed</button>
+      <button class="pill" data-disc="BL">Boulder + Lead</button>
+      <div class="toggle">
+        <button class="active" data-gender="M">Men</button>
+        <button data-gender="F">Women</button>
+      </div>
+    </div>
+
+    <!-- Leaderboard table -->
+    <div class="card reveal d3" id="lb-preview-card">
+      <table class="lb" id="lb-preview-table">
+        <thead><tr>
+          <th>#</th>
+          <th>Athlete</th>
+          <th>Specialty</th>
+          <th style="text-align:right">&mu; &plusmn; &sigma;</th>
+          <th style="text-align:right">Events</th>
+        </tr></thead>
+        <tbody id="lb-preview-body">
+          {%- for row in leaderboard.B.men -%}
+          <tr data-disc="B" data-gender="M">
+            <td class="rank{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
+            <td class="athlete">{{ row.name }}<span class="nat">{{ row.nationality }}</span></td>
+            <td class="disc"><span class="dchip">B</span><span class="dchip">L</span></td>
+            <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
+            <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
+          </tr>
+          {%- endfor -%}
+          {%- for row in leaderboard.L.men -%}
+          <tr data-disc="L" data-gender="M" style="display:none">
+            <td class="rank{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
+            <td class="athlete">{{ row.name }}<span class="nat">{{ row.nationality }}</span></td>
+            <td class="disc"><span class="dchip">L</span></td>
+            <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
+            <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
+          </tr>
+          {%- endfor -%}
+          {%- for row in leaderboard.S.men -%}
+          <tr data-disc="S" data-gender="M" style="display:none">
+            <td class="rank{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
+            <td class="athlete">{{ row.name }}<span class="nat">{{ row.nationality }}</span></td>
+            <td class="disc"><span class="dchip">S</span></td>
+            <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
+            <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
+          </tr>
+          {%- endfor -%}
+          {%- for row in leaderboard.BL.men -%}
+          <tr data-disc="BL" data-gender="M" style="display:none">
+            <td class="rank{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
+            <td class="athlete">{{ row.name }}<span class="nat">{{ row.nationality }}</span></td>
+            <td class="disc"><span class="dchip">B+L</span></td>
+            <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
+            <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
+          </tr>
+          {%- endfor -%}
+          {%- for row in leaderboard.B.women -%}
+          <tr data-disc="B" data-gender="F" style="display:none">
+            <td class="rank{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
+            <td class="athlete">{{ row.name }}<span class="nat">{{ row.nationality }}</span></td>
+            <td class="disc"><span class="dchip">B</span></td>
+            <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
+            <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
+          </tr>
+          {%- endfor -%}
+          {%- for row in leaderboard.L.women -%}
+          <tr data-disc="L" data-gender="F" style="display:none">
+            <td class="rank{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
+            <td class="athlete">{{ row.name }}<span class="nat">{{ row.nationality }}</span></td>
+            <td class="disc"><span class="dchip">L</span></td>
+            <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
+            <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
+          </tr>
+          {%- endfor -%}
+          {%- for row in leaderboard.S.women -%}
+          <tr data-disc="S" data-gender="F" style="display:none">
+            <td class="rank{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
+            <td class="athlete">{{ row.name }}<span class="nat">{{ row.nationality }}</span></td>
+            <td class="disc"><span class="dchip">S</span></td>
+            <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
+            <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
+          </tr>
+          {%- endfor -%}
+          {%- for row in leaderboard.BL.women -%}
+          <tr data-disc="BL" data-gender="F" style="display:none">
+            <td class="rank{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
+            <td class="athlete">{{ row.name }}<span class="nat">{{ row.nationality }}</span></td>
+            <td class="disc"><span class="dchip">B+L</span></td>
+            <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
+            <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
+          </tr>
+          {%- endfor -%}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="view-all">
+      <a href="/v2/leaderboard">See the full leaderboard &rarr;</a>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <div class="reveal">
+        <div class="eyebrow"><span class="dash"></span>Application</div>
+        <h2 class="h2">What the app is doing <em>right now</em>.</h2>
+      </div>
+      <p class="blurb reveal d2">
+        Live read-out from the pipeline. The scraper pings every 30 minutes;
+        backfill runs nightly; everything below is real, never hand-edited.
+      </p>
+    </div>
+
+    <div class="stat-list reveal d2">
+      <div class="stat-row">
+        <div class="l">Athletes tracked</div>
+        <div class="v">{{ stats.total_athletes }}</div>
+        <div class="s">Across Boulder, Lead, Speed, and Combined disciplines.</div>
+      </div>
+      <div class="stat-row">
+        <div class="l">Events scored</div>
+        <div class="v">{{ stats.total_events }}</div>
+        <div class="s">World Cup, World Championship, Olympics. 2012 &ndash; present.</div>
+      </div>
+      <div class="stat-row">
+        <div class="l">Backtest log-loss</div>
+        <div class="v">0.61</div>
+        <div class="s">+18pp better than the official ranking on holdout seasons.</div>
+      </div>
+      <div class="stat-row">
+        <div class="l">Rating updates</div>
+        <div class="v">{{ "{:,}".format(stats.total_ratings) }}</div>
+        <div class="s">One row per athlete per round. Fully reproducible from raw results.</div>
+      </div>
+      <div class="stat-row">
+        <div class="l">API endpoints</div>
+        <div class="v">10</div>
+        <div class="s">All read-only. No auth. CORS open. OpenAPI schema at /openapi.json.</div>
+      </div>
+      <div class="stat-row">
+        <div class="l">Monte Carlo</div>
+        <div class="v">10k<small>sims</small></div>
+        <div class="s">N(&mu;, &sigma;&middot;1.2) per athlete per simulation. Cached 1h.</div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var disc = 'B', gender = 'M';
+
+  function update() {
+    // Show/hide rows by data attrs
+    document.querySelectorAll('#lb-preview-body tr').forEach(function(tr) {
+      var show = tr.dataset.disc === disc && tr.dataset.gender === gender;
+      tr.style.display = show ? '' : 'none';
+    });
+    // Update pill states
+    document.querySelectorAll('#lb-filters .pill').forEach(function(btn) {
+      btn.classList.toggle('active', btn.dataset.disc === disc);
+    });
+    // Update gender toggle
+    document.querySelectorAll('#lb-filters .toggle button').forEach(function(btn) {
+      btn.classList.toggle('active', btn.dataset.gender === gender);
+    });
+  }
+
+  document.querySelectorAll('#lb-filters .pill').forEach(function(btn) {
+    btn.addEventListener('click', function() { disc = btn.dataset.disc; update(); });
+  });
+  document.querySelectorAll('#lb-filters .toggle button').forEach(function(btn) {
+    btn.addEventListener('click', function() { gender = btn.dataset.gender; update(); });
+  });
+
+  update();
+})();
+</script>
+{% endblock %}

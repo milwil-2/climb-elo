@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Projections &mdash; Climbing ELO{% endblock %}
+
+{% block head %}
+<style>
+  .page-head{padding:80px 0 32px;border-bottom:1px solid var(--line)}
+  .page-head h1{font-size:clamp(34px,4.4vw,46px);line-height:1.1;letter-spacing:-0.025em;font-weight:600}
+  .page-head h1 em{font-style:italic;font-weight:400}
+  .page-head .crumbs{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:20px;font-weight:500}
+  .page-head .lead{margin-top:22px;max-width:560px;color:var(--ink-2);font-size:15.5px;line-height:1.6}
+
+  .proj-page{padding:32px 0 88px;display:grid;grid-template-columns:repeat(2,1fr);gap:24px}
+  @media (max-width:920px){.proj-page{grid-template-columns:1fr}}
+
+  .event-meta{
+    display:flex;align-items:center;gap:10px;
+    font-size:11px;color:var(--dim);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px;
+  }
+  .event-meta .sep{width:4px;height:4px;border-radius:50%;background:var(--line-2)}
+
+  .method-card{
+    grid-column:1/-1;margin-top:24px;padding:32px;
+    background:var(--paper-2);border:1px solid var(--line);border-radius:0;
+    display:grid;grid-template-columns:1fr 2fr;gap:32px;align-items:start;
+  }
+  @media (max-width:760px){.method-card{grid-template-columns:1fr;gap:18px}}
+  .method-card h3{font-size:30px;line-height:1.05;letter-spacing:-0.015em;font-weight:400}
+  .method-card p{color:var(--ink-2);font-size:14.5px;line-height:1.6}
+  .method-card .formula{
+    background:var(--paper);padding:14px 16px;border-radius:0;border:1px solid var(--line);
+    font-size:12px;color:var(--ink-2);margin-top:10px;line-height:1.7;
+  }
+  .method-card .formula b{color:var(--ink)}
+
+  .proj-tabs{display:flex;gap:0;border:1px solid var(--line);margin:16px 0 8px;width:fit-content}
+  .proj-tabs button{
+    padding:7px 16px;font-size:12px;font-weight:500;color:var(--ink-2);
+    border:none;background:transparent;cursor:pointer;transition:background .15s,color .15s;
+  }
+  .proj-tabs button.active{background:var(--paper-2);color:var(--ink)}
+  .proj-tabs button:not(:last-child){border-right:1px solid var(--line)}
+
+  .proj-card{padding:28px}
+  .proj-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}
+  .proj-title{font-size:18px;font-weight:600;letter-spacing:-0.01em;margin-bottom:4px}
+  .proj-when{font-size:12.5px;color:var(--ink-2)}
+
+  .countdown{display:flex;gap:0;border:1px solid var(--line);margin-bottom:16px}
+  .countdown .cell{flex:1;padding:14px 18px;text-align:center;border-right:1px solid var(--line)}
+  .countdown .cell:last-child{border-right:none}
+  .countdown .cell .v{font-size:28px;font-weight:600;letter-spacing:-0.02em;font-variant-numeric:tabular-nums}
+  .countdown .cell .l{font-size:10.5px;color:var(--dim);letter-spacing:0.12em;text-transform:uppercase;margin-top:2px}
+
+  .proj-row{
+    display:grid;grid-template-columns:28px 1fr 80px 44px;gap:10px;align-items:center;
+    padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px;
+  }
+  .proj-row .rk{font-size:11px;color:var(--dim)}
+  .proj-row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .proj-row .bar{height:4px;background:var(--line);position:relative;overflow:hidden}
+  .proj-row .bar .fill{
+    position:absolute;left:0;top:0;height:100%;background:var(--ink);
+    width:calc(var(--p, 0) * 100%);
+    transition:width .6s cubic-bezier(.2,.7,.2,1);
+  }
+  .proj-row .pct{text-align:right;color:var(--ink);font-weight:600;font-size:12.5px;font-variant-numeric:tabular-nums}
+  .proj-note{font-size:11px;color:var(--dim);margin-top:12px;letter-spacing:0.04em}
+
+  .no-events{grid-column:1/-1;padding:48px;text-align:center;color:var(--dim);border:1px solid var(--line)}
+</style>
+{% endblock %}
+
+{% block body %}
+<main>
+  <section class="page-head">
+    <div class="crumbs reveal"><a href="/v2/">Home</a> / Projections</div>
+    <h1 class="reveal d2">Upcoming events,<br/><em>simulated</em>.</h1>
+    <p class="lead reveal d3">
+      Monte Carlo over the current rating distribution &mdash; 10,000 draws per athlete per simulation,
+      &sigma;-weighted noise. Numbers update after every backfill.
+    </p>
+  </section>
+
+  <div class="proj-page">
+    {%- if proj_cards -%}
+    {%- for card in proj_cards -%}
+    <div class="card proj-card reveal" data-card="{{ loop.index }}">
+      <div class="event-meta">
+        <span>{{ card.discipline }}</span>
+        <span class="sep"></span>
+        <span>Men</span>
+        <span class="sep"></span>
+        <span>World Cup</span>
+      </div>
+      <div class="proj-head">
+        <div>
+          <div class="proj-title">{{ card.event_name }}</div>
+          <div class="proj-when">{{ card.date }}</div>
+        </div>
+        <span class="badge-live" style="background:var(--paper-2);color:var(--ink-2)">upcoming</span>
+      </div>
+
+      <div class="countdown">
+        <div class="cell"><div class="v">{{ card.days_until }}</div><div class="l">Days</div></div>
+        <div class="cell"><div class="v">{{ card.athletes_m }}</div><div class="l">Athletes</div></div>
+        <div class="cell"><div class="v">10k</div><div class="l">Simulations</div></div>
+      </div>
+
+      <div class="proj-tabs" data-card="{{ loop.index }}">
+        <button class="active" data-tab="podium">Podium</button>
+        <button data-tab="win">Win</button>
+        <button data-tab="top8">Top-8</button>
+      </div>
+
+      {%- for row in card.proj_rows -%}
+      <div class="proj-row" style="--p:{{ '%.4f' % (row.bar_pct / 100) }}">
+        <span class="rk">{{ '%02d' % row.rank }}</span>
+        <span class="nm">{{ row.name }}</span>
+        <span class="bar"><span class="fill"></span></span>
+        <span class="pct" data-win="{{ row.pct_win }}" data-podium="{{ row.pct_podium }}" data-top8="{{ row.pct_top8 }}">{{ row.pct_podium }}%</span>
+      </div>
+      {%- endfor -%}
+
+      {%- if not card.proj_rows -%}
+      <div style="padding:24px;text-align:center;color:var(--dim);font-size:13px">No projection data available.</div>
+      {%- endif -%}
+
+      <div class="proj-note"><span style="color:var(--dim)">i</span> Monte Carlo &middot; 10,000 draws &middot; &sigma;-weighted noise</div>
+    </div>
+    {%- endfor -%}
+    {%- else -%}
+    <div class="no-events">No upcoming events found. Data updates after each scrape run.</div>
+    {%- endif -%}
+
+    <!-- How it works -->
+    <div class="method-card reveal">
+      <h3>How it works.</h3>
+      <div>
+        <p>For each simulation we draw a performance score per athlete from <span style="color:var(--ink)">N(&mu;, &sigma;&middot;k)</span>, rank them, and tally the placements. Repeat 10,000 times; report the fraction.</p>
+        <div class="formula">
+          score<sub>i</sub> &nbsp;&larr;&nbsp; <b>N</b>(&mu;<sub>i</sub>, &sigma;<sub>i</sub> &middot; 1.2) + &epsilon;<br/>
+          rank &nbsp;&larr;&nbsp; argsort(&minus;score)<br/>
+          P(win)<sub>i</sub> &nbsp;&larr;&nbsp; #{rank<sub>i</sub> = 1} / N<sub>sims</sub>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('.proj-tabs').forEach(function(tabs) {
+  tabs.querySelectorAll('button').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var tab = btn.dataset.tab;
+      tabs.querySelectorAll('button').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      // Update pct labels in the associated card
+      var card = tabs.closest('.proj-card');
+      if (!card) return;
+      card.querySelectorAll('.pct').forEach(function(pct) {
+        pct.textContent = pct.dataset[tab] + '%';
+      });
+    });
+  });
+});
+</script>
+{% endblock %}
