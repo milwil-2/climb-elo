@@ -1,7 +1,13 @@
 """IFSC Results API client.
 
-Scrapes competition results from the official IFSC/World Climbing results API
-at ifsc.results.info. No authentication needed — just a referer header.
+Scrapes competition results from the official World Climbing (formerly IFSC) results
+API at ifsc.results.info. No authentication needed — just a referer header.
+
+Data source note (Issue #30, May 2025):
+  IFSC rebranded to "World Climbing" in 2025. The new worldclimbing.com is a
+  Next.js marketing site with no public API. The legacy ifsc.results.info API
+  remains the canonical data source and is fully populated with current-season
+  data. If the legacy API is ever deprecated, see Issue #30 for migration notes.
 
 API structure:
   GET /api/v1/                                    → seasons list
@@ -57,6 +63,21 @@ class ScrapeReport:
     athletes_created: int = 0
     errors: list[str] = field(default_factory=list)
 
+
+def health_check() -> bool:
+    """Return True if the ifsc.results.info API is reachable and responding.
+
+    Hits the top-level /api/v1/ endpoint and checks for a non-empty seasons list.
+    Call this periodically to detect if the legacy API has been deprecated.
+    If it starts returning False, see Issue #30 for migration options.
+    """
+    try:
+        with httpx.Client(timeout=10) as client:
+            data = _api_get(client, "/api/v1/")
+            return bool(data and data.get("seasons"))
+    except Exception as exc:
+        log.error("health_check failed: %s", exc)
+        return False
 
 
 
