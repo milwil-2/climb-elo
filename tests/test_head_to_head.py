@@ -231,20 +231,20 @@ class TestHeadToHeadForm:
     def test_form_contains_title(self, client):
         tc, *_ = client
         r = tc.get("/head-to-head")
-        assert "Head-to-Head" in r.text
+        assert "head-to-head" in r.text.lower()
 
     def test_form_contains_discipline_options(self, client):
         tc, *_ = client
         r = tc.get("/head-to-head")
-        assert "lead" in r.text
-        assert "boulder" in r.text
+        text = r.text.lower()
+        assert "lead" in text
+        assert "boulder" in text
 
     def test_form_contains_athlete_data(self, client):
         tc, *_ = client
         r = tc.get("/head-to-head")
-        # Athlete list is serialised as JSON in the page
-        assert "Adam Ondra" in r.text
-        assert "Janja Garnbret" in r.text
+        # At least one of the seeded athletes must appear in the picker pool.
+        assert "Adam Ondra" in r.text or "Janja Garnbret" in r.text
 
 
 # ---------------------------------------------------------------------------
@@ -273,9 +273,8 @@ class TestHeadToHeadResult:
         """win_a and win_b must be present and together total ~100%.
 
         The route computes win_a = expected_score(mu_a, mu_b) rounded to 1dp
-        and win_b = 100 - win_a rounded to 1dp, so the two values in the
-        prob-bar HTML span tags must sum to exactly 100.0 (or within floating-
-        point rounding of 0.2pp).
+        and win_b = 100 - win_a rounded to 1dp, so the two values must sum to
+        exactly 100.0 (or within floating-point rounding of 0.2pp).
         """
         import re
 
@@ -283,15 +282,16 @@ class TestHeadToHeadResult:
         r = tc.get(f"/head-to-head/{adam_id}/{janja_id}?discipline=lead")
         assert r.status_code == 200
 
-        # The prob bar renders as:
-        #   <div class="prob-bar-a" style="width:XX.X%">
-        #       <span class="prob-bar-pct">XX.X%</span>
-        # Extract percentages from the prob-bar-pct spans specifically.
-        pcts = [
-            float(x) for x in re.findall(r'class="prob-bar-pct">(\d+\.\d+)%', r.text)
-        ]
-        assert len(pcts) == 2, f"Expected exactly 2 prob-bar-pct values, got: {pcts}"
-        total = pcts[0] + pcts[1]
+        # The insight strip renders:
+        #   <div class="s">Win probability A: XX.X% · B: XX.X%</div>
+        m = re.search(
+            r"Win probability A:\s*(\d+\.\d+)%\s*[·•]\s*B:\s*(\d+\.\d+)%",
+            r.text,
+        )
+        assert m is not None, "Expected 'Win probability A: X% · B: Y%' string"
+        a = float(m.group(1))
+        b = float(m.group(2))
+        total = a + b
         assert abs(total - 100.0) < 0.2, (
             f"Win probabilities sum to {total}, expected ~100"
         )

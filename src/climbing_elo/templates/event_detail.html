@@ -63,7 +63,7 @@
 {% block body %}
 <main>
   <section class="page-head">
-    <div class="crumbs reveal"><a href="/v2/">Home</a> / <a href="/v2/events">Events</a> / {{ event.name }}</div>
+    <div class="crumbs reveal"><a href="/">Home</a> / <a href="/events">Events</a> / {{ event.name }}</div>
     <h1 class="reveal d2">{{ event.name }} <em>({{ event.season }})</em></h1>
     <div class="ev-meta reveal d3">
       <span>{{ event.tier }}</span>
@@ -73,7 +73,7 @@
       <span>{{ event.date }}</span>
     </div>
     <div class="ev-actions reveal d3">
-      <a href="/v2/live/{{ event.id }}">Live view &rarr;</a>
+      <a href="/live/{{ event.id }}">Live view &rarr;</a>
     </div>
   </section>
 
@@ -107,7 +107,7 @@
             <tr>
               <td class="rk{% if r.rank and r.rank <= 3 %} top{% endif %}">{% if r.rank %}{{ '%02d' % r.rank }}{% else %}&mdash;{% endif %}</td>
               <td class="ath">
-                <a href="/v2/athletes/{{ r.athlete_id }}">{{ r.name }}</a>
+                <a href="/athletes/{{ r.athlete_id }}">{{ r.name }}</a>
                 <span class="nat">{{ r.nationality }}</span>
               </td>
               <td class="score">{{ r.raw_score }}</td>
@@ -125,7 +125,7 @@
               </td>
               <td class="brk">
                 {%- if r.delta is not none -%}
-                <a href="/v2/breakdown/{{ r.athlete_id }}/{{ event.id }}">Why</a>
+                <a href="/breakdown/{{ r.athlete_id }}/{{ event.id }}">Why</a>
                 {%- endif -%}
               </td>
             </tr>

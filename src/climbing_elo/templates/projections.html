@@ -1,462 +1,169 @@
 {% extends "base.html" %}
-{% block title %}Projections — {{ event.name }} — Climbing ELO{% endblock %}
+{% block title %}Projections &mdash; Climbing ELO{% endblock %}
+
 {% block head %}
 <style>
-    .proj-header {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        flex-wrap: wrap;
-        gap: 1rem;
-        margin-bottom: 1.5rem;
-    }
-    .proj-meta {
-        color: #808890;
-        font-size: 0.9rem;
-        margin-top: 0.3rem;
-    }
-    .winner-card {
-        background: linear-gradient(135deg, #1a1d28 0%, #1e2138 100%);
-        border: 1px solid #3a3f5c;
-        border-radius: 8px;
-        padding: 1.25rem 1.5rem;
-        margin-bottom: 1.5rem;
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-    }
-    .winner-trophy {
-        font-size: 2rem;
-        line-height: 1;
-    }
-    .winner-label {
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: #808890;
-        margin-bottom: 0.2rem;
-    }
-    .winner-name {
-        font-size: 1.3rem;
-        font-weight: 700;
-        color: #fff;
-    }
-    .gender-tabs {
-        display: flex;
-        gap: 0;
-        border-bottom: 2px solid #2a2d3a;
-        margin-bottom: 1.25rem;
-    }
-    .gender-tab {
-        padding: 0.5rem 1.1rem;
-        color: #808890;
-        font-size: 0.88rem;
-        font-weight: 600;
-        text-decoration: none;
-        border-bottom: 2px solid transparent;
-        margin-bottom: -2px;
-        transition: color 0.15s, border-color 0.15s;
-    }
-    .gender-tab:hover { color: #c0c0c0; }
-    .gender-tab.active {
-        color: #7c8aff;
-        border-bottom-color: #7c8aff;
-    }
-    .prob-bar-wrap {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-    .prob-bar {
-        height: 6px;
-        border-radius: 3px;
-        background: #7c8aff;
-        min-width: 2px;
-        flex-shrink: 0;
-    }
-    .prob-text {
-        font-size: 0.85rem;
-        color: #c0c8ff;
-        white-space: nowrap;
-    }
-    .rank-badge {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 1.8rem;
-        height: 1.8rem;
-        border-radius: 50%;
-        font-size: 0.8rem;
-        font-weight: 700;
-    }
-    .rank-1 { background: #b8860b; color: #fff; }
-    .rank-2 { background: #708090; color: #fff; }
-    .rank-3 { background: #7c4f2a; color: #fff; }
-    .rank-other { background: #1e2130; color: #808890; }
-    .table-scroll {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-    }
-    .back-link {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.35rem;
-        color: #7c8aff;
-        text-decoration: none;
-        font-size: 0.88rem;
-        margin-bottom: 1rem;
-    }
-    .back-link:hover { text-decoration: underline; }
-    .error-card {
-        background: #1e1215;
-        border: 1px solid #5a2535;
-        border-radius: 8px;
-        padding: 1.25rem 1.5rem;
-        color: #f87171;
-        margin: 1rem 0;
-    }
-    .roster-banner {
-        background: #1a1d28;
-        border: 1px solid #3a3f5c;
-        border-left: 4px solid #fbbf24;
-        border-radius: 6px;
-        padding: 0.85rem 1.1rem;
-        margin: 0 0 1.25rem;
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        font-size: 0.88rem;
-        color: #d8dceb;
-    }
-    .roster-banner-tag {
-        display: inline-block;
-        padding: 0.18rem 0.55rem;
-        border-radius: 4px;
-        font-size: 0.7rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.07em;
-        background: #3a2e10;
-        color: #fbbf24;
-        white-space: nowrap;
-        flex-shrink: 0;
-    }
-    .note-text {
-        font-size: 0.78rem;
-        color: #505560;
-        margin-top: 0.75rem;
-    }
-    /* -----------------------------------------------------------------------
-       Round-by-round progression styles (tabbed)
-    ----------------------------------------------------------------------- */
-    .round-tabs {
-        display: flex;
-        gap: 0;
-        border-bottom: 2px solid #2a2d3a;
-        margin-bottom: 0;
-        flex-wrap: wrap;
-    }
-    .round-tab {
-        padding: 0.6rem 1.15rem;
-        color: #808890;
-        font-size: 0.9rem;
-        font-weight: 600;
-        background: none;
-        border: none;
-        border-bottom: 2px solid transparent;
-        margin-bottom: -2px;
-        cursor: pointer;
-        text-transform: capitalize;
-        transition: color 0.15s, border-color 0.15s;
-        font-family: inherit;
-    }
-    .round-tab:hover { color: #c0c0c0; }
-    .round-tab.active {
-        color: #7c8aff;
-        border-bottom-color: #7c8aff;
-    }
-    .round-tab-meta {
-        color: #505870;
-        font-size: 0.75rem;
-        font-weight: 400;
-        margin-left: 0.4rem;
-    }
-    .round-panels {
-        border: 1px solid #2a2d3a;
-        border-top: none;
-        border-radius: 0 0 8px 8px;
-        overflow: hidden;
-        margin-bottom: 1.5rem;
-    }
-    .round-panel { display: none; }
-    .round-panel.active { display: block; }
-    /* probability colour coding */
-    .prob-green  { color: #4ade80; font-weight: 600; }
-    .prob-yellow { color: #fbbf24; font-weight: 600; }
-    .prob-red    { color: #f87171; }
-    /* small inline pill for round labels in the progression table header */
-    .round-pill {
-        display: inline-block;
-        padding: 0.1rem 0.5rem;
-        border-radius: 4px;
-        font-size: 0.72rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        background: #252840;
-        color: #9098d0;
-        white-space: nowrap;
-    }
-    @media (max-width: 640px) {
-        .round-tab { font-size: 0.82rem; padding: 0.5rem 0.85rem; }
-        th, td { padding: 0.5rem 0.6rem; font-size: 0.82rem; }
-    }
+  .page-head{padding:80px 0 32px;border-bottom:1px solid var(--line)}
+  .page-head h1{font-size:clamp(34px,4.4vw,46px);line-height:1.1;letter-spacing:-0.025em;font-weight:600}
+  .page-head h1 em{font-style:italic;font-weight:400}
+  .page-head .crumbs{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:20px;font-weight:500}
+  .page-head .lead{margin-top:22px;max-width:560px;color:var(--ink-2);font-size:15.5px;line-height:1.6}
+
+  .proj-page{padding:32px 0 88px;display:grid;grid-template-columns:repeat(2,1fr);gap:24px}
+  @media (max-width:920px){.proj-page{grid-template-columns:1fr}}
+
+  .event-meta{
+    display:flex;align-items:center;gap:10px;
+    font-size:11px;color:var(--dim);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px;
+  }
+  .event-meta .sep{width:4px;height:4px;border-radius:50%;background:var(--line-2)}
+
+  .method-card{
+    grid-column:1/-1;margin-top:24px;padding:32px;
+    background:var(--paper-2);border:1px solid var(--line);border-radius:0;
+    display:grid;grid-template-columns:1fr 2fr;gap:32px;align-items:start;
+  }
+  @media (max-width:760px){.method-card{grid-template-columns:1fr;gap:18px}}
+  .method-card h3{font-size:30px;line-height:1.05;letter-spacing:-0.015em;font-weight:400}
+  .method-card p{color:var(--ink-2);font-size:14.5px;line-height:1.6}
+  .method-card .formula{
+    background:var(--paper);padding:14px 16px;border-radius:0;border:1px solid var(--line);
+    font-size:12px;color:var(--ink-2);margin-top:10px;line-height:1.7;
+  }
+  .method-card .formula b{color:var(--ink)}
+
+  .proj-tabs{display:flex;gap:0;border:1px solid var(--line);margin:16px 0 8px;width:fit-content}
+  .proj-tabs button{
+    padding:7px 16px;font-size:12px;font-weight:500;color:var(--ink-2);
+    border:none;background:transparent;cursor:pointer;transition:background .15s,color .15s;
+  }
+  .proj-tabs button.active{background:var(--paper-2);color:var(--ink)}
+  .proj-tabs button:not(:last-child){border-right:1px solid var(--line)}
+
+  .proj-card{padding:28px}
+  .proj-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}
+  .proj-title{font-size:18px;font-weight:600;letter-spacing:-0.01em;margin-bottom:4px}
+  .proj-when{font-size:12.5px;color:var(--ink-2)}
+
+  .countdown{display:flex;gap:0;border:1px solid var(--line);margin-bottom:16px}
+  .countdown .cell{flex:1;padding:14px 18px;text-align:center;border-right:1px solid var(--line)}
+  .countdown .cell:last-child{border-right:none}
+  .countdown .cell .v{font-size:28px;font-weight:600;letter-spacing:-0.02em;font-variant-numeric:tabular-nums}
+  .countdown .cell .l{font-size:10.5px;color:var(--dim);letter-spacing:0.12em;text-transform:uppercase;margin-top:2px}
+
+  .proj-row{
+    display:grid;grid-template-columns:28px 1fr 80px 44px;gap:10px;align-items:center;
+    padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px;
+  }
+  .proj-row .rk{font-size:11px;color:var(--dim)}
+  .proj-row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .proj-row .bar{height:4px;background:var(--line);position:relative;overflow:hidden}
+  .proj-row .bar .fill{
+    position:absolute;left:0;top:0;height:100%;background:var(--ink);
+    width:calc(var(--p, 0) * 100%);
+    transition:width .6s cubic-bezier(.2,.7,.2,1);
+  }
+  .proj-row .pct{text-align:right;color:var(--ink);font-weight:600;font-size:12.5px;font-variant-numeric:tabular-nums}
+  .proj-note{font-size:11px;color:var(--dim);margin-top:12px;letter-spacing:0.04em}
+
+  .no-events{grid-column:1/-1;padding:48px;text-align:center;color:var(--dim);border:1px solid var(--line)}
 </style>
 {% endblock %}
 
-{% block content %}
-<a href="/events/{{ event.id }}" class="back-link">&larr; Back to event</a>
+{% block body %}
+<main>
+  <section class="page-head">
+    <div class="crumbs reveal"><a href="/">Home</a> / Projections</div>
+    <h1 class="reveal d2">Upcoming events,<br/><em>simulated</em>.</h1>
+    <p class="lead reveal d3">
+      Monte Carlo over the current rating distribution &mdash; 10,000 draws per athlete per simulation,
+      &sigma;-weighted noise. Numbers update after every backfill.
+    </p>
+  </section>
 
-<div class="proj-header">
-    <div>
-        <h1>{{ event.name }} ({{ event.season }})</h1>
-        <div class="proj-meta">{{ event.tier }} &middot; {{ discipline }} &middot; Projected outcomes</div>
+  <div class="proj-page">
+    {%- if proj_cards -%}
+    {%- for card in proj_cards -%}
+    <div class="card proj-card reveal" data-card="{{ loop.index }}">
+      <div class="event-meta">
+        <span>{{ card.discipline }}</span>
+        <span class="sep"></span>
+        <span>Men</span>
+        <span class="sep"></span>
+        <span>World Cup</span>
+      </div>
+      <div class="proj-head">
+        <div>
+          <div class="proj-title">{{ card.event_name }}</div>
+          <div class="proj-when">{{ card.date }}</div>
+        </div>
+        <span class="badge-live" style="background:var(--paper-2);color:var(--ink-2)">upcoming</span>
+      </div>
+
+      <div class="countdown">
+        <div class="cell"><div class="v">{{ card.days_until }}</div><div class="l">Days</div></div>
+        <div class="cell"><div class="v">{{ card.athletes_m }}</div><div class="l">Athletes</div></div>
+        <div class="cell"><div class="v">10k</div><div class="l">Simulations</div></div>
+      </div>
+
+      <div class="proj-tabs" data-card="{{ loop.index }}">
+        <button class="active" data-tab="podium">Podium</button>
+        <button data-tab="win">Win</button>
+        <button data-tab="top8">Top-8</button>
+      </div>
+
+      {%- for row in card.proj_rows -%}
+      <div class="proj-row" style="--p:{{ '%.4f' % (row.bar_pct / 100) }}">
+        <span class="rk">{{ '%02d' % row.rank }}</span>
+        <span class="nm">{{ row.name }}</span>
+        <span class="bar"><span class="fill"></span></span>
+        <span class="pct" data-win="{{ row.pct_win }}" data-podium="{{ row.pct_podium }}" data-top8="{{ row.pct_top8 }}">{{ row.pct_podium }}%</span>
+      </div>
+      {%- endfor -%}
+
+      {%- if not card.proj_rows -%}
+      <div style="padding:24px;text-align:center;color:var(--dim);font-size:13px">No projection data available.</div>
+      {%- endif -%}
+
+      <div class="proj-note"><span style="color:var(--dim)">i</span> Monte Carlo &middot; 10,000 draws &middot; &sigma;-weighted noise</div>
     </div>
-    <a href="/projections/new" style="color:#7c8aff;font-size:0.85rem;text-decoration:none;padding-top:0.3rem;">Custom projection &rarr;</a>
-</div>
+    {%- endfor -%}
+    {%- else -%}
+    <div class="no-events">No upcoming events found. Data updates after each scrape run.</div>
+    {%- endif -%}
 
-{% if error %}
-<div class="error-card">{{ error }}</div>
-{% else %}
-
-{% if from_likely_roster %}
-<div class="roster-banner">
-    <span class="roster-banner-tag">Predicted roster</span>
-    <span>Athlete registration not available — projecting results based on this season's likely competitors.</span>
-</div>
-{% endif %}
-
-{% if winner %}
-<div class="winner-card">
-    <div class="winner-trophy">&#127942;</div>
-    <div>
-        <div class="winner-label">Predicted winner</div>
-        <div class="winner-name">{{ winner }}</div>
+    <!-- How it works -->
+    <div class="method-card reveal">
+      <h3>How it works.</h3>
+      <div>
+        <p>For each simulation we draw a performance score per athlete from <span style="color:var(--ink)">N(&mu;, &sigma;&middot;k)</span>, rank them, and tally the placements. Repeat 10,000 times; report the fraction.</p>
+        <div class="formula">
+          score<sub>i</sub> &nbsp;&larr;&nbsp; <b>N</b>(&mu;<sub>i</sub>, &sigma;<sub>i</sub> &middot; 1.2) + &epsilon;<br/>
+          rank &nbsp;&larr;&nbsp; argsort(&minus;score)<br/>
+          P(win)<sub>i</sub> &nbsp;&larr;&nbsp; #{rank<sub>i</sub> = 1} / N<sub>sims</sub>
+        </div>
+      </div>
     </div>
-</div>
-{% endif %}
+  </div>
+</main>
+{% endblock %}
 
-{% if available_genders and available_genders|length > 1 %}
-<div class="gender-tabs">
-    {% for g in available_genders %}
-    <a class="gender-tab {% if g == gender %}active{% endif %}"
-       href="/projections/{{ event.id }}?gender={{ g }}">
-        {{ "Men" if g == "M" else "Women" }}
-    </a>
-    {% endfor %}
-</div>
-{% endif %}
-
-{% if use_progression %}
-{# -----------------------------------------------------------------------
-   Multi-round progression view: a tab per round (qualification / semi /
-   final) plus a "Full Progression" table showing all rounds side-by-side.
------------------------------------------------------------------------ #}
-
-<div class="round-tabs" role="tablist" aria-label="Round results">
-{% for rc in round_configs %}
-<button type="button"
-        class="round-tab {% if loop.last %}active{% endif %}"
-        role="tab"
-        data-round-target="round-panel-{{ rc.round_type }}"
-        aria-selected="{% if loop.last %}true{% else %}false{% endif %}">
-    {{ rc.round_type | title }}
-    {% if loop.last %}
-    <span class="round-tab-meta">podium</span>
-    {% else %}
-    <span class="round-tab-meta">advance</span>
-    {% endif %}
-</button>
-{% endfor %}
-</div>
-
-<div class="round-panels">
-{% for rc in round_configs %}
-<div class="round-panel {% if loop.last %}active{% endif %}"
-     id="round-panel-{{ rc.round_type }}"
-     role="tabpanel">
-    <div class="table-scroll">
-    <table>
-        <thead>
-            <tr>
-                <th style="width:3rem">#</th>
-                <th>Athlete</th>
-                <th>Rating</th>
-                {% if not loop.last %}
-                <th>Advance %</th>
-                {% else %}
-                <th>Podium %</th>
-                <th>Win %</th>
-                {% endif %}
-            </tr>
-        </thead>
-        <tbody>
-        {% for row in rows %}
-            {% set rp = namespace(found=none) %}
-            {% for rprob in row.round_probs %}
-                {% if rprob.round_type == rc.round_type %}
-                    {% set rp.found = rprob %}
-                {% endif %}
-            {% endfor %}
-            <tr>
-                <td>
-                    <span class="rank-badge {% if row.proj_rank == 1 %}rank-1{% elif row.proj_rank == 2 %}rank-2{% elif row.proj_rank == 3 %}rank-3{% else %}rank-other{% endif %}">
-                        {{ row.proj_rank }}
-                    </span>
-                </td>
-                <td><a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a></td>
-                <td><strong>{{ row.mu }}</strong></td>
-                {% if not loop.last %}
-                    {% if rp.found %}
-                    <td class="{{ rp.found.css }}">{{ rp.found.pct }}</td>
-                    {% else %}
-                    <td style="color:#505560">—</td>
-                    {% endif %}
-                {% else %}
-                <td class="{{ row.final_podium_css }}">{{ row.final_podium }}</td>
-                <td style="color:#a0a8c0">{{ row.final_win }}</td>
-                {% endif %}
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-    </div>
-</div>
-{% endfor %}
-</div>
-
+{% block scripts %}
 <script>
-(function() {
-    var tabs = document.querySelectorAll('.round-tab');
-    var panels = document.querySelectorAll('.round-panel');
-    tabs.forEach(function(tab) {
-        tab.addEventListener('click', function() {
-            var target = tab.getAttribute('data-round-target');
-            tabs.forEach(function(t) {
-                t.classList.remove('active');
-                t.setAttribute('aria-selected', 'false');
-            });
-            panels.forEach(function(p) { p.classList.remove('active'); });
-            tab.classList.add('active');
-            tab.setAttribute('aria-selected', 'true');
-            var panel = document.getElementById(target);
-            if (panel) panel.classList.add('active');
-        });
+document.querySelectorAll('.proj-tabs').forEach(function(tabs) {
+  tabs.querySelectorAll('button').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var tab = btn.dataset.tab;
+      tabs.querySelectorAll('button').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      // Update pct labels in the associated card
+      var card = tabs.closest('.proj-card');
+      if (!card) return;
+      card.querySelectorAll('.pct').forEach(function(pct) {
+        pct.textContent = pct.dataset[tab] + '%';
+      });
     });
-})();
+  });
+});
 </script>
-
-{# Full side-by-side progression table #}
-<h2 style="margin-top:1.5rem">Full Progression</h2>
-<div class="table-scroll">
-<table>
-    <thead>
-        <tr>
-            <th style="width:3rem">#</th>
-            <th>Athlete</th>
-            <th>Rating</th>
-            {% for rc in round_configs %}
-            <th><span class="round-pill">{{ rc.round_type | title }}</span></th>
-            {% endfor %}
-            <th>Final Podium %</th>
-            <th>Win %</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for row in rows %}
-        <tr>
-            <td>
-                <span class="rank-badge {% if row.proj_rank == 1 %}rank-1{% elif row.proj_rank == 2 %}rank-2{% elif row.proj_rank == 3 %}rank-3{% else %}rank-other{% endif %}">
-                    {{ row.proj_rank }}
-                </span>
-            </td>
-            <td><a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a></td>
-            <td><strong>{{ row.mu }}</strong></td>
-            {% for rp in row.round_probs %}
-            <td class="{{ rp.css }}">{{ rp.pct }}</td>
-            {% endfor %}
-            <td class="{{ row.final_podium_css }}">{{ row.final_podium }}</td>
-            <td style="color:#a0a8c0">{{ row.final_win }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-</div>
-
-<p class="note-text">
-    Probabilities estimated via 10,000 Monte Carlo simulations. Each trial draws
-    N(&mu;, &sigma;) performance scores, ranks athletes, advances the top-K to the
-    next round, and repeats. Colour: <span class="prob-green">green &ge; 70%</span>,
-    <span class="prob-yellow">yellow 30&ndash;70%</span>,
-    <span class="prob-red">red &lt; 30%</span>.
-    Ratings shown are current (post-event) and may differ from pre-event values.
-</p>
-
-{% else %}
-{# -----------------------------------------------------------------------
-   Single-round (fallback) view — original table layout
------------------------------------------------------------------------ #}
-<div class="table-scroll">
-<table>
-    <thead>
-        <tr>
-            <th style="width:3rem">#</th>
-            <th>Athlete</th>
-            <th>Rating</th>
-            <th>&sigma;</th>
-            <th>Win %</th>
-            <th>Podium %</th>
-            <th>Top-8 %</th>
-            <th>Exp. Rank</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for row in rows %}
-        <tr>
-            <td>
-                <span class="rank-badge {% if row.proj_rank == 1 %}rank-1{% elif row.proj_rank == 2 %}rank-2{% elif row.proj_rank == 3 %}rank-3{% else %}rank-other{% endif %}">
-                    {{ row.proj_rank }}
-                </span>
-            </td>
-            <td><a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a></td>
-            <td><strong>{{ row.mu }}</strong></td>
-            <td style="color:#808890">{{ row.sigma }}</td>
-            <td>
-                <div class="prob-bar-wrap">
-                    <div class="prob-bar" style="width:{{ [row.win_raw * 200, 100]|min }}px"></div>
-                    <span class="prob-text">{{ row.win }}</span>
-                </div>
-            </td>
-            <td>
-                <div class="prob-bar-wrap">
-                    <div class="prob-bar" style="width:{{ [row.podium_raw * 100, 100]|min }}px;opacity:0.65"></div>
-                    <span class="prob-text">{{ row.podium }}</span>
-                </div>
-            </td>
-            <td style="color:#a0a8c0">{{ row.top_8 }}</td>
-            <td style="color:#808890">{{ "%.1f"|format(row.expected_rank) }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-</div>
-
-<p class="note-text">
-    Probabilities estimated via 10,000 Monte Carlo simulations drawing performance
-    from N(&mu;, &sigma;) for each athlete. Athletes marked DNS are excluded.
-    Ratings shown are current (post-event) and may differ from pre-event values.
-</p>
-{% endif %}
-
-{% endif %}
 {% endblock %}

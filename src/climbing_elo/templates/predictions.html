@@ -1,406 +1,238 @@
 {% extends "base.html" %}
-{% block title %}Predictions — Climbing ELO{% endblock %}
+{% block title %}Predictions &mdash; Climbing ELO{% endblock %}
 
 {% block head %}
 <style>
-    /* Predictions-specific overrides */
-    .disc-section {
-        margin-bottom: 3rem;
-    }
-    .disc-header {
-        display: flex;
-        align-items: baseline;
-        gap: 1rem;
-        margin-bottom: 0.5rem;
-    }
-    .disc-title {
-        font-size: 1.3rem;
-        font-weight: 700;
-        color: #fff;
-    }
-    .disc-count {
-        font-size: 0.8rem;
-        color: #606880;
-    }
-    .events-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-        gap: 1.25rem;
-        margin-top: 1rem;
-    }
-    .event-card {
-        background: #1a1d28;
-        border: 1px solid #2a2d3a;
-        border-radius: 10px;
-        padding: 1.25rem 1.5rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.6rem;
-    }
-    .event-card-header {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 0.5rem;
-    }
-    .event-name {
-        font-size: 0.95rem;
-        font-weight: 600;
-        color: #e0e0e0;
-        line-height: 1.3;
-    }
-    .event-meta {
-        font-size: 0.78rem;
-        color: #606880;
-        white-space: nowrap;
-    }
-    .tier-badge {
-        display: inline-block;
-        padding: 0.1rem 0.45rem;
-        border-radius: 3px;
-        font-size: 0.7rem;
-        font-weight: 600;
-        background: #252840;
-        color: #7c8aff;
-        white-space: nowrap;
-        margin-top: 0.2rem;
-    }
-    .predictions-block {
-        margin-top: 0.5rem;
-    }
-    .gender-label {
-        font-size: 0.75rem;
-        font-weight: 700;
-        color: #808890;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        margin-bottom: 0.35rem;
-        margin-top: 0.6rem;
-    }
-    .podium-row {
-        display: flex;
-        align-items: center;
-        gap: 0.65rem;
-        padding: 0.3rem 0;
-        border-bottom: 1px solid #1e2130;
-    }
-    .podium-row:last-child {
-        border-bottom: none;
-    }
-    .podium-rank {
-        font-size: 1rem;
-        font-weight: 800;
-        width: 1.4rem;
-        flex-shrink: 0;
-        text-align: center;
-    }
-    .podium-rank.rank-1 { color: #ffd700; }
-    .podium-rank.rank-2 { color: #c0c0c0; }
-    .podium-rank.rank-3 { color: #cd7f32; }
-    .podium-name {
-        flex: 1;
-        font-size: 0.85rem;
-        color: #d0d0e0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-    .podium-prob {
-        font-size: 0.78rem;
-        font-weight: 600;
-        color: #7c8aff;
-        white-space: nowrap;
-    }
-    .podium-label {
-        font-size: 0.7rem;
-        color: #505870;
-        white-space: nowrap;
-    }
-    .no-athletes-msg {
-        font-size: 0.82rem;
-        color: #606880;
-        margin-top: 0.4rem;
-    }
-    .no-athletes-msg a {
-        color: #7c8aff;
-        text-decoration: none;
-    }
-    .no-athletes-msg a:hover {
-        text-decoration: underline;
-    }
-    .empty-state {
-        text-align: center;
-        padding: 4rem 2rem;
-        color: #505870;
-    }
-    .empty-state h2 {
-        font-size: 1.1rem;
-        color: #7c8aff;
-        margin-bottom: 0.75rem;
-    }
-    .empty-state p {
-        font-size: 0.9rem;
-        margin-bottom: 1rem;
-    }
-    .btn-primary {
-        display: inline-block;
-        padding: 0.55rem 1.2rem;
-        background: #7c8aff;
-        color: #0f1117;
-        border-radius: 6px;
-        font-weight: 700;
-        font-size: 0.85rem;
-        text-decoration: none;
-    }
-    .btn-primary:hover {
-        background: #9aa8ff;
-    }
-    .page-header {
-        display: flex;
-        align-items: baseline;
-        gap: 1rem;
-        margin-bottom: 2rem;
-    }
-    .page-header h1 {
-        margin: 0;
-    }
-    .page-subtitle {
-        font-size: 0.85rem;
-        color: #606880;
-    }
-    .disc-empty {
-        color: #505870;
-        font-size: 0.85rem;
-        padding: 0.75rem 0;
-    }
-    .projections-link {
-        font-size: 0.78rem;
-        margin-top: 0.75rem;
-        padding-top: 0.6rem;
-        border-top: 1px solid #2a2d3a;
-    }
-    .projections-link a {
-        color: #7c8aff;
-        text-decoration: none;
-    }
-    .projections-link a:hover {
-        text-decoration: underline;
-    }
-    .athletes-count {
-        font-size: 0.72rem;
-        color: #505870;
-        margin-top: 0.2rem;
-    }
-    .roster-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.45rem;
-        padding: 0.3rem 0.65rem 0.3rem 0.5rem;
-        border-radius: 4px;
-        background: #2a2200;
-        border: 1px solid #5a4a10;
-        font-size: 0.72rem;
-        color: #fbbf24;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-        margin-top: 0.5rem;
-        width: fit-content;
-    }
-    .roster-badge-dot {
-        width: 5px;
-        height: 5px;
-        border-radius: 50%;
-        background: #fbbf24;
-        flex-shrink: 0;
-    }
+  .page-head{padding:80px 0 32px;border-bottom:1px solid var(--line)}
+  .page-head h1{font-size:clamp(34px,4.4vw,46px);line-height:1.1;letter-spacing:-0.025em;font-weight:600}
+  .page-head h1 em{font-style:italic;font-weight:400}
+  .page-head .crumbs{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:20px;font-weight:500}
+  .page-head .lead{margin-top:22px;max-width:560px;color:var(--ink-2);font-size:15.5px;line-height:1.6}
 
-    /* Hub entry-point cards */
-    .hub-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1.25rem;
-        margin-bottom: 2.5rem;
-    }
-    @media (max-width: 700px) {
-        .hub-grid {
-            grid-template-columns: 1fr;
-        }
-    }
-    .hub-card {
-        background: #1a1d28;
-        border: 1px solid #2a2d3a;
-        border-radius: 10px;
-        padding: 1.5rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.6rem;
-        text-decoration: none;
-        transition: border-color 0.2s ease;
-        position: relative;
-    }
-    .hub-card:hover {
-        border-color: #7c8aff;
-    }
-    .hub-card-icon {
-        font-size: 0.9rem;
-        font-weight: 800;
-        color: #7c8aff;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        font-style: normal;
-    }
-    .hub-card-title {
-        font-size: 1.05rem;
-        font-weight: 700;
-        color: #fff;
-        line-height: 1.3;
-    }
-    .hub-card-desc {
-        font-size: 0.85rem;
-        color: #808890;
-        line-height: 1.5;
-    }
-    .hub-card-cta {
-        margin-top: 0.5rem;
-        font-size: 0.8rem;
-        font-weight: 600;
-        color: #7c8aff;
-    }
-    .coming-soon-badge {
-        position: absolute;
-        top: 1rem;
-        right: 1rem;
-        background: #252840;
-        color: #7c8aff;
-        font-size: 0.68rem;
-        font-weight: 700;
-        padding: 0.15rem 0.5rem;
-        border-radius: 3px;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-    }
-    .hub-section-label {
-        font-size: 0.72rem;
-        font-weight: 700;
-        color: #505870;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-bottom: 0.75rem;
-    }
-    .events-section-label {
-        font-size: 0.72rem;
-        font-weight: 700;
-        color: #505870;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-bottom: 1rem;
-        padding-top: 0.25rem;
-    }
+  .pred-section{padding:32px 0 88px}
+
+  .hub-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:48px}
+  @media (max-width:760px){.hub-grid{grid-template-columns:1fr}}
+  .hub-card{
+    padding:24px;border:1px solid var(--line);background:transparent;
+    display:flex;flex-direction:column;gap:8px;transition:border-color .15s;
+  }
+  .hub-card:hover{border-color:var(--ink-2)}
+  .hub-card .icon{
+    font-size:10.5px;font-weight:600;color:var(--ink-2);
+    letter-spacing:0.18em;text-transform:uppercase;
+  }
+  .hub-card .ttl{font-size:18px;font-weight:600;letter-spacing:-0.01em;color:var(--ink);margin-top:4px}
+  .hub-card .desc{font-size:13.5px;color:var(--ink-2);line-height:1.55}
+  .hub-card .cta{
+    margin-top:10px;font-size:11px;font-weight:500;color:var(--ink);
+    letter-spacing:0.14em;text-transform:uppercase;
+    border-bottom:1px solid var(--line-2);padding-bottom:1px;width:fit-content;
+    transition:border-color .15s;
+  }
+  .hub-card:hover .cta{border-bottom-color:var(--ink)}
+
+  .section-label{
+    font-size:10.5px;font-weight:500;color:var(--dim);
+    letter-spacing:0.18em;text-transform:uppercase;margin-bottom:18px;
+    display:flex;align-items:center;gap:10px;
+  }
+  .section-label .dash{width:18px;height:1px;background:var(--line-2)}
+
+  .disc-section{margin-bottom:48px}
+  .disc-head{
+    display:flex;align-items:baseline;gap:14px;margin-bottom:18px;
+    padding-bottom:10px;border-bottom:1px solid var(--line);
+  }
+  .disc-head .ttl{font-size:22px;font-weight:600;letter-spacing:-0.015em}
+  .disc-head .count{font-size:11px;color:var(--dim);letter-spacing:0.08em}
+
+  .events-grid{
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
+    gap:20px;
+  }
+  .ev-card{
+    padding:22px;border:1px solid var(--line);background:transparent;
+    display:flex;flex-direction:column;gap:12px;
+  }
+  .ev-card-head{
+    display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
+    padding-bottom:12px;border-bottom:1px solid var(--line);
+  }
+  .ev-card .nm{font-size:15px;font-weight:600;line-height:1.3;letter-spacing:-0.005em}
+  .ev-card .nm a{transition:color .15s}
+  .ev-card .nm a:hover{color:var(--dim)}
+  .ev-card .meta{font-size:11px;color:var(--dim);letter-spacing:0.06em;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .ev-card .tier{
+    display:inline-block;font-size:10px;color:var(--ink-2);
+    letter-spacing:0.14em;text-transform:uppercase;margin-top:6px;
+  }
+
+  .gender-block{margin-top:6px}
+  .gender-label{
+    font-size:10px;color:var(--dim);font-weight:500;
+    letter-spacing:0.16em;text-transform:uppercase;margin:8px 0;
+    display:flex;align-items:baseline;gap:8px;
+  }
+  .gender-label .cnt{font-size:10px;color:var(--dim);letter-spacing:0.04em;text-transform:none}
+
+  .podium-row{
+    display:grid;grid-template-columns:22px 1fr auto auto;gap:10px;align-items:baseline;
+    padding:6px 0;border-bottom:1px solid var(--line);font-size:13px;
+  }
+  .podium-row:last-child{border-bottom:none}
+  .podium-row .rk{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;font-weight:600}
+  .podium-row .rk.top{color:var(--ink)}
+  .podium-row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .podium-row .nm a{transition:color .15s}
+  .podium-row .nm a:hover{color:var(--dim)}
+  .podium-row .pct{font-size:12.5px;color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+  .podium-row .lbl{font-size:10px;color:var(--dim);letter-spacing:0.1em;text-transform:uppercase}
+
+  .ev-footer{
+    margin-top:auto;padding-top:12px;border-top:1px solid var(--line);
+    font-size:11px;color:var(--ink-2);letter-spacing:0.04em;
+  }
+  .ev-footer a{color:var(--ink);border-bottom:1px solid var(--line-2);padding-bottom:1px;transition:border-color .15s}
+  .ev-footer a:hover{border-bottom-color:var(--ink)}
+
+  .no-athletes{font-size:12.5px;color:var(--dim);line-height:1.5}
+  .disclaimer{
+    font-size:10.5px;color:var(--dim);letter-spacing:0.06em;
+    padding:6px 8px;background:var(--paper-2);border-left:2px solid var(--line-2);
+  }
+  .roster-badge{
+    display:inline-flex;align-items:center;gap:7px;
+    padding:4px 10px 4px 8px;
+    border:1px solid rgba(245,245,245,0.18);background:var(--paper-2);
+    font-size:10.5px;font-weight:500;color:var(--ink);letter-spacing:0.07em;
+    text-transform:uppercase;width:fit-content;
+  }
+  .roster-badge-dot{
+    width:5px;height:5px;border-radius:50%;
+    background:var(--ink-2);flex-shrink:0;
+  }
+  .disc-empty{color:var(--dim);font-size:13px;padding:16px 0}
+
+  .empty-state{
+    text-align:center;padding:64px 24px;border:1px solid var(--line);
+    color:var(--ink-2);
+  }
+  .empty-state h3{font-size:16px;color:var(--ink);margin-bottom:10px;font-weight:600;letter-spacing:-0.01em}
+  .empty-state p{font-size:13.5px;color:var(--ink-2);line-height:1.55;max-width:480px;margin:0 auto 16px}
+  .empty-state code{
+    font-family:'Manrope',sans-serif;font-size:12px;
+    background:var(--paper-2);padding:2px 6px;border:1px solid var(--line);
+  }
 </style>
 {% endblock %}
 
-{% block content %}
-<div class="page-header">
-    <h1>Predictions</h1>
-    <span class="page-subtitle">Monte Carlo ELO-based outcome forecasts for upcoming events</span>
-</div>
-
-<p class="hub-section-label">Prediction modes</p>
-<div class="hub-grid">
-    <a href="/projections/new" class="hub-card">
-        <span class="hub-card-icon">N</span>
-        <div class="hub-card-title">Custom Projection</div>
-        <div class="hub-card-desc">Pick any number of athletes and run a Monte Carlo simulation.</div>
-        <div class="hub-card-cta">Build a projection &rarr;</div>
-    </a>
-    <a href="/head-to-head" class="hub-card">
-        <span class="hub-card-icon">vs</span>
-        <div class="hub-card-title">Head-to-Head Comparison</div>
-        <div class="hub-card-desc">Compare any two athletes head-to-head with win probability and historical context.</div>
-        <div class="hub-card-cta">Compare athletes &rarr;</div>
-    </a>
-</div>
-
-<p class="events-section-label">Upcoming events</p>
-
-{% set any_events = grouped | selectattr("has_data") | list %}
-
-{% if not any_events %}
-<div class="empty-state">
-    <h2>No upcoming events found</h2>
-    <p>
-        Run <code>uv run python scripts/scrape_upcoming.py --all-disciplines</code>
-        to populate upcoming events, or build a custom projection below.
+{% block body %}
+<main>
+  <section class="page-head">
+    <div class="crumbs reveal"><a href="/">Home</a> / Predictions</div>
+    <h1 class="reveal d2">Upcoming events,<br/><em>forecast</em>.</h1>
+    <p class="lead reveal d3">
+      Monte Carlo over the current rating distribution &mdash; one card per upcoming
+      World Cup, World Championship, or Olympic event. When the registered start-list
+      isn't published yet, we fall back to the season's likely roster.
     </p>
-    <a href="/projections/new" class="btn-primary">Manual Projection</a>
-</div>
-{% else %}
-{% for disc in grouped %}
-<section class="disc-section">
-    <div class="disc-header">
-        <span class="disc-title">{{ disc.label }}</span>
-        <span class="disc-count">
-            {% if disc.events %}{{ disc.events | length }} upcoming event{{ 's' if disc.events | length != 1 else '' }}{% else %}no upcoming events{% endif %}
-        </span>
+  </section>
+
+  <section class="pred-section">
+    <div class="section-label reveal"><span class="dash"></span>Prediction modes</div>
+    <div class="hub-grid reveal d2">
+      <a href="/projections" class="hub-card">
+        <span class="icon">Per-event</span>
+        <div class="ttl">Upcoming projections</div>
+        <div class="desc">Pre-rendered cards for the next round of events. 10k simulations per athlete, &sigma;-weighted.</div>
+        <span class="cta">View projections &rarr;</span>
+      </a>
+      <a href="/head-to-head" class="hub-card">
+        <span class="icon">vs</span>
+        <div class="ttl">Head-to-head</div>
+        <div class="desc">Closed-form ELO win probability for any two athletes, plus shared-event history.</div>
+        <span class="cta">Compare athletes &rarr;</span>
+      </a>
     </div>
 
-    {% if not disc.events %}
-    <p class="disc-empty">No upcoming {{ disc.label }} events in the database.</p>
-    {% else %}
-    <div class="events-grid">
-        {% for ev in disc.events %}
-        <div class="event-card">
-            <div class="event-card-header">
-                <div>
-                    <div class="event-name">{{ ev.name }}</div>
-                    <span class="tier-badge">{{ ev.tier }}</span>
-                </div>
-                <div class="event-meta">{{ ev.date }}</div>
-            </div>
+    <div class="section-label reveal"><span class="dash"></span>Upcoming events</div>
 
-            {% if ev.predictions %}
-            {% if ev.from_likely_roster %}
-            <div class="roster-badge">
-                <span class="roster-badge-dot"></span>
-                Predicted roster &middot; registrations unavailable
+    {% set any_events = grouped | selectattr("has_data") | list %}
+
+    {% if not any_events %}
+    <div class="empty-state reveal">
+      <h3>No upcoming events found</h3>
+      <p>
+        Run <code>uv run python scripts/scrape_upcoming.py --all-disciplines</code>
+        to populate the calendar, or use the projections page to simulate an arbitrary field.
+      </p>
+      <a href="/projections" class="btn btn-primary">View projections &rarr;</a>
+    </div>
+    {% else %}
+    {% for disc in grouped %}
+    <div class="disc-section reveal">
+      <div class="disc-head">
+        <span class="ttl">{{ disc.label }}</span>
+        <span class="count">
+          {% if disc.events %}{{ disc.events | length }} upcoming event{{ 's' if disc.events | length != 1 else '' }}{% else %}no upcoming events{% endif %}
+        </span>
+      </div>
+
+      {% if not disc.events %}
+      <p class="disc-empty">No upcoming {{ disc.label }} events in the database.</p>
+      {% else %}
+      <div class="events-grid">
+        {% for ev in disc.events %}
+        <div class="ev-card">
+          <div class="ev-card-head">
+            <div>
+              <div class="nm"><a href="/events/{{ ev.id }}">{{ ev.name }}</a></div>
+              <span class="tier">{{ ev.tier }}</span>
             </div>
-            {% endif %}
-            <div class="predictions-block">
-                {% for gp in ev.predictions.genders %}
-                <div class="gender-label">{{ gp.gender }} — {{ gp.total_athletes }} athlete{{ 's' if gp.total_athletes != 1 else '' }}</div>
-                {% for athlete in gp.top3 %}
-                <div class="podium-row">
-                    <span class="podium-rank rank-{{ loop.index }}">{{ loop.index }}</span>
-                    <span class="podium-name">
-                        <a href="/athletes/{{ athlete.athlete_id }}" style="color:inherit;text-decoration:none">{{ athlete.name }}</a>
-                    </span>
-                    <span class="podium-prob">{{ athlete.win }}</span>
-                    <span class="podium-label">win</span>
-                </div>
-                {% endfor %}
-                {% endfor %}
+            <div class="meta">{{ ev.date }}</div>
+          </div>
+
+          {% if ev.predictions %}
+          {% if ev.from_likely_roster %}
+          <div class="roster-badge">
+            <span class="roster-badge-dot"></span>
+            Predicted roster &middot; registrations unavailable
+          </div>
+          {% endif %}
+          {% for gp in ev.predictions.genders %}
+          <div class="gender-block">
+            <div class="gender-label">
+              <span>{{ gp.gender_label }}</span>
+              <span class="cnt">&mdash; {{ gp.total_athletes }} athlete{{ 's' if gp.total_athletes != 1 else '' }}</span>
             </div>
-            <div class="projections-link">
-                <a href="/projections/{{ ev.id }}">Full projection &rarr;</a>
+            {% for athlete in gp.top3 %}
+            <div class="podium-row">
+              <span class="rk{% if loop.index == 1 %} top{% endif %}">{{ '%02d' % loop.index }}</span>
+              <span class="nm"><a href="/athletes/{{ athlete.athlete_id }}">{{ athlete.name }}</a></span>
+              <span class="pct">{{ athlete.win }}%</span>
+              <span class="lbl">win</span>
             </div>
-            {% else %}
-            <div class="no-athletes-msg">
-                No registered athletes yet — season may not have started.
-                <a href="/projections/new">Select athletes manually &rarr;</a>
-            </div>
-            {% endif %}
+            {% endfor %}
+          </div>
+          {% endfor %}
+          <div class="ev-footer">
+            <a href="/projections">Full projections &rarr;</a>
+          </div>
+          {% else %}
+          <div class="no-athletes">
+            No registered athletes yet — season may not have started yet.
+            Check back closer to the event start date,
+            or <a href="/projections" style="color:var(--ink);border-bottom:1px solid var(--line-2);padding-bottom:1px">view current projections &rarr;</a>
+          </div>
+          {% endif %}
         </div>
         {% endfor %}
+      </div>
+      {% endif %}
     </div>
+    {% endfor %}
     {% endif %}
-</section>
-{% endfor %}
-
-<div style="margin-top:3rem;padding-top:1.5rem;border-top:1px solid #2a2d3a;text-align:center;">
-    <p style="color:#606880;font-size:0.85rem;margin-bottom:0.75rem">
-        Want to project a custom field or an event not listed here?
-    </p>
-    <a href="/projections/new" class="btn-primary">Manual Projection</a>
-</div>
-{% endif %}
+  </section>
+</main>
 {% endblock %}

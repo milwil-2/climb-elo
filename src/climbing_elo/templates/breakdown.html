@@ -1,77 +1,133 @@
 {% extends "base.html" %}
-{% block title %}Rating Breakdown — {{ athlete.name }} — Climbing ELO{% endblock %}
+{% block title %}Rating breakdown &mdash; {{ athlete.name }} &mdash; Climbing ELO{% endblock %}
+
 {% block head %}
 <style>
-    .table-scroll {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-    }
-    .table-scroll table {
-        min-width: 480px;
-    }
+  .page-head{padding:80px 0 32px;border-bottom:1px solid var(--line)}
+  .page-head h1{font-size:clamp(28px,3.6vw,40px);line-height:1.1;letter-spacing:-0.025em;font-weight:600}
+  .page-head h1 em{font-style:italic;font-weight:400}
+  .page-head .crumbs{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:20px;font-weight:500}
+  .page-head .crumbs a:hover{color:var(--ink)}
+  .page-head .lead{margin-top:18px;color:var(--ink-2);font-size:14.5px;line-height:1.6;max-width:560px}
+  .page-head .lead a{color:var(--ink);border-bottom:1px solid var(--line-2);padding-bottom:1px;transition:border-color .15s}
+  .page-head .lead a:hover{border-bottom-color:var(--ink)}
+
+  .brk-section{padding:32px 0 88px}
+
+  .round-block{margin-bottom:48px}
+  .round-head{
+    display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:16px;
+    padding-bottom:12px;border-bottom:1px solid var(--line);
+  }
+  .round-head .ttl{font-size:20px;font-weight:600;letter-spacing:-0.01em}
+  .round-stats{display:flex;gap:32px}
+  .round-stats .stat{display:flex;flex-direction:column;gap:4px;text-align:right}
+  .round-stats .stat .l{font-size:10px;color:var(--dim);letter-spacing:0.16em;text-transform:uppercase;font-weight:500}
+  .round-stats .stat .v{font-size:22px;font-weight:600;letter-spacing:-0.015em;font-variant-numeric:tabular-nums;color:var(--ink)}
+  .round-stats .stat .v.up{color:var(--ink)}
+  .round-stats .stat .v.dn{color:var(--ink-2)}
+
+  table.pairs{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.pairs thead th{
+    text-align:left;padding:12px 14px;
+    font-size:10.5px;font-weight:500;color:var(--dim);
+    letter-spacing:0.14em;text-transform:uppercase;
+    border-bottom:1px solid var(--line);
+  }
+  table.pairs tbody tr{border-bottom:1px solid var(--line);transition:background .15s}
+  table.pairs tbody tr:last-child{border-bottom:none}
+  table.pairs tbody tr:hover{background:var(--paper-2)}
+  table.pairs tbody td{padding:11px 14px;vertical-align:middle}
+
+  td.opponent{font-weight:500}
+  td.opponent a{transition:color .15s}
+  td.opponent a:hover{color:var(--dim)}
+  td.result{font-size:11px;letter-spacing:0.14em;text-transform:uppercase;font-weight:500}
+  td.result.won{color:var(--ink)}
+  td.result.lost{color:var(--ink-2)}
+  td.num{font-variant-numeric:tabular-nums;text-align:right;color:var(--ink-2)}
+  td.num.delta-up{color:var(--ink)}
+  td.num.delta-dn{color:var(--ink-2)}
+
+  .empty{padding:48px;text-align:center;color:var(--dim);font-size:13px}
 </style>
 {% endblock %}
-{% block content %}
-<h1>Rating Breakdown</h1>
-<p style="color: #808890;">
-    <a href="/athletes/{{ athlete.id }}" style="color: #7c8aff;">{{ athlete.name }}</a>
-    at <a href="/events/{{ event.id }}" style="color: #7c8aff;">{{ event.name }} ({{ event.season }})</a>
-</p>
 
-{% for rnd in rounds %}
-<div class="card">
-    <h2 style="margin-top: 0;">{{ rnd.round_type }}</h2>
-    <div class="stats-row" style="margin-bottom: 1rem;">
-        <div class="stat">
-            <div class="stat-value">{{ rnd.mu_before }}</div>
-            <div class="stat-label">Before</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ rnd.mu_after }}</div>
-            <div class="stat-label">After</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value {% if rnd.delta > 0 %}positive{% elif rnd.delta < 0 %}negative{% endif %}">
-                {{ '%+.1f'|format(rnd.delta) }}
-            </div>
-            <div class="stat-label">Delta</div>
-        </div>
+{% block body %}
+<main>
+  <section class="page-head">
+    <div class="crumbs reveal">
+      <a href="/">Home</a> /
+      <a href="/athletes/{{ athlete.id }}">{{ athlete.name }}</a> /
+      <a href="/events/{{ event.id }}">{{ event.name }}</a> /
+      Breakdown
     </div>
+    <h1 class="reveal d2">Rating <em>breakdown</em>.</h1>
+    <p class="lead reveal d3">
+      Pairwise contests for <a href="/athletes/{{ athlete.id }}">{{ athlete.name }}</a>
+      at <a href="/events/{{ event.id }}">{{ event.name }} ({{ event.season }})</a>.
+      Each row is one opponent; &Delta;&mu; is the share of the rating change attributed to that pairing.
+    </p>
+  </section>
 
-    <div class="table-scroll">
-    <table>
-        <thead>
+  <section class="brk-section">
+    {%- if not rounds -%}
+    <div class="empty">No rating history recorded for this athlete at this event.</div>
+    {%- endif -%}
+
+    {%- for rnd in rounds -%}
+    <div class="round-block reveal">
+      <div class="round-head">
+        <span class="ttl">{{ rnd.round_type }}</span>
+        <div class="round-stats">
+          <div class="stat">
+            <span class="l">Before</span>
+            <span class="v">{{ rnd.mu_before }}</span>
+          </div>
+          <div class="stat">
+            <span class="l">After</span>
+            <span class="v">{{ rnd.mu_after }}</span>
+          </div>
+          <div class="stat">
+            <span class="l">&Delta;</span>
+            <span class="v {% if rnd.delta > 0 %}up{% elif rnd.delta < 0 %}dn{% endif %}">
+              {% if rnd.delta > 0 %}+{% endif %}{{ rnd.delta }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <table class="pairs">
+          <thead><tr>
+            <th>Opponent</th>
+            <th>Result</th>
+            <th style="text-align:right">Expected</th>
+            <th style="text-align:right">Actual</th>
+            <th style="text-align:right">&Delta;&mu;</th>
+            <th style="text-align:right">Margin</th>
+          </tr></thead>
+          <tbody>
+            {%- for p in rnd.pairs -%}
             <tr>
-                <th>Opponent</th>
-                <th>Result</th>
-                <th>Expected</th>
-                <th>Actual</th>
-                <th>&Delta;&mu;</th>
-                <th>Margin</th>
+              <td class="opponent"><a href="/athletes/{{ p.opponent_id }}">{{ p.opponent_name }}</a></td>
+              <td class="result {{ p.result }}">{{ p.result | title }}</td>
+              <td class="num">{{ '%.3f'|format(p.expected) }}</td>
+              <td class="num">{{ p.actual | int }}</td>
+              <td class="num {% if p.delta > 0 %}delta-up{% elif p.delta < 0 %}delta-dn{% endif %}">
+                {% if p.delta > 0 %}+{% endif %}{{ '%.2f'|format(p.delta) }}
+              </td>
+              <td class="num">{{ '%.2f'|format(p.margin_multiplier) }}&times;</td>
             </tr>
-        </thead>
-        <tbody>
-            {% for p in rnd.pairs %}
-            <tr>
-                <td>{{ p.opponent_name }}</td>
-                <td>
-                    {% if p.result == 'won' %}
-                    <span class="positive">Won</span>
-                    {% else %}
-                    <span class="negative">Lost</span>
-                    {% endif %}
-                </td>
-                <td>{{ '%.3f'|format(p.expected) }}</td>
-                <td>{{ p.actual|int }}</td>
-                <td class="{% if p.delta > 0 %}positive{% elif p.delta < 0 %}negative{% endif %}">
-                    {{ '%+.2f'|format(p.delta) }}
-                </td>
-                <td>{{ '%.1f'|format(p.margin_multiplier) }}x</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+            {%- endfor -%}
+            {%- if not rnd.pairs -%}
+            <tr><td colspan="6" class="empty">No contributing pairs recorded.</td></tr>
+            {%- endif -%}
+          </tbody>
+        </table>
+      </div>
     </div>
-</div>
-{% endfor %}
+    {%- endfor -%}
+  </section>
+</main>
 {% endblock %}

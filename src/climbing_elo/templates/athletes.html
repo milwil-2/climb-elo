@@ -71,7 +71,7 @@
 {% block body %}
 <main>
   <section class="page-head">
-    <div class="crumbs reveal"><a href="/v2/">Home</a> / Athletes</div>
+    <div class="crumbs reveal"><a href="/">Home</a> / Athletes</div>
     <h1 class="reveal d2">Every climb,<br/>every rating <em>change</em>.</h1>
     <p class="lead reveal d3">
       Each profile is a full audit trail &mdash; rating history, &sigma; decay,
@@ -87,7 +87,7 @@
       </div>
       <div class="scroll">
         {%- for row in sidebar_athletes -%}
-        <a href="/v2/athletes/{{ row.id }}"
+        <a href="/athletes/{{ row.id }}"
            class="row{% if row.id == current_athlete_id %} active{% endif %}">
           <span class="rk">{{ '%02d' % row.rank }}</span>
           <span class="nm">{{ row.name }}</span>

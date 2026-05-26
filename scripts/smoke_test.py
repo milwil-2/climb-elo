@@ -288,63 +288,60 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
             url, label, take_screenshots=take_screenshots, surface=surface
         )
 
-    # 1. Leaderboard /
+    # 1. Landing /
     assert_route(
-        "GET / — leaderboard renders",
+        "GET / — monochrome landing",
         "/",
-        must_contain=["ELO", "Lead", "Boulder", "Speed"],
+        must_contain=["Climbing ELO", "Ratings, not", "Boulder"],
         base_url=base_url,
     )
-    ss(base_url + "/", "leaderboard")
+    ss(base_url + "/", "landing")
 
-    # 2. Predictions hub
+    # 2. Leaderboard
+    assert_route(
+        "GET /leaderboard — full board",
+        "/leaderboard",
+        must_contain=["Climbing ELO", "Leaderboard", "Boulder"],
+        base_url=base_url,
+    )
+    ss(base_url + "/leaderboard", "leaderboard")
+
+    # 3. Predictions hub
     assert_route(
         "GET /predictions — landing hub",
         "/predictions",
-        must_contain=["Custom Projection", "Head-to-Head"],
+        must_contain=["Climbing ELO", "Predictions", "Head-to-head"],
         base_url=base_url,
     )
     ss(base_url + "/predictions", "predictions")
 
-    # 3. Head-to-head form
+    # 4. Projections
+    assert_route(
+        "GET /projections — projection cards",
+        "/projections",
+        must_contain=["Climbing ELO", "Projections", "simulated"],
+        base_url=base_url,
+    )
+    ss(base_url + "/projections", "projections")
+
+    # 5. Head-to-head form
     assert_route(
         "GET /head-to-head — selection form",
         "/head-to-head",
-        must_contain=["head-to-head", "discipline"],
+        must_contain=["Climbing ELO", "Head-to-head", "probability"],
         base_url=base_url,
     )
     ss(base_url + "/head-to-head", "head_to_head_form")
 
-    # 4. Head-to-head result — Schubert vs Ondra, Lead
+    # 6. Head-to-head result — Schubert vs Ondra, Lead
     h2h_path = f"/head-to-head/{LEAD_ATHLETE_A}/{LEAD_ATHLETE_B}?discipline=lead"
     assert_route(
         "GET /head-to-head/{a}/{b} — result page",
         h2h_path,
-        must_contain=["SCHUBERT", "ONDRA", "%"],  # win probability shown as percentage
+        must_contain=["Climbing ELO", "%", "wins"],
         base_url=base_url,
     )
     ss(base_url + h2h_path, "head_to_head_result")
-
-    # 5. Projections new form
-    assert_route(
-        "GET /projections/new — form",
-        "/projections/new",
-        must_contain=["discipline", "athlete"],
-        base_url=base_url,
-    )
-    ss(base_url + "/projections/new", "projections_new")
-
-    # 6. Event projections — event 93 (has real data + rounds)
-    assert_route(
-        f"GET /projections/{FIRST_EVENT_ID} — Monte Carlo projection",
-        f"/projections/{FIRST_EVENT_ID}",
-        must_contain=["win", "podium"],
-        base_url=base_url,
-    )
-    ss(
-        base_url + f"/projections/{FIRST_EVENT_ID}",
-        f"projections_event_{FIRST_EVENT_ID}",
-    )
 
     # 7. Events list
     assert_route(
@@ -365,11 +362,11 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
     ss(base_url + f"/events/{FIRST_EVENT_ID}", f"event_detail_{FIRST_EVENT_ID}")
 
     # 9. Athlete profile
-    assert_route(
-        f"GET /athletes/{POPULAR_ATHLETE} — profile with chart",
-        f"/athletes/{POPULAR_ATHLETE}",
-        must_contain=["GARNBRET", "canvas", "Recent Events", "Place"],
-        base_url=base_url,
+    status_ath, body_ath = http_get(base_url + f"/athletes/{POPULAR_ATHLETE}")
+    record(
+        f"GET /athletes/{POPULAR_ATHLETE} — athlete profile",
+        status_ath == 200 and "Climbing ELO" in body_ath,
+        f"HTTP {status_ath}",
     )
     ss(base_url + f"/athletes/{POPULAR_ATHLETE}", f"athlete_{POPULAR_ATHLETE}")
 
@@ -377,10 +374,7 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
     assert_route(
         f"GET /breakdown/{BREAKDOWN_ATHLETE}/{BREAKDOWN_EVENT} — pairwise pairs",
         f"/breakdown/{BREAKDOWN_ATHLETE}/{BREAKDOWN_EVENT}",
-        must_contain=[
-            "Delta",
-            "Expected",
-        ],  # column headers as rendered in the template
+        must_contain=["Opponent", "Expected"],
         base_url=base_url,
     )
     ss(
@@ -388,73 +382,22 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
         f"breakdown_{BREAKDOWN_ATHLETE}_{BREAKDOWN_EVENT}",
     )
 
-    # 11. 404 behaviour — athlete that doesn't exist
+    # 11. API reference page
+    assert_route(
+        "GET /api — API reference page",
+        "/api",
+        must_contain=["Climbing ELO", "leaderboard", "no auth"],
+        base_url=base_url,
+    )
+    ss(base_url + "/api", "api")
+
+    # 12. 404 behaviour — athlete that doesn't exist
     status, _ = http_get(base_url + "/athletes/999999")
     record(
         "GET /athletes/999999 → 404",
         status == 404,
         f"HTTP {status}",
     )
-
-    # ── v2 routes ──────────────────────────────────────────────────────
-    print("\n── v2 monochrome dashboard routes ────────────────────────────")
-
-    assert_route(
-        "GET /v2/ — monochrome landing",
-        "/v2/",
-        must_contain=["Climbing ELO", "Ratings, not", "Boulder"],
-        base_url=base_url,
-    )
-    ss(base_url + "/v2/", "v2_landing")
-
-    assert_route(
-        "GET /v2/leaderboard — full board",
-        "/v2/leaderboard",
-        must_contain=["Climbing ELO", "Leaderboard", "Boulder"],
-        base_url=base_url,
-    )
-    ss(base_url + "/v2/leaderboard", "v2_leaderboard")
-
-    assert_route(
-        "GET /v2/projections — projection cards",
-        "/v2/projections",
-        must_contain=["Climbing ELO", "Projections", "simulated"],
-        base_url=base_url,
-    )
-    ss(base_url + "/v2/projections", "v2_projections")
-
-    assert_route(
-        "GET /v2/head-to-head — H2H form",
-        "/v2/head-to-head",
-        must_contain=["Climbing ELO", "Head-to-head", "probability"],
-        base_url=base_url,
-    )
-    ss(base_url + "/v2/head-to-head", "v2_h2h_form")
-
-    v2_h2h_path = f"/v2/head-to-head/{LEAD_ATHLETE_A}/{LEAD_ATHLETE_B}?discipline=L"
-    assert_route(
-        "GET /v2/head-to-head/{a}/{b} — H2H result with ring",
-        v2_h2h_path,
-        must_contain=["Climbing ELO", "%", "wins"],
-        base_url=base_url,
-    )
-    ss(base_url + v2_h2h_path, "v2_h2h_result")
-
-    status_ath, body_ath = http_get(base_url + f"/v2/athletes/{POPULAR_ATHLETE}")
-    record(
-        f"GET /v2/athletes/{POPULAR_ATHLETE} — athlete profile",
-        status_ath == 200 and "Climbing ELO" in body_ath,
-        f"HTTP {status_ath}",
-    )
-    ss(base_url + f"/v2/athletes/{POPULAR_ATHLETE}", "v2_athlete")
-
-    assert_route(
-        "GET /v2/api — API reference page",
-        "/v2/api",
-        must_contain=["Climbing ELO", "leaderboard", "no auth"],
-        base_url=base_url,
-    )
-    ss(base_url + "/v2/api", "v2_api")
 
 
 # ---------------------------------------------------------------------------
