@@ -120,6 +120,66 @@
         color: #505560;
         margin-top: 0.75rem;
     }
+    /* -----------------------------------------------------------------------
+       Round-by-round progression styles
+    ----------------------------------------------------------------------- */
+    .round-sections {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    .round-section {
+        border: 1px solid #2a2d3a;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    .round-section summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 0.85rem 1.2rem;
+        background: #1a1d28;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-weight: 600;
+        font-size: 0.95rem;
+        color: #c0c8ff;
+        user-select: none;
+    }
+    .round-section summary::-webkit-details-marker { display: none; }
+    .round-section summary::before {
+        content: "▶";
+        font-size: 0.65rem;
+        color: #505870;
+        transition: transform 0.18s;
+        flex-shrink: 0;
+    }
+    details[open] > summary::before { transform: rotate(90deg); }
+    .round-section .round-content {
+        padding: 0;
+    }
+    /* probability colour coding */
+    .prob-green  { color: #4ade80; font-weight: 600; }
+    .prob-yellow { color: #fbbf24; font-weight: 600; }
+    .prob-red    { color: #f87171; }
+    /* small inline pill for round labels in the progression table header */
+    .round-pill {
+        display: inline-block;
+        padding: 0.1rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        background: #252840;
+        color: #9098d0;
+        white-space: nowrap;
+    }
+    @media (max-width: 640px) {
+        .round-section summary { font-size: 0.88rem; padding: 0.75rem 1rem; }
+        th, td { padding: 0.5rem 0.6rem; font-size: 0.82rem; }
+    }
 </style>
 {% endblock %}
 
@@ -159,6 +219,130 @@
 </div>
 {% endif %}
 
+{% if use_progression %}
+{# -----------------------------------------------------------------------
+   Multi-round progression view: one collapsible section per round plus
+   a final "Full Progression" table showing all rounds side-by-side.
+----------------------------------------------------------------------- #}
+
+{# Build one collapsible section per round showing who is likely to reach it #}
+<div class="round-sections">
+{% for rc in round_configs %}
+<details class="round-section" {% if loop.last %}open{% endif %}>
+    <summary>
+        <span>{{ rc.round_type | title }}</span>
+        {% if not loop.last %}
+        <span style="color:#505870;font-size:0.8rem;font-weight:400;">
+            &mdash; advance probability
+        </span>
+        {% else %}
+        <span style="color:#505870;font-size:0.8rem;font-weight:400;">
+            &mdash; final podium probability
+        </span>
+        {% endif %}
+    </summary>
+    <div class="round-content">
+    <div class="table-scroll">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:3rem">#</th>
+                <th>Athlete</th>
+                <th>Rating</th>
+                {% if not loop.last %}
+                <th>Advance %</th>
+                {% else %}
+                <th>Podium %</th>
+                <th>Win %</th>
+                {% endif %}
+            </tr>
+        </thead>
+        <tbody>
+        {% for row in rows %}
+            {% set rp = namespace(found=none) %}
+            {% for rprob in row.round_probs %}
+                {% if rprob.round_type == rc.round_type %}
+                    {% set rp.found = rprob %}
+                {% endif %}
+            {% endfor %}
+            <tr>
+                <td>
+                    <span class="rank-badge {% if row.proj_rank == 1 %}rank-1{% elif row.proj_rank == 2 %}rank-2{% elif row.proj_rank == 3 %}rank-3{% else %}rank-other{% endif %}">
+                        {{ row.proj_rank }}
+                    </span>
+                </td>
+                <td><a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a></td>
+                <td><strong>{{ row.mu }}</strong></td>
+                {% if not loop.last %}
+                    {% if rp.found %}
+                    <td class="{{ rp.found.css }}">{{ rp.found.pct }}</td>
+                    {% else %}
+                    <td style="color:#505560">—</td>
+                    {% endif %}
+                {% else %}
+                <td class="{{ row.final_podium_css }}">{{ row.final_podium }}</td>
+                <td style="color:#a0a8c0">{{ row.final_win }}</td>
+                {% endif %}
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    </div>
+</details>
+{% endfor %}
+</div>
+
+{# Full side-by-side progression table #}
+<h2 style="margin-top:1.5rem">Full Progression</h2>
+<div class="table-scroll">
+<table>
+    <thead>
+        <tr>
+            <th style="width:3rem">#</th>
+            <th>Athlete</th>
+            <th>Rating</th>
+            {% for rc in round_configs %}
+            <th><span class="round-pill">{{ rc.round_type | title }}</span></th>
+            {% endfor %}
+            <th>Final Podium %</th>
+            <th>Win %</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td>
+                <span class="rank-badge {% if row.proj_rank == 1 %}rank-1{% elif row.proj_rank == 2 %}rank-2{% elif row.proj_rank == 3 %}rank-3{% else %}rank-other{% endif %}">
+                    {{ row.proj_rank }}
+                </span>
+            </td>
+            <td><a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a></td>
+            <td><strong>{{ row.mu }}</strong></td>
+            {% for rp in row.round_probs %}
+            <td class="{{ rp.css }}">{{ rp.pct }}</td>
+            {% endfor %}
+            <td class="{{ row.final_podium_css }}">{{ row.final_podium }}</td>
+            <td style="color:#a0a8c0">{{ row.final_win }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+
+<p class="note-text">
+    Probabilities estimated via 10,000 Monte Carlo simulations. Each trial draws
+    N(&mu;, &sigma;) performance scores, ranks athletes, advances the top-K to the
+    next round, and repeats. Colour: <span class="prob-green">green &ge; 70%</span>,
+    <span class="prob-yellow">yellow 30&ndash;70%</span>,
+    <span class="prob-red">red &lt; 30%</span>.
+    Ratings shown are current (post-event) and may differ from pre-event values.
+</p>
+
+{% else %}
+{# -----------------------------------------------------------------------
+   Single-round (fallback) view — original table layout
+----------------------------------------------------------------------- #}
 <div class="table-scroll">
 <table>
     <thead>
@@ -209,6 +393,7 @@
     from N(&mu;, &sigma;) for each athlete. Athletes marked DNS are excluded.
     Ratings shown are current (post-event) and may differ from pre-event values.
 </p>
+{% endif %}
 
 {% endif %}
 {% endblock %}

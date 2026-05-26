@@ -10,7 +10,7 @@ rare with continuous draws).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -96,6 +96,230 @@ def compute_podium_probabilities(
         }
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Round-by-round progression simulation
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RoundConfig:
+    """Configuration for a single event round.
+
+    Attributes:
+        round_type: Identifier string — "qualification", "semifinal", or "final".
+        advance_count: How many athletes advance from this round to the next.
+            For the last round this value is ignored (everyone remaining competes).
+    """
+    round_type: str  # "qualification", "semifinal", "final"
+    advance_count: int  # how many advance to next round
+
+
+@dataclass
+class ProgressionResult:
+    """Per-athlete output from :func:`simulate_event_progression`.
+
+    Attributes:
+        athlete_id: Numeric athlete identifier.
+        name: Human-readable name.
+        mu: The athlete's ELO mean rating.
+        advance_probs: Fraction of simulations in which the athlete reached each
+            round, keyed by ``round_type``.  The first round is always 1.0 (all
+            athletes start there).
+        final_podium_prob: Fraction of simulations where the athlete finished in
+            the top 3 of the **final** round (win + 2nd + 3rd combined).
+        final_win_prob: Fraction of simulations where the athlete finished 1st
+            in the final round.
+    """
+    athlete_id: int
+    name: str
+    mu: float
+    advance_probs: dict[str, float] = field(default_factory=dict)
+    final_podium_prob: float = 0.0
+    final_win_prob: float = 0.0
+
+
+def simulate_event_progression(
+    athletes: list[AthleteProjectionInput],
+    rounds: list[RoundConfig],
+    n_simulations: int = 10_000,
+    rng_seed: int | None = None,
+) -> list[ProgressionResult]:
+    """Run Monte Carlo trials of a multi-round event format.
+
+    Each trial works as follows:
+
+    1. All athletes enter the first round.  A performance score is drawn from
+       N(mu, sigma) for each athlete.
+    2. The top ``advance_count`` athletes (by performance) advance to the next round.
+    3. In subsequent rounds fresh performance scores are drawn for the advancing subset.
+    4. After the final round, podium (top-3) and win (1st) tallies are recorded.
+
+    Advancement probabilities are the fraction of simulations in which each
+    athlete reached that round.  The first round probability is always 1.0.
+    Final-round podium/win probabilities are the fraction of simulations in
+    which the athlete earned that outcome **given that they reached the final**.
+
+    Args:
+        athletes: Athletes to simulate.  Must not exceed MAX_ATHLETES_PER_PROJECTION.
+        rounds: Ordered list of RoundConfig objects from first to last.
+            Must contain at least one entry.  For a single-round event, supply
+            a list with one RoundConfig — ``advance_count`` is ignored in that case.
+        n_simulations: Number of independent Monte Carlo trials.  Clamped to
+            [1, MAX_SIMULATIONS].
+        rng_seed: Optional seed for reproducibility.
+
+    Returns:
+        List of :class:`ProgressionResult` objects, one per input athlete, sorted
+        by descending mu (highest-rated first).
+
+    Raises:
+        ValueError: If ``athletes`` is longer than MAX_ATHLETES_PER_PROJECTION or
+            ``rounds`` is empty.
+    """
+    if not athletes:
+        return []
+
+    if not rounds:
+        raise ValueError("rounds must contain at least one RoundConfig")
+
+    if len(athletes) > MAX_ATHLETES_PER_PROJECTION:
+        raise ValueError(
+            f"too many athletes ({len(athletes)}); max is {MAX_ATHLETES_PER_PROJECTION}"
+        )
+
+    n_simulations = max(1, min(int(n_simulations), MAX_SIMULATIONS))
+    rng = np.random.default_rng(rng_seed)
+
+    n = len(athletes)
+    mus = np.array([a.mu for a in athletes], dtype=np.float64)
+    sigmas = np.clip(
+        np.array([a.sigma for a in athletes], dtype=np.float64),
+        SIGMA_FLOOR,
+        None,
+    )
+
+    # advance_counts[i] → how many survive round i.  The last round has no
+    # elimination, so we keep the field size for tallying only.
+    advance_counts: list[int] = []
+    for i, rc in enumerate(rounds):
+        if i < len(rounds) - 1:
+            # Clamp so we never try to advance more than actually entered.
+            advance_counts.append(rc.advance_count)
+        else:
+            # Final round — everyone who reached it competes.
+            advance_counts.append(n)  # placeholder, not used for filtering
+
+    # Per-athlete tallies across all simulations.
+    # reached[athlete_idx, round_idx] = number of sims in which athlete reached round
+    reached = np.zeros((n, len(rounds)), dtype=np.int64)
+    # Podium/win counts are only tallied for the final round.
+    final_podium = np.zeros(n, dtype=np.int64)
+    final_win = np.zeros(n, dtype=np.int64)
+
+    # All athletes start in round 0.
+    reached[:, 0] = n_simulations
+
+    for sim in range(n_simulations):
+        # active_indices: indices (into the full athletes array) of those currently competing
+        active = np.arange(n, dtype=np.int64)
+
+        for round_idx, rc in enumerate(rounds):
+            n_active = len(active)
+            if n_active == 0:
+                break
+
+            # Draw performances for the active athletes.
+            perf = rng.normal(mus[active], sigmas[active])
+
+            if round_idx < len(rounds) - 1:
+                # Not the last round: take the top-K performers.
+                k = min(rc.advance_count, n_active)
+                # argsort descending — take first k positions
+                sorted_local = np.argsort(-perf)[:k]
+                active = active[sorted_local]
+                # Record that these athletes reached the next round.
+                if round_idx + 1 < len(rounds):
+                    reached[active, round_idx + 1] += 1
+            else:
+                # Final round: tally podium outcomes.
+                sorted_local = np.argsort(-perf)  # best to worst
+                # Top-1
+                final_win[active[sorted_local[0]]] += 1
+                # Top-3
+                podium_k = min(3, n_active)
+                for pos in range(podium_k):
+                    final_podium[active[sorted_local[pos]]] += 1
+
+    # Build results.
+    results: list[ProgressionResult] = []
+    for i, athlete in enumerate(athletes):
+        adv: dict[str, float] = {}
+        for round_idx, rc in enumerate(rounds):
+            adv[rc.round_type] = round(float(reached[i, round_idx]) / n_simulations, 4)
+
+        results.append(ProgressionResult(
+            athlete_id=athlete.athlete_id,
+            name=athlete.name,
+            mu=athlete.mu,
+            advance_probs=adv,
+            final_podium_prob=round(float(final_podium[i]) / n_simulations, 4),
+            final_win_prob=round(float(final_win[i]) / n_simulations, 4),
+        ))
+
+    # Sort by descending mu (highest-rated first).
+    results.sort(key=lambda r: r.mu, reverse=True)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Default event formats
+# ---------------------------------------------------------------------------
+
+# Import here to avoid circular imports with the models package — projections.py
+# deliberately has no dependency on SQLAlchemy models.  We use a local import
+# so callers that don't need default_event_format don't pay the import cost.
+
+def default_event_format(tier: str) -> list[RoundConfig]:
+    """Return the default round progression for an event tier.
+
+    The tier argument should be the **string value** of an EventTier enum
+    (e.g. ``"olympics"``, ``"world_cup"``).  This avoids a hard dependency on
+    the models module from within the engine layer.
+
+    Overrides should be applied by the caller when event-specific metadata is
+    available (e.g. the actual round structure stored in the DB).
+
+    Args:
+        tier: EventTier string value — one of ``"olympics"``,
+            ``"world_championship"``, ``"world_cup"``, ``"continental"``.
+
+    Returns:
+        Ordered list of :class:`RoundConfig` from first to last round.
+
+    Raises:
+        ValueError: If ``tier`` is not a recognised EventTier string value.
+    """
+    tier_lower = tier.lower()
+    if tier_lower in ("olympics", "world_championship"):
+        return [
+            RoundConfig(round_type="qualification", advance_count=20),
+            RoundConfig(round_type="semifinal", advance_count=8),
+            RoundConfig(round_type="final", advance_count=8),
+        ]
+    elif tier_lower == "world_cup":
+        return [
+            RoundConfig(round_type="qualification", advance_count=26),
+            RoundConfig(round_type="semifinal", advance_count=8),
+            RoundConfig(round_type="final", advance_count=8),
+        ]
+    elif tier_lower == "continental":
+        return [
+            RoundConfig(round_type="qualification", advance_count=20),
+            RoundConfig(round_type="final", advance_count=20),
+        ]
+    else:
+        raise ValueError(f"Unknown event tier: {tier!r}")
 
 
 def predict_winner(athletes: list[AthleteProjectionInput]) -> int | None:
