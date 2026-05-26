@@ -1195,6 +1195,12 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
 
         available_genders = sorted({rnd.gender.value for rnd in event.rounds})
 
+        # Problem B fix: if the requested gender has no rounds for this event,
+        # fall back to the first available gender rather than showing an empty page.
+        available_gender_enums = sorted({rnd.gender for rnd in event.rounds})
+        if available_gender_enums and gender_enum not in available_gender_enums:
+            gender_enum = available_gender_enums[0]
+
         # Build current leaderboard: prefer the highest round result per athlete.
         _rt_order = {
             RoundType.FINAL: 0,
@@ -1231,6 +1237,27 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
             key=lambda r: r["rank"] if r["rank"] is not None else 9999,
         )
 
+        # Problem A fix: detect pre-event (no Result rows stored yet) and fall
+        # back to the likely-competitor roster so projections are still useful.
+        pre_event = len(leaderboard_rows) == 0
+        from_likely_roster = False
+        proj_athlete_ids: list[int] = []
+
+        if pre_event:
+            _roster_cache_key = (
+                f"roster:{event.discipline.value}:{event.season}:{gender_enum.value}"
+            )
+            cached_roster = likely_roster_cache.get(_roster_cache_key)
+            if cached_roster is None:
+                cached_roster = likely_competitors(
+                    session, event.discipline, event.season, gender_enum
+                )
+                likely_roster_cache.set(_roster_cache_key, cached_roster)
+            proj_athlete_ids = list(
+                cached_roster[:_V2_MAX_ATHLETES_PER_PROJECTION_CARD]
+            )
+            from_likely_roster = bool(proj_athlete_ids)
+
         # Build projection inputs from leaderboard. Athletes with a finished
         # rank are "completed"; the rest are "remaining". (For pre-event/all-
         # finished events, all rows go into "completed"; we use
@@ -1238,31 +1265,38 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
         completed: list[tuple[AthleteProjectionInput, int]] = []
         remaining: list[AthleteProjectionInput] = []
 
-        for row in leaderboard_rows:
-            aid = row["athlete_id"]
-            rating = session.execute(
-                select(Rating).where(
-                    Rating.athlete_id == aid,
-                    Rating.discipline == event.discipline,
-                )
-            ).scalar_one_or_none()
-            if rating is None:
-                from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
-
-                mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
-            else:
-                mu, sigma = rating.mu, rating.sigma
-            athlete_obj = session.get(Athlete, aid)
-            inp = AthleteProjectionInput(
-                athlete_id=aid,
-                mu=mu,
-                sigma=sigma,
-                name=athlete_obj.name if athlete_obj else str(aid),
-            )
-            if row["rank"] is not None:
-                completed.append((inp, row["rank"]))
-            else:
+        if pre_event and proj_athlete_ids:
+            # Pre-event: use likely roster as "remaining" athletes (no ranks yet).
+            for inp in _build_proj_inputs_batched(
+                session, proj_athlete_ids, event.discipline
+            ):
                 remaining.append(inp)
+        else:
+            for row in leaderboard_rows:
+                aid = row["athlete_id"]
+                rating = session.execute(
+                    select(Rating).where(
+                        Rating.athlete_id == aid,
+                        Rating.discipline == event.discipline,
+                    )
+                ).scalar_one_or_none()
+                if rating is None:
+                    from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+
+                    mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
+                else:
+                    mu, sigma = rating.mu, rating.sigma
+                athlete_obj = session.get(Athlete, aid)
+                inp = AthleteProjectionInput(
+                    athlete_id=aid,
+                    mu=mu,
+                    sigma=sigma,
+                    name=athlete_obj.name if athlete_obj else str(aid),
+                )
+                if row["rank"] is not None:
+                    completed.append((inp, row["rank"]))
+                else:
+                    remaining.append(inp)
 
         projection_rows: list[dict] = []
         if completed or remaining:
@@ -1320,6 +1354,8 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
         "available_genders": available_genders,
         "leaderboard": leaderboard_rows,
         "projections": projection_rows,
+        "pre_event": pre_event,
+        "from_likely_roster": from_likely_roster,
         # SSE backend is shared between / and /v2 surfaces — point at /live/.
         "stream_url": f"/live/{event_id}/stream",
         "initial_athletes": initial_athletes,
