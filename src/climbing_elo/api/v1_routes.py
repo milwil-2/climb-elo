@@ -1,16 +1,26 @@
 """Public REST API v1 endpoints."""
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import func, select
 
+from climbing_elo.cache import predictions_cache
 from climbing_elo.database import get_session_factory
+from climbing_elo.engine.likely_roster import likely_competitors
+from climbing_elo.engine.projections import (
+    AthleteProjectionInput,
+    compute_podium_probabilities,
+)
 from climbing_elo.models import (
     Athlete,
     Discipline,
     Event,
+    EventTier,
     Gender,
     Rating,
     RatingHistory,
@@ -18,20 +28,43 @@ from climbing_elo.models import (
     Round,
 )
 from climbing_elo.api.schemas import (
+    AthleteCombined,
     AthleteDetail,
     AthleteHistoryResponse,
     AthleteRating,
+    CombinedLeaderboardEntry,
+    CombinedLeaderboardResponse,
     DisciplineInfo,
     EventDetail,
     EventsResponse,
     EventSummary,
+    GenderPrediction,
     HistoryPoint,
     LeaderboardEntry,
     LeaderboardResponse,
+    PredictedAthlete,
+    ProjectionEntry,
+    ProjectionRequest,
+    ProjectionResponse,
     RecentEvent,
     ResultRow,
     RoundDetail,
+    UpcomingPredictionEntry,
+    UpcomingPredictionsResponse,
 )
+
+#: Maximum athletes per projection request — matches form cap.
+_MAX_ATHLETES_PER_PROJECTION = 64
+
+#: Disciplines surfaced on the predictions endpoint (no BOULDER_LEAD for upcoming).
+_PREDICTIONS_DISCIPLINES = [
+    ("lead", "Lead", Discipline.LEAD),
+    ("boulder", "Boulder", Discipline.BOULDER),
+    ("speed", "Speed", Discipline.SPEED),
+]
+
+#: Cap on upcoming events per discipline to bound Monte Carlo work.
+_MAX_UPCOMING_PER_DISCIPLINE = 50
 
 router = APIRouter(prefix="/api/v1", tags=["v1"])
 
@@ -421,4 +454,528 @@ async def event_detail(event_id: int) -> EventDetail:
         start_date=event.start_date,
         discipline=_discipline_label(event.discipline),
         rounds=rounds_out,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/combined/leaderboard
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/combined/leaderboard",
+    response_model=CombinedLeaderboardResponse,
+    summary="Get paginated combined (Boulder+Lead) leaderboard",
+)
+async def combined_leaderboard(
+    gender: str = Query("M", description="Gender: M or F"),
+    limit: int = Query(50, ge=1, le=100, description="Number of results (1–100)"),
+    offset: int = Query(0, ge=0, le=10000, description="Pagination offset (max 10000)"),
+) -> CombinedLeaderboardResponse:
+    """
+    Return paginated combined (BOULDER_LEAD) ELO leaderboard for the requested gender.
+
+    Each entry includes the combined μ/σ plus the underlying boulder and lead
+    breakdown so API consumers can see how the geometric mean is formed.
+
+    Athletes are ranked by descending μ_combined.
+    """
+    gen = _resolve_gender(gender)
+
+    with _session() as session:
+        # Main query: join BOULDER_LEAD Rating → Athlete
+        base_stmt = (
+            select(Rating, Athlete)
+            .join(Athlete, Rating.athlete_id == Athlete.id)
+            .where(Rating.discipline == Discipline.BOULDER_LEAD, Athlete.gender == gen)
+        )
+
+        total: int = session.execute(
+            select(func.count()).select_from(base_stmt.subquery())
+        ).scalar_one()
+
+        rows = session.execute(
+            base_stmt.order_by(Rating.mu.desc()).limit(limit).offset(offset)
+        ).all()
+
+        items: list[CombinedLeaderboardEntry] = []
+        for i, (combined_rating, athlete) in enumerate(rows):
+            # Fetch individual boulder and lead ratings for the breakdown
+            boulder_rating = session.execute(
+                select(Rating).where(
+                    Rating.athlete_id == athlete.id,
+                    Rating.discipline == Discipline.BOULDER,
+                )
+            ).scalar_one_or_none()
+            lead_rating = session.execute(
+                select(Rating).where(
+                    Rating.athlete_id == athlete.id,
+                    Rating.discipline == Discipline.LEAD,
+                )
+            ).scalar_one_or_none()
+
+            items.append(
+                CombinedLeaderboardEntry(
+                    rank=offset + i + 1,
+                    athlete_id=athlete.id,
+                    name=athlete.name,
+                    nationality=athlete.nationality,
+                    gender=athlete.gender.value,
+                    mu=round(combined_rating.mu, 2),
+                    sigma=round(combined_rating.sigma, 2),
+                    n_events=combined_rating.n_events,
+                    provisional=combined_rating.provisional,
+                    last_event_at=combined_rating.last_event_at,
+                    mu_boulder=round(boulder_rating.mu, 2) if boulder_rating else 0.0,
+                    mu_lead=round(lead_rating.mu, 2) if lead_rating else 0.0,
+                    sigma_boulder=round(boulder_rating.sigma, 2) if boulder_rating else 0.0,
+                    sigma_lead=round(lead_rating.sigma, 2) if lead_rating else 0.0,
+                )
+            )
+
+    return CombinedLeaderboardResponse(
+        gender=gen.value,
+        limit=limit,
+        offset=offset,
+        total=total,
+        items=items,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/athletes/{athlete_id}/combined
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/athletes/{athlete_id}/combined",
+    response_model=AthleteCombined,
+    summary="Get athlete's combined (Boulder+Lead) rating",
+)
+async def athlete_combined(athlete_id: int) -> AthleteCombined:
+    """
+    Return one athlete's combined BOULDER_LEAD rating plus the underlying
+    boulder and lead breakdown.
+
+    Returns 404 if the athlete does not have a combined rating (e.g. they have
+    not competed in both disciplines or ``compute_combined_ratings.py`` has not
+    been run yet).
+    """
+    with _session() as session:
+        athlete = session.get(Athlete, athlete_id)
+        if not athlete:
+            raise HTTPException(status_code=404, detail=f"Athlete {athlete_id} not found")
+
+        combined_rating = session.execute(
+            select(Rating).where(
+                Rating.athlete_id == athlete_id,
+                Rating.discipline == Discipline.BOULDER_LEAD,
+            )
+        ).scalar_one_or_none()
+
+        if combined_rating is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Athlete {athlete_id} has no combined (Boulder+Lead) rating",
+            )
+
+        boulder_rating = session.execute(
+            select(Rating).where(
+                Rating.athlete_id == athlete_id,
+                Rating.discipline == Discipline.BOULDER,
+            )
+        ).scalar_one_or_none()
+
+        lead_rating = session.execute(
+            select(Rating).where(
+                Rating.athlete_id == athlete_id,
+                Rating.discipline == Discipline.LEAD,
+            )
+        ).scalar_one_or_none()
+
+    return AthleteCombined(
+        athlete_id=athlete.id,
+        name=athlete.name,
+        nationality=athlete.nationality,
+        gender=athlete.gender.value,
+        mu_combined=round(combined_rating.mu, 2),
+        sigma_combined=round(combined_rating.sigma, 2),
+        n_events_combined=combined_rating.n_events,
+        provisional_combined=combined_rating.provisional,
+        mu_boulder=round(boulder_rating.mu, 2) if boulder_rating else 0.0,
+        mu_lead=round(lead_rating.mu, 2) if lead_rating else 0.0,
+        sigma_boulder=round(boulder_rating.sigma, 2) if boulder_rating else 0.0,
+        sigma_lead=round(lead_rating.sigma, 2) if lead_rating else 0.0,
+        last_event_at=combined_rating.last_event_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/projections
+# ---------------------------------------------------------------------------
+
+def _make_projection_cache_key(discipline: Discipline, athlete_ids: list[int]) -> str:
+    """Stable cache key for a projection request fingerprint."""
+    sorted_ids = sorted(athlete_ids)
+    payload = json.dumps({"disc": discipline.value, "ids": sorted_ids}, sort_keys=True)
+    return "api:projections:" + hashlib.sha256(payload.encode()).hexdigest()
+
+
+@router.post(
+    "/projections",
+    response_model=ProjectionResponse,
+    summary="Compute podium probability projections",
+)
+async def projections(body: ProjectionRequest) -> ProjectionResponse:
+    """
+    Run Monte Carlo podium-probability projections for a custom set of athletes.
+
+    Supply a discipline and a list of 2–64 athlete IDs. The engine draws 10,000
+    simulated events from each athlete's rating distribution and returns win,
+    podium, top-8, and expected-rank probabilities.
+
+    **Caching**: results are cached in-memory for 1 hour keyed on the request
+    fingerprint (discipline + sorted athlete IDs). Repeated identical requests
+    are served from cache at negligible cost.
+
+    **Known limits**: no explicit per-client rate limiting; the 64-athlete cap
+    and 1-hour cache mitigate abuse. Consider adding a rate limiter if this
+    endpoint is exposed to untrusted traffic.
+    """
+    disc = _resolve_discipline(body.discipline)
+
+    # Validate no duplicates
+    if len(body.athlete_ids) != len(set(body.athlete_ids)):
+        raise HTTPException(
+            status_code=422,
+            detail="athlete_ids must not contain duplicates",
+        )
+
+    cache_key = _make_projection_cache_key(disc, body.athlete_ids)
+    cached = predictions_cache.get(cache_key)
+
+    with _session() as session:
+        from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+
+        proj_inputs: list[AthleteProjectionInput] = []
+        for aid in body.athlete_ids:
+            athlete = session.get(Athlete, aid)
+            if not athlete:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Athlete {aid} not found",
+                )
+            rating = session.execute(
+                select(Rating).where(
+                    Rating.athlete_id == aid,
+                    Rating.discipline == disc,
+                )
+            ).scalar_one_or_none()
+            mu = rating.mu if rating else DEFAULT_MU
+            sigma = rating.sigma if rating else DEFAULT_SIGMA
+            proj_inputs.append(
+                AthleteProjectionInput(
+                    athlete_id=aid,
+                    mu=mu,
+                    sigma=sigma,
+                    name=athlete.name,
+                )
+            )
+
+        if cached is not None:
+            probs = cached
+        else:
+            probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
+            predictions_cache.set(cache_key, probs)
+
+        items = [
+            ProjectionEntry(
+                athlete_id=a.athlete_id,
+                name=a.name,
+                mu=round(a.mu, 2),
+                sigma=round(a.sigma, 2),
+                win=probs[a.athlete_id]["win"],
+                podium=probs[a.athlete_id]["podium"],
+                top_8=probs[a.athlete_id]["top_8"],
+                expected_rank=probs[a.athlete_id]["expected_rank"],
+            )
+            for a in sorted(proj_inputs, key=lambda x: probs[x.athlete_id]["expected_rank"])
+        ]
+
+    return ProjectionResponse(
+        discipline=_discipline_label(disc),
+        n_athletes=len(proj_inputs),
+        n_simulations=10_000,
+        items=items,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/predictions/upcoming
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/predictions/upcoming",
+    response_model=UpcomingPredictionsResponse,
+    summary="List upcoming events with predicted top-3",
+)
+async def predictions_upcoming(
+    discipline: Optional[str] = Query(
+        None,
+        description="Filter by discipline: lead, boulder, speed. Omit for all.",
+    ),
+    season: Optional[int] = Query(
+        None,
+        ge=2000,
+        le=2100,
+        description="Filter by season year. Defaults to the current year.",
+    ),
+) -> UpcomingPredictionsResponse:
+    """
+    Return upcoming events (start_date >= today) with predicted top-3 per gender.
+
+    For events with registered athletes (stored via the scraper), projections use
+    those athletes.  For events without a registered list, the endpoint falls back
+    to a *likely-competitor roster* derived from season attendance patterns (same
+    logic as the /predictions HTML page).  The ``from_likely_roster`` flag on each
+    entry indicates which source was used.
+
+    **Filters**:
+    - ``discipline``: lead, boulder, or speed (boulder_lead excluded — no upcoming
+      combined events in the IFSC calendar).
+    - ``season``: season year. Defaults to the current calendar year.
+
+    Results are capped at 50 upcoming events per discipline and cached for 1 hour.
+    """
+    from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+
+    today = date.today()
+    effective_season = season if season is not None else today.year
+
+    # Build the list of disciplines to query
+    if discipline is not None:
+        disc_enum = _resolve_discipline(discipline)
+        # Restrict to the three "atomic" disciplines (no BOULDER_LEAD for upcoming)
+        if disc_enum == Discipline.BOULDER_LEAD:
+            raise HTTPException(
+                status_code=422,
+                detail="boulder_lead / combined is not available for upcoming predictions. "
+                       "Use lead or boulder individually.",
+            )
+        disciplines_to_query = [(_discipline_label(disc_enum), disc_enum)]
+    else:
+        disciplines_to_query = [(label, disc) for (label, _, disc) in _PREDICTIONS_DISCIPLINES]
+
+    all_entries: list[UpcomingPredictionEntry] = []
+
+    with _session() as session:
+        for disc_key, disc_enum in disciplines_to_query:
+            stmt = (
+                select(Event)
+                .where(
+                    Event.discipline == disc_enum,
+                    Event.start_date >= today,
+                    Event.season == effective_season,
+                )
+                .order_by(Event.start_date.asc())
+                .limit(_MAX_UPCOMING_PER_DISCIPLINE)
+            )
+            upcoming_events = list(session.execute(stmt).scalars())
+
+            for ev in upcoming_events:
+                result_count = session.execute(
+                    select(func.count(Result.id))
+                    .join(Round, Result.round_id == Round.id)
+                    .where(Round.event_id == ev.id)
+                ).scalar_one()
+
+                has_athletes = result_count > 0
+                from_likely_roster = False
+                gender_predictions: list[GenderPrediction] = []
+
+                if has_athletes:
+                    available_genders = sorted({rnd.gender for rnd in ev.rounds})
+                    for gender_enum in available_genders:
+                        seen: set[int] = set()
+                        athlete_ids_in_event: list[int] = []
+                        for rnd in ev.rounds:
+                            if rnd.gender != gender_enum:
+                                continue
+                            for res in session.execute(
+                                select(Result).where(
+                                    Result.round_id == rnd.id,
+                                    Result.dns.is_(False),
+                                )
+                            ).scalars():
+                                if res.athlete_id not in seen:
+                                    athlete_ids_in_event.append(res.athlete_id)
+                                    seen.add(res.athlete_id)
+
+                        if not athlete_ids_in_event:
+                            continue
+
+                        proj_inputs: list[AthleteProjectionInput] = []
+                        for aid in athlete_ids_in_event:
+                            athlete = session.get(Athlete, aid)
+                            if not athlete:
+                                continue
+                            rating = session.execute(
+                                select(Rating).where(
+                                    Rating.athlete_id == aid,
+                                    Rating.discipline == disc_enum,
+                                )
+                            ).scalar_one_or_none()
+                            mu = rating.mu if rating else DEFAULT_MU
+                            sigma = rating.sigma if rating else DEFAULT_SIGMA
+                            proj_inputs.append(
+                                AthleteProjectionInput(
+                                    athlete_id=aid, mu=mu, sigma=sigma, name=athlete.name
+                                )
+                            )
+
+                        if len(proj_inputs) > _MAX_ATHLETES_PER_PROJECTION:
+                            proj_inputs = sorted(proj_inputs, key=lambda a: a.mu, reverse=True)[
+                                :_MAX_ATHLETES_PER_PROJECTION
+                            ]
+
+                        _fingerprint = ":".join(
+                            f"{a.athlete_id},{a.mu:.2f},{a.sigma:.2f}"
+                            for a in sorted(proj_inputs, key=lambda a: a.athlete_id)
+                        )
+                        _cache_key = (
+                            f"api:projections:event:{ev.id}"
+                            f":disc:{disc_enum.value}"
+                            f":gender:{gender_enum.value}"
+                            f":athletes:{_fingerprint}"
+                        )
+                        probs = predictions_cache.get(_cache_key)
+                        if probs is None:
+                            probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
+                            predictions_cache.set(_cache_key, probs)
+
+                        ranked = sorted(proj_inputs, key=lambda a: probs[a.athlete_id]["expected_rank"])
+                        top3 = [
+                            PredictedAthlete(
+                                athlete_id=a.athlete_id,
+                                name=a.name,
+                                win=probs[a.athlete_id]["win"],
+                                podium=probs[a.athlete_id]["podium"],
+                                expected_rank=probs[a.athlete_id]["expected_rank"],
+                            )
+                            for a in ranked[:3]
+                        ]
+                        gender_predictions.append(
+                            GenderPrediction(
+                                gender=gender_enum.value,
+                                total_athletes=len(proj_inputs),
+                                top_3=top3,
+                            )
+                        )
+
+                else:
+                    # Likely-competitor fallback
+                    from climbing_elo.cache import likely_roster_cache
+
+                    for gender_enum in [Gender.M, Gender.F]:
+                        _roster_key = f"roster:{disc_enum.value}:{ev.season}:{gender_enum.value}"
+                        athlete_ids_roster = likely_roster_cache.get(_roster_key)
+                        if athlete_ids_roster is None:
+                            athlete_ids_roster = likely_competitors(
+                                session,
+                                disc_enum,
+                                ev.season,
+                                gender_enum,
+                            )
+                            likely_roster_cache.set(_roster_key, athlete_ids_roster)
+
+                        if not athlete_ids_roster:
+                            continue
+
+                        proj_inputs_fb: list[AthleteProjectionInput] = []
+                        for aid in athlete_ids_roster[:_MAX_ATHLETES_PER_PROJECTION]:
+                            athlete = session.get(Athlete, aid)
+                            if not athlete:
+                                continue
+                            rating = session.execute(
+                                select(Rating).where(
+                                    Rating.athlete_id == aid,
+                                    Rating.discipline == disc_enum,
+                                )
+                            ).scalar_one_or_none()
+                            mu = rating.mu if rating else DEFAULT_MU
+                            sigma = rating.sigma if rating else DEFAULT_SIGMA
+                            proj_inputs_fb.append(
+                                AthleteProjectionInput(
+                                    athlete_id=aid, mu=mu, sigma=sigma, name=athlete.name
+                                )
+                            )
+
+                        if len(proj_inputs_fb) < 2:
+                            continue
+
+                        _fingerprint_fb = ":".join(
+                            f"{a.athlete_id},{a.mu:.2f},{a.sigma:.2f}"
+                            for a in sorted(proj_inputs_fb, key=lambda a: a.athlete_id)
+                        )
+                        _cache_key_fb = (
+                            f"api:projections:likely:{ev.id}"
+                            f":disc:{disc_enum.value}"
+                            f":gender:{gender_enum.value}"
+                            f":athletes:{_fingerprint_fb}"
+                        )
+                        probs_fb = predictions_cache.get(_cache_key_fb)
+                        if probs_fb is None:
+                            probs_fb = compute_podium_probabilities(
+                                proj_inputs_fb, n_simulations=10_000
+                            )
+                            predictions_cache.set(_cache_key_fb, probs_fb)
+
+                        ranked_fb = sorted(
+                            proj_inputs_fb,
+                            key=lambda a: probs_fb[a.athlete_id]["expected_rank"],
+                        )
+                        top3_fb = [
+                            PredictedAthlete(
+                                athlete_id=a.athlete_id,
+                                name=a.name,
+                                win=probs_fb[a.athlete_id]["win"],
+                                podium=probs_fb[a.athlete_id]["podium"],
+                                expected_rank=probs_fb[a.athlete_id]["expected_rank"],
+                            )
+                            for a in ranked_fb[:3]
+                        ]
+                        gender_predictions.append(
+                            GenderPrediction(
+                                gender=gender_enum.value,
+                                total_athletes=len(proj_inputs_fb),
+                                top_3=top3_fb,
+                            )
+                        )
+
+                    if gender_predictions:
+                        from_likely_roster = True
+
+                all_entries.append(
+                    UpcomingPredictionEntry(
+                        event_id=ev.id,
+                        event_name=ev.name,
+                        discipline=_discipline_label(ev.discipline),
+                        season=ev.season,
+                        start_date=ev.start_date,
+                        tier=ev.tier.value,
+                        country=ev.country,
+                        has_registered_athletes=has_athletes,
+                        from_likely_roster=from_likely_roster,
+                        genders=gender_predictions,
+                    )
+                )
+
+    # Normalise the discipline label in the response
+    discipline_label: Optional[str] = None
+    if discipline is not None:
+        discipline_label = _discipline_label(_resolve_discipline(discipline))
+
+    return UpcomingPredictionsResponse(
+        discipline=discipline_label,
+        season=effective_season,
+        total=len(all_entries),
+        items=all_entries,
     )

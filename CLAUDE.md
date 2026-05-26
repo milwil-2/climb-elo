@@ -84,8 +84,12 @@ Interactive docs: `http://localhost:8000/docs` — OpenAPI schema: `/openapi.jso
 | GET | `/api/v1/leaderboard` | Paginated ELO rankings. Query: `discipline`, `gender`, `limit` (1–100), `offset` (0–10000) |
 | GET | `/api/v1/athletes/{id}` | Athlete profile with all discipline ratings and 20 most recent events |
 | GET | `/api/v1/athletes/{id}/history` | Rating-over-time history for charts. Query: `discipline` |
+| GET | `/api/v1/athletes/{id}/combined` | Athlete's combined (BOULDER_LEAD) rating plus boulder/lead breakdown. 404 if no combined rating |
 | GET | `/api/v1/events` | Paginated event list. Query: `discipline`, `season`, `limit`, `offset` |
 | GET | `/api/v1/events/{id}` | Event details with rounds and per-athlete results + pre/post ELO |
+| GET | `/api/v1/combined/leaderboard` | Paginated combined (BOULDER_LEAD) leaderboard with mu_boulder/mu_lead breakdown. Query: `gender`, `limit`, `offset` |
+| POST | `/api/v1/projections` | Monte Carlo podium probabilities. Body: `{"discipline": "lead", "athlete_ids": [1,2,…]}` (2–64 athletes, no duplicates). Cached 1h. |
+| GET | `/api/v1/predictions/upcoming` | Upcoming events with predicted top-3 per gender. Query: `discipline` (lead/boulder/speed), `season`. Falls back to likely-roster when no registered athletes. |
 
 Source files: `api/v1_routes.py` (endpoints), `api/schemas.py` (Pydantic response models).
 
