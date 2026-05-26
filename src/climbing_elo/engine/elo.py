@@ -109,7 +109,7 @@ BOULDER_MARGIN_MAX_GAP = 1000.0
 # Regex for the old-format ordinal Boulder score: e.g. "1T2z 3 4" or "2T2 3B4"
 _OLD_BOULDER_RE = re.compile(
     r"(\d+)[Tt](\d+)[Zz]\s+(\d+)\s+(\d+)"  # "NTMz A B"
-    r"|(\d+)[Tt](\d+)\s+(\d+)[Bb](\d+)",    # "NT A MBB"
+    r"|(\d+)[Tt](\d+)\s+(\d+)[Bb](\d+)",  # "NT A MBB"
 )
 
 

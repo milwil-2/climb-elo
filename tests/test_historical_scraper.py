@@ -13,10 +13,9 @@ from __future__ import annotations
 import csv
 import io
 import sys
-import types
 from datetime import date
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -35,7 +34,7 @@ from climbing_elo.models import (
     Round,
     RoundType,
 )
-from climbing_elo.scraper.ifsc_api import ScrapeReport, scrape_all_seasons
+from climbing_elo.scraper.ifsc_api import scrape_all_seasons
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +173,7 @@ def _load_historical_module():
     import importlib.util
 
     script_path = (
-        Path(__file__).resolve().parents[1]
-        / "scripts"
-        / "scrape_ifsc_historical.py"
+        Path(__file__).resolve().parents[1] / "scripts" / "scrape_ifsc_historical.py"
     )
     spec = importlib.util.spec_from_file_location("scrape_ifsc_historical", script_path)
     mod = importlib.util.module_from_spec(spec)
@@ -189,9 +186,7 @@ def _load_validate_module():
     import importlib.util
 
     script_path = (
-        Path(__file__).resolve().parents[1]
-        / "scripts"
-        / "validate_db_counts.py"
+        Path(__file__).resolve().parents[1] / "scripts" / "validate_db_counts.py"
     )
     spec = importlib.util.spec_from_file_location("validate_db_counts", script_path)
     mod = importlib.util.module_from_spec(spec)
@@ -213,67 +208,96 @@ class TestArgumentParsing:
 
     def test_custom_year_range(self):
         mod = _load_historical_module()
-        with patch("sys.argv", [
-            "scrape_ifsc_historical.py",
-            "--min-year", "2018",
-            "--max-year", "2022",
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "scrape_ifsc_historical.py",
+                "--min-year",
+                "2018",
+                "--max-year",
+                "2022",
+            ],
+        ):
             args = mod._parse_args()
         assert args.min_year == 2018
         assert args.max_year == 2022
 
     def test_discipline_lead(self):
         mod = _load_historical_module()
-        with patch("sys.argv", [
-            "scrape_ifsc_historical.py",
-            "--discipline", "lead",
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "scrape_ifsc_historical.py",
+                "--discipline",
+                "lead",
+            ],
+        ):
             args = mod._parse_args()
         assert args.discipline == "lead"
 
     def test_discipline_boulder(self):
         mod = _load_historical_module()
-        with patch("sys.argv", [
-            "scrape_ifsc_historical.py",
-            "--discipline", "boulder",
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "scrape_ifsc_historical.py",
+                "--discipline",
+                "boulder",
+            ],
+        ):
             args = mod._parse_args()
         assert args.discipline == "boulder"
 
     def test_discipline_speed(self):
         mod = _load_historical_module()
-        with patch("sys.argv", [
-            "scrape_ifsc_historical.py",
-            "--discipline", "speed",
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "scrape_ifsc_historical.py",
+                "--discipline",
+                "speed",
+            ],
+        ):
             args = mod._parse_args()
         assert args.discipline == "speed"
 
     def test_discipline_all(self):
         mod = _load_historical_module()
-        with patch("sys.argv", [
-            "scrape_ifsc_historical.py",
-            "--discipline", "all",
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "scrape_ifsc_historical.py",
+                "--discipline",
+                "all",
+            ],
+        ):
             args = mod._parse_args()
         assert args.discipline == "all"
 
     def test_delay_ms(self):
         mod = _load_historical_module()
-        with patch("sys.argv", [
-            "scrape_ifsc_historical.py",
-            "--delay-ms", "500",
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "scrape_ifsc_historical.py",
+                "--delay-ms",
+                "500",
+            ],
+        ):
             args = mod._parse_args()
         assert args.delay_ms == 500
 
     def test_invalid_discipline_rejected(self):
         """argparse should exit on an unknown --discipline value."""
         mod = _load_historical_module()
-        with patch("sys.argv", [
-            "scrape_ifsc_historical.py",
-            "--discipline", "paraclimbing",
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "scrape_ifsc_historical.py",
+                "--discipline",
+                "paraclimbing",
+            ],
+        ):
             with pytest.raises(SystemExit):
                 mod._parse_args()
 
@@ -290,14 +314,17 @@ class TestYearRangeFiltering:
         """Seasons 2018 and 2019 are fetched; 2015 is outside range and skipped."""
         session = _make_session()
 
-        with patch(
-            "climbing_elo.scraper.ifsc_api.get_seasons",
-            return_value=MOCK_SEASONS,
-        ), patch(
-            "climbing_elo.scraper.ifsc_api._api_get",
-            side_effect=_api_get_side_effect,
+        with (
+            patch(
+                "climbing_elo.scraper.ifsc_api.get_seasons",
+                return_value=MOCK_SEASONS,
+            ),
+            patch(
+                "climbing_elo.scraper.ifsc_api._api_get",
+                side_effect=_api_get_side_effect,
+            ),
         ):
-            report = scrape_all_seasons(
+            scrape_all_seasons(
                 session,
                 min_year=2018,
                 max_year=2019,
@@ -318,12 +345,15 @@ class TestYearRangeFiltering:
         """An empty year range should produce 0 events."""
         session = _make_session()
 
-        with patch(
-            "climbing_elo.scraper.ifsc_api.get_seasons",
-            return_value=MOCK_SEASONS,
-        ), patch(
-            "climbing_elo.scraper.ifsc_api._api_get",
-            side_effect=_api_get_side_effect,
+        with (
+            patch(
+                "climbing_elo.scraper.ifsc_api.get_seasons",
+                return_value=MOCK_SEASONS,
+            ),
+            patch(
+                "climbing_elo.scraper.ifsc_api._api_get",
+                side_effect=_api_get_side_effect,
+            ),
         ):
             report = scrape_all_seasons(
                 session,
@@ -349,14 +379,17 @@ class TestHistoricalScraperIdempotency:
         """Two consecutive calls to scrape_all_seasons store exactly the same rows."""
         session = _make_session()
 
-        with patch(
-            "climbing_elo.scraper.ifsc_api.get_seasons",
-            return_value=MOCK_SEASONS,
-        ), patch(
-            "climbing_elo.scraper.ifsc_api._api_get",
-            side_effect=_api_get_side_effect,
+        with (
+            patch(
+                "climbing_elo.scraper.ifsc_api.get_seasons",
+                return_value=MOCK_SEASONS,
+            ),
+            patch(
+                "climbing_elo.scraper.ifsc_api._api_get",
+                side_effect=_api_get_side_effect,
+            ),
         ):
-            report1 = scrape_all_seasons(
+            scrape_all_seasons(
                 session,
                 min_year=2018,
                 max_year=2019,
@@ -364,7 +397,7 @@ class TestHistoricalScraperIdempotency:
             )
             count_after_first = len(session.execute(select(Event)).scalars().all())
 
-            report2 = scrape_all_seasons(
+            scrape_all_seasons(
                 session,
                 min_year=2018,
                 max_year=2019,
@@ -380,12 +413,15 @@ class TestHistoricalScraperIdempotency:
         """Re-running the scraper must not insert duplicate Result rows."""
         session = _make_session()
 
-        with patch(
-            "climbing_elo.scraper.ifsc_api.get_seasons",
-            return_value=MOCK_SEASONS,
-        ), patch(
-            "climbing_elo.scraper.ifsc_api._api_get",
-            side_effect=_api_get_side_effect,
+        with (
+            patch(
+                "climbing_elo.scraper.ifsc_api.get_seasons",
+                return_value=MOCK_SEASONS,
+            ),
+            patch(
+                "climbing_elo.scraper.ifsc_api._api_get",
+                side_effect=_api_get_side_effect,
+            ),
         ):
             scrape_all_seasons(
                 session,
@@ -410,7 +446,6 @@ class TestHistoricalScraperIdempotency:
     def test_event_unique_constraint_prevents_duplicates(self):
         """The UNIQUE(name, season, discipline) constraint is present on the events table."""
         from sqlalchemy import inspect as sa_inspect
-        from sqlalchemy.exc import IntegrityError
 
         engine = _make_engine()
         inspector = sa_inspect(engine)
@@ -429,7 +464,7 @@ class TestHistoricalScraperIdempotency:
 
 def _seed_validate_data(engine) -> None:
     """Populate the in-memory DB with two events across two seasons/disciplines."""
-    with engine.begin() as conn:
+    with engine.begin():
         from sqlalchemy.orm import Session as _Session
 
         session = _Session(bind=engine)
@@ -620,11 +655,16 @@ class TestValidateDbCounts:
 
     def test_validate_args_year_range(self):
         validate_mod = _load_validate_module()
-        with patch("sys.argv", [
-            "validate_db_counts.py",
-            "--min-year", "2016",
-            "--max-year", "2023",
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "validate_db_counts.py",
+                "--min-year",
+                "2016",
+                "--max-year",
+                "2023",
+            ],
+        ):
             args = validate_mod._parse_args()
         assert args.min_year == 2016
         assert args.max_year == 2023
