@@ -1,0 +1,123 @@
+name: IFSC API Health Check
+
+on:
+  schedule:
+    # Run every 30 minutes
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    name: Ping ifsc.results.info
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Cache uv deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run health check
+        id: health
+        # Pass the webhook via env so it never appears in the command string logged by Actions
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            uv run python scripts/health_check_cli.py --webhook "$DISCORD_WEBHOOK_URL"
+          else
+            uv run python scripts/health_check_cli.py
+          fi
+
+      # -----------------------------------------------------------------------
+      # Auto-issue on persistent failure
+      # Only fires if the health-check step above failed.
+      # Checks for an existing open issue labeled "health-check-alert":
+      #   - If none exists → create a new issue.
+      #   - If one exists  → add a comment (avoids duplicate issues).
+      # -----------------------------------------------------------------------
+      - name: Check for persistent failure (count recent failed runs)
+        if: failure() && steps.health.outcome == 'failure'
+        id: count-failures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Count how many of the last 3 completed runs of this workflow failed
+          FAILED=$(gh run list \
+            --workflow="health-check.yml" \
+            --limit=3 \
+            --json conclusion \
+            --jq '[.[] | select(.conclusion == "failure")] | length')
+          echo "recent_failures=${FAILED}" >> "$GITHUB_OUTPUT"
+
+      - name: Find existing health-check-alert issue
+        if: failure() && steps.health.outcome == 'failure' && steps.count-failures.outputs.recent_failures >= 2
+        id: find-issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_NUMBER=$(gh issue list \
+            --label "health-check-alert" \
+            --state open \
+            --json number \
+            --jq '.[0].number // ""')
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Create new health-check-alert issue
+        if: |
+          failure() &&
+          steps.health.outcome == 'failure' &&
+          steps.count-failures.outputs.recent_failures >= 2 &&
+          steps.find-issue.outputs.issue_number == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh issue create \
+            --title "IFSC API health check failing (persistent)" \
+            --body "## IFSC API health check is failing
+
+          The automated health check has failed on **3 or more consecutive runs**.
+
+          - **Workflow run:** ${RUN_URL}
+          - **Endpoint checked:** \`ifsc.results.info/api/v1/\`
+          - **Time (UTC):** $(date -u '+%Y-%m-%d %H:%M:%S')
+
+          ### Possible causes
+          - The legacy IFSC API (\`ifsc.results.info\`) has been deprecated or is temporarily down.
+          - A network issue is preventing the runner from reaching the endpoint.
+
+          ### Next steps
+          See [Issue #30](https://github.com/milwil-2/climb-elo/issues/30) for migration notes if the API has been permanently retired.
+          " \
+            --label "health-check-alert" \
+            --label "bug"
+
+      - name: Comment on existing health-check-alert issue
+        if: |
+          failure() &&
+          steps.health.outcome == 'failure' &&
+          steps.count-failures.outputs.recent_failures >= 2 &&
+          steps.find-issue.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh issue comment "${{ steps.find-issue.outputs.issue_number }}" \
+            --body "Health check still failing as of $(date -u '+%Y-%m-%d %H:%M UTC'). [Run details](${RUN_URL})"

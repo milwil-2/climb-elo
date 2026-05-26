@@ -16,7 +16,22 @@ uv run python scripts/scrape_ifsc.py --min-year 2012 --max-year 2026
 uv run python scripts/run_backfill.py
 uv run python scripts/run_backtest.py   # validates model beats baseline by ≥15pp
 uv run python scripts/compute_combined_ratings.py  # populate BOULDER_LEAD aggregate
+
+# Health-check monitoring
+uv run python scripts/health_check_cli.py             # ping API; exit 0/1
+uv run python scripts/health_check_cli.py --quiet     # no output (for cron)
+uv run python scripts/health_check_cli.py --webhook "$DISCORD_WEBHOOK_URL"  # alert on failure
 ```
+
+## Monitoring
+
+The IFSC API health check runs **every 30 minutes** via `.github/workflows/health-check.yml`.
+
+- Pings `ifsc.results.info/api/v1/` via `health_check()` in `scraper/ifsc_api.py`.
+- Exits 0 (healthy) or 1 (unhealthy) — GitHub Actions emails the maintainer on failure by default.
+- If `DISCORD_WEBHOOK_URL` is set as a GitHub Actions secret, a Discord embed alert is also posted (rate-limited to max 1 per hour to suppress flapping).
+- On **3+ consecutive failures**, a GitHub issue is automatically opened (or commented on if one already exists) with label `health-check-alert`.
+- The workflow can also be triggered manually via `workflow_dispatch`.
 
 ## Architecture
 
