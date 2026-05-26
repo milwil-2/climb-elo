@@ -48,7 +48,7 @@ uv run python scripts/smoke_test.py --no-screenshots                 # skip cmux
 
 **When to run:** before deploys, after large refactors, after any template or route changes.
 
-**What it covers (11 checks):** GET `/`, `/predictions`, `/head-to-head`, `/head-to-head/{a}/{b}?discipline=lead`, `/projections/new`, `/projections/{event_id}`, `/events`, `/events/{event_id}`, `/athletes/{id}`, `/breakdown/{a}/{e}`, and a 404 for non-existent athlete. **Does not cover** POST routes, REST API (`/api/v1/*`), live SSE streaming, or visual regressions beyond "key strings present".
+**What it covers (12 checks):** GET `/`, `/leaderboard`, `/athletes`, `/predictions`, `/projections`, `/head-to-head`, `/head-to-head/{a}/{b}?discipline=lead`, `/events`, `/events/{event_id}`, `/athletes/{id}`, `/breakdown/{a}/{e}`, and a 404 for non-existent athlete. **Does not cover** POST routes, REST API (`/api/v1/*`), live SSE streaming, or visual regressions beyond "key strings present". The v1 routes `/projections/new` and `/projections/{event_id}` were removed when v2 was promoted to root — no v2 equivalent ships yet.
 
 **Screenshots:** when `cmux browser` is available and enabled, PNGs are saved to `/tmp/climbing_elo_smoke/YYYY-MM-DD/`. The `screenshots/` directory is gitignored.
 
@@ -124,6 +124,8 @@ Pain points we've already paid for, so don't re-learn them:
 ## Data Model
 
 Six SQLAlchemy models in `models.py`: Athlete → Event → Round → Result (competition data), Rating + RatingHistory (computed ratings). RatingHistory stores `contributing_pairs` as a JSON column for the breakdown view. Key enums: `EventTier` (olympics/world_championship/world_cup/continental), `RoundType` (qualification/semi/final), `Discipline` (L/B/S/BL).
+
+`Event.livestream_url` (added in #23) holds an optional YouTube URL for the live broadcast. Strictly validated against a `youtube.com` / `youtu.be` allowlist in `src/climbing_elo/live/livestream.py` before being rendered into a sandboxed iframe on `/live/{event_id}`. Populated manually per event — the IFSC API does not expose stream URLs.
 
 ## ELO Engine Specifics
 
@@ -240,6 +242,14 @@ SSE stream (browser / curl):
 curl -N http://localhost:8000/live/1234/stream
 ```
 
+### YouTube broadcast embed
+
+When `Event.livestream_url` is populated, `/live/{event_id}` renders a sandboxed YouTube iframe alongside the leaderboard + projections (left video / right stats at ≥1024px; stacked below). URL is validated by `parse_youtube_video_id()` in `src/climbing_elo/live/livestream.py` — `javascript:`, `data:`, and non-allowlisted hosts are rejected. Europe-paywalled events fall back to YouTube's own region-block message inside the iframe; the "Open on YouTube →" link remains usable for VPN users.
+
+### Production caveat: SSE on Vercel
+
+The live SSE endpoint (`/live/{event_id}/stream`) does NOT work on Vercel serverless — function timeouts cap responses at 60s while the SSE handler keeps connections open for up to 4 hours. The endpoint exists in the codebase but is effectively dead in production. To re-enable live streaming, the poller + SSE handler would need to run on a long-lived host (Fly.io, Railway, or a Vercel-adjacent VPS). Tracked informally; not yet ticketed.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull request.
@@ -276,3 +286,35 @@ The repo runs in `selected_actions` mode (security lockdown — see `docs/SECURI
 ## Supabase MCP server
 
 `.mcp.json` is wired to the hosted Supabase MCP server (`https://mcp.supabase.com/mcp?project_ref=micecpgpuispvdfqdtmm`, read-only) for schema introspection and ad-hoc queries against the production DB from Claude Code.
+
+## Iteration backlog (rating model improvements)
+
+Sequenced plan from the R&D synthesis in `docs/RATING_SYSTEM_RESEARCH.md`. Open issues are tracked on GitHub; this section captures the **why** and the cross-cutting decisions so future work doesn't relitigate.
+
+### Phase 1 — in flight (parallel)
+- **#51 — Glicko-2 RD integration** (highest payoff). Makes σ a real Glicko-2 RD that modulates updates. Retires the 2× provisional-K cliff. Full plan: `docs/PLAN_GLICKO2_RD_INTEGRATION.md`. **Baked-in decisions** (locked in to avoid relitigation):
+  1. **Inactivity inflation**: calendar-time semantics (months since last event), per Glicko-2's Wiener-process model.
+  2. **Margin of victory**: stays separate from outcome `s_j` ∈ {0, 0.5, 1}. Folds into K via `K_effective = K_base × g(φ_opp) × margin_multiplier`. Keeps #53 as an independent change.
+  3. **Projection σ**: reuse Glicko-2 φ in `engine/projections.py`. One source of truth.
+  - **Deferred to follow-ups**: K_FACTOR_TABLE regrid sweep at variable effective-K, full Glicko-2 volatility update (using simplified closed-form in v1).
+- **#54 — Learned Boulder+Lead composite weights**. Replaces fixed geometric mean with `μ_L^w_L × μ_B^w_B`. Ships only if learned weights beat geometric mean on combined-format log-loss. LA28-relevant.
+
+### Phase 2 — after Phase 1 lands (sequential)
+- **#53 — Margin-of-victory audit + G-Elo benchmark**. Conditions MOV multiplier on rating gap (538-style) to prevent elite inflation. Touches the same MOV multipliers as #51, so sequential PR after #51.
+
+### Phase 3 — after Phase 2 stable for ~1 week
+- **#56 — Bracket-native Speed model**. Replaces P-L on time-normalized Speed with actual head-to-head bracket matchups + Davidson (1970) tie-handling. Isolated to the Speed branch of `engine/elo.py`.
+
+### Phase 4 — last
+- **#52 — Whole-History Rating (WHR / ILSR) batch refit**. New batch pipeline alongside online ELO. Biggest change; held last so it compares against the post-#51 baseline.
+
+### Cross-cutting safety scaffolding
+- Every PR in this sequence must keep `scripts/run_backtest.py` ≥15pp above baseline (existing CI assertion).
+- Every PR adds a cold-start trajectory test using real production athlete IDs (Anraku=5, Bertone=447, Garnbret=60).
+- Rollback story per PR: single `git revert <sha>` + re-run `scrape-supabase.yml` workflow (cleaned up by `uq_*` constraints from #69).
+- No feature flags — 1 maintainer, cheap revert path, complexity not worth it.
+
+### Operational TODOs (separate from R&D)
+- **#75** — Full historical backfill from 2012→present + initial backtest validation against the populated Supabase DB. Best done locally with `DATABASE_URL` pointed at the session pooler (avoids the GH Actions 60-min timeout).
+- **Live SSE on persistent host** — not ticketed; would re-enable `/live/{event_id}/stream` (broken on Vercel serverless).
+- **Livestream URL automation** — `livestream_url` is manually populated; could be scraped if IFSC ever exposes it.
