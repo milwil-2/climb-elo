@@ -744,6 +744,9 @@ class BacktestRunner:
         )
 
         all_predictions: list[RoundPrediction] = []
+        # Per-discipline cache of predictions for auxiliary artifacts
+        # (e.g. the leave-one-athlete-out convergence trace).
+        per_discipline_predictions: dict[Discipline, list[RoundPrediction]] = {}
 
         for discipline in self.dataset.disciplines:
             splits = self._discover_splits(discipline)
@@ -759,11 +762,15 @@ class BacktestRunner:
                     }
                 )
                 all_predictions.extend(split_predictions)
+                per_discipline_predictions.setdefault(discipline, []).extend(
+                    split_predictions
+                )
 
         report.aggregate = self._aggregate_with_strata(all_predictions)
 
         if self.output_dir is not None:
             self._write_outputs(report)
+            self._maybe_write_auxiliary(per_discipline_predictions)
 
         return report
 
@@ -947,6 +954,70 @@ class BacktestRunner:
         (out / "report.json").write_text(report.to_json() + "\n")
         (out / "report.md").write_text(render_markdown(report) + "\n")
 
+    def _maybe_write_auxiliary(
+        self,
+        per_discipline_predictions: dict[Discipline, list[RoundPrediction]],
+    ) -> None:
+        """Emit auxiliary artifacts that depend on the active OOS mode.
+
+        Currently handles the leave-one-athlete-out convergence trace
+        (Issue #39) — written when the OOS mode advertises an
+        ``emit_convergence_trace`` flag. Other modes are silent here.
+        """
+        if not getattr(self.oos_mode, "emit_convergence_trace", False):
+            return
+        # Local import to avoid a circular dependency at module load time.
+        from climbing_elo.engine.oos_modes import (
+            LeaveOneAthleteOutMode,
+            build_convergence_trace,
+            write_convergence_trace,
+        )
+
+        if not isinstance(self.oos_mode, LeaveOneAthleteOutMode):
+            return
+
+        # The athlete is single-discipline by construction (the mode took a
+        # single athlete_id). Pick the first discipline that actually
+        # produced predictions for this athlete.
+        for discipline, preds in per_discipline_predictions.items():
+            if not preds:
+                continue
+            session_cm = self._auxiliary_session()
+            with session_cm as session:
+                trace = build_convergence_trace(
+                    session, self.oos_mode, discipline, preds
+                )
+            assert self.output_dir is not None
+            if trace["trace"]:
+                write_convergence_trace(self.output_dir, trace)
+                # Only one discipline can match a single athlete cleanly —
+                # bail after the first non-empty trace.
+                return
+
+    def _auxiliary_session(self):
+        """Return a context manager that yields a Session for read-only work.
+
+        Re-uses the working DB copy (it's already in training-end state) for
+        production runs, or the supplied in-memory session for tests.
+        """
+        if self._in_memory_session is not None:
+
+            class _Passthrough:
+                def __init__(self, sess: Session):
+                    self._sess = sess
+
+                def __enter__(self) -> Session:
+                    return self._sess
+
+                def __exit__(self, exc_type, exc, tb) -> None:
+                    return None
+
+            return _Passthrough(self._in_memory_session)
+
+        assert self._working_copy is not None
+        factory = get_session_factory(self._working_copy)
+        return factory()
+
 
 # ---------------------------------------------------------------------------
 # Markdown rendering
@@ -1057,3 +1128,11 @@ def make_default_output_dir(root: Path | None = None) -> Path:
     out = root / stamp
     out.mkdir(parents=True, exist_ok=True)
     return out
+
+
+# ---------------------------------------------------------------------------
+# OOS mode registration — Issue #39 plug-ins
+# ---------------------------------------------------------------------------
+# Importing the module registers WalkForwardMode / LeaveOneEventOutMode /
+# LeaveOneAthleteOutMode into ``OOS_MODES`` at import time.
+from . import oos_modes  # noqa: E402,F401

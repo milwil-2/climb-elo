@@ -92,6 +92,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Number of trailing seasons to hold out (holdout mode only).",
     )
     p.add_argument(
+        "--from-season",
+        type=int,
+        default=None,
+        help="Walk-forward mode: inclusive lower bound for the eval season.",
+    )
+    p.add_argument(
+        "--to-season",
+        type=int,
+        default=None,
+        help="Walk-forward mode: inclusive upper bound for the eval season.",
+    )
+    p.add_argument(
+        "--season",
+        type=int,
+        default=None,
+        help=(
+            "leave-one-event-out mode: season to rotate over (default: "
+            "most recent season present in the DB)."
+        ),
+    )
+    p.add_argument(
+        "--athlete-id",
+        type=int,
+        default=None,
+        help="leave-one-athlete-out mode: athlete to evaluate cold-start for.",
+    )
+    p.add_argument(
+        "--tenure",
+        type=int,
+        default=5,
+        help=(
+            "leave-one-athlete-out mode: number of earliest events to "
+            "hide from training (default: 5)."
+        ),
+    )
+    p.add_argument(
         "--n-sims",
         type=int,
         default=10_000,
@@ -124,11 +160,25 @@ def main(argv: list[str] | None = None) -> int:
     else:
         disciplines = (DISCIPLINE_ALIASES[args.discipline],)
 
-    # Build OOS mode from registry. Holdout mode accepts n_seasons.
+    # Build OOS mode from registry, threading mode-specific flags.
     if args.oos == "holdout":
         oos_mode = HoldoutMode(n_seasons=args.holdout_seasons)
+    elif args.oos == "walk-forward":
+        oos_mode = OOS_MODES["walk-forward"](
+            from_season=args.from_season,
+            to_season=args.to_season,
+        )
+    elif args.oos == "leave-one-event-out":
+        oos_mode = OOS_MODES["leave-one-event-out"](season=args.season)
+    elif args.oos == "leave-one-athlete-out":
+        if args.athlete_id is None:
+            raise SystemExit("--oos leave-one-athlete-out requires --athlete-id")
+        oos_mode = OOS_MODES["leave-one-athlete-out"](
+            athlete_id=args.athlete_id,
+            tenure=args.tenure,
+        )
     else:
-        # Future modes (Issue #39) — default-construct from the registry.
+        # Future modes — default-construct from the registry.
         oos_mode = OOS_MODES[args.oos]()
 
     from pathlib import Path
