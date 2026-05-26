@@ -218,4 +218,29 @@ curl -N http://localhost:8000/live/1234/stream
 
 ## Testing
 
-Tests use an in-memory SQLite database (`conftest.py:db_session`). Fixtures `sample_event` and `eight_athletes` provide pre-built test data. `test_elo.py` validates pairwise math (zero-sum invariant across all 3 disciplines). `test_backfill.py` runs a 3-event integration test and checks reproducibility. `test_api.py` covers all v1 REST endpoints. `test_projections.py` covers Monte Carlo invariants. `test_combined.py` covers the Boulder+Lead aggregate. `test_scraper_upcoming.py` covers upcoming-event filter logic. `test_snapshot.py` covers snapshot/restore round-trips. `test_health_check.py` covers CLI exit codes + Discord rate-limiting. `test_cache.py` covers TTLCache thread-safety + expiry. `test_likely_roster.py` covers the likely-competitor fallback logic. `test_live.py` covers the live poller + SSE (new result detection, dedup, finished-status auto-stop, EventBus pub/sub, file lock mutex, SSE 404/200/429).
+Tests use an in-memory SQLite database (`conftest.py:db_session`). Fixtures `sample_event` and `eight_athletes` provide pre-built test data. `test_elo.py` validates pairwise math (zero-sum invariant across all 3 disciplines). `test_backfill.py` runs a 3-event integration test and checks reproducibility. `test_api.py` covers all v1 REST endpoints. `test_projections.py` covers Monte Carlo invariants. `test_combined.py` covers the Boulder+Lead aggregate. `test_scraper_upcoming.py` covers upcoming-event filter logic. `test_snapshot.py` covers snapshot/restore round-trips. `test_health_check.py` covers CLI exit codes + Discord rate-limiting. `test_cache.py` covers TTLCache thread-safety + expiry. `test_likely_roster.py` covers the likely-competitor fallback logic. `test_live.py` covers the live poller + SSE (new result detection, dedup, finished-status auto-stop, EventBus pub/sub, file lock mutex, SSE 404/200/429). `test_baselines.py` + `test_external_rankings.py` cover the IFSC-official and AscentStats backtest baselines (recorded JSON fixtures in `tests/fixtures/external_rankings/`; live network tests are gated by `@pytest.mark.network`, deselected by default via `pyproject.toml`).
+
+## Issue & Project organization (GitHub)
+
+Two GitHub Projects partition open work for the repo:
+
+- **Climbing ELO** (project #1, https://github.com/users/milwil-2/projects/1) — every open issue *except* those labeled `research`.
+- **Research** (project #3, https://github.com/users/milwil-2/projects/3) — rating-system R&D from `docs/RATING_SYSTEM_RESEARCH.md` (issues #51-#57 territory). The `research` label marks these.
+
+**Default issue view** should filter out research items: `https://github.com/milwil-2/climb-elo/issues?q=is%3Aissue+is%3Aopen+-label%3Aresearch`.
+
+**Adding issues to a project is currently manual.** A `.github/workflows/auto-add-to-project.yml` was attempted and removed (commit `8d9f7e3`) — neither GitHub Projects v2 built-in "Auto-add" (unavailable for personal-account user-owned projects of this age) nor a custom Actions workflow (mysteriously never triggered on `issues:` events despite the actions allowlist being updated to permit `actions/add-to-project@*`) worked. When opening a new issue, add it to the appropriate project manually via `gh project item-add <project> --owner milwil-2 --url <issue-url>`.
+
+**Required Dependabot labels:** the repo has `dependencies` and `ci` labels (created so Dependabot can apply them per `.github/dependabot.yml`). If either label gets deleted, Dependabot will fail silently with "labels could not be found" and refuse to rebase PRs.
+
+## Branch protection caveats
+
+`main` requires `pytest (3.11)` and `pytest (3.12)` status checks. The owner can bypass via `--admin` on `gh pr merge`. **Merging PRs that touch `.github/workflows/*.yml` requires the `workflow` OAuth scope** — if `gh auth status` shows scopes without `workflow`, run `gh auth refresh -h github.com -s workflow` first, or merge via the web UI.
+
+## Actions allowlist
+
+The repo runs in `selected_actions` mode (security lockdown — see `docs/SECURITY_LOCKDOWN.md`). Current allowlist: GitHub-owned actions + verified-creator actions + the explicit patterns `astral-sh/setup-uv@*` and `peter-evans/create-issue-from-file@*`. New third-party actions must be added to this allowlist via `gh api -X PUT repos/milwil-2/climb-elo/actions/permissions/selected-actions ...` before they will run.
+
+## Future migration target: Supabase / Postgres
+
+Issue #16 tracks moving from SQLite to managed Postgres (Supabase). `.mcp.json` is already wired to the hosted Supabase MCP server (`https://mcp.supabase.com/mcp?project_ref=micecpgpuispvdfqdtmm`, read-only) for schema introspection during the migration. The actual data migration / DB-layer rewrite hasn't been done yet.
