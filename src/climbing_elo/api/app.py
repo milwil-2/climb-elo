@@ -2,6 +2,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -11,9 +12,11 @@ from climbing_elo.api.limiter import limiter
 from climbing_elo.api.routes import router as html_router
 from climbing_elo.api.v1_routes import router as v1_router
 from climbing_elo.api.sse import router as sse_router
+from climbing_elo.api.routes_v2 import router as v2_router
 from climbing_elo.database import init_db
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
 def create_app() -> FastAPI:
@@ -49,10 +52,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Serve static files (styles.css, etc.) from src/climbing_elo/static/
+    application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
     application.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     application.include_router(html_router)
     application.include_router(v1_router)
     application.include_router(sse_router)
+    application.include_router(v2_router)
     return application
 
 

@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}Leaderboard &mdash; Climbing ELO{% endblock %}
+
+{% block head %}
+<style>
+  .page-head{padding:80px 0 32px;border-bottom:1px solid var(--line)}
+  .page-head h1{font-size:clamp(34px,4.4vw,46px);line-height:1.1;letter-spacing:-0.025em;font-weight:600}
+  .page-head h1 em{font-style:italic;font-weight:400}
+  .page-head .crumbs{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:20px;font-weight:500}
+  .page-head .crumbs a:hover{color:var(--ink)}
+  .page-head .lead{margin-top:22px;max-width:560px;color:var(--ink-2);font-size:15.5px;line-height:1.6}
+
+  .lb-controls{
+    display:grid;grid-template-columns:1fr auto auto;gap:14px;align-items:center;
+    margin:32px 0 18px;
+  }
+  @media (max-width:760px){.lb-controls{grid-template-columns:1fr}}
+  .search{
+    display:flex;align-items:center;gap:10px;padding:11px 16px;
+    border:1px solid var(--line-2);border-radius:0;background:var(--paper);
+    font-size:14px;color:var(--ink);transition:border-color .2s;
+  }
+  .search:focus-within{border-color:var(--ink-2)}
+  .search input{flex:1;border:none;outline:none;background:transparent;font:inherit;color:inherit}
+  .search input::placeholder{color:var(--dim)}
+  .search .ico{color:var(--dim);font-size:12px}
+
+  .lb-section{padding:24px 0 88px}
+
+  .summary-bar{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:18px 22px;border-top:1px solid var(--line);
+    font-size:11px;color:var(--dim);letter-spacing:0.08em;
+  }
+  .summary-bar b{color:var(--ink);font-family:'Manrope',sans-serif;font-size:13px;font-weight:600;letter-spacing:0;margin-left:6px}
+</style>
+{% endblock %}
+
+{% block body %}
+<main>
+  <section class="page-head">
+    <div class="crumbs reveal"><a href="/v2/">Home</a> / Leaderboard</div>
+    <h1 class="reveal d2">The <em>full</em> board.</h1>
+    <p class="lead reveal d3">
+      Top twenty athletes per discipline, both genders. Ratings are field-quality-aware:
+      a podium against weak fields counts for less than a strong fifth. &sigma; widens during
+      inactivity and shrinks with each event.
+    </p>
+  </section>
+
+  <section class="lb-section">
+    <div class="lb-controls reveal">
+      <div class="search">
+        <span class="ico">&#9906;</span>
+        <input type="text" id="lb-search" placeholder="Search by name or country code (e.g. JPN)" />
+      </div>
+      <div class="filters" style="margin:0">
+        <a href="/v2/leaderboard?disc=B&gender={{ gender }}" class="pill{% if disc == 'B' %} active{% endif %}">Boulder</a>
+        <a href="/v2/leaderboard?disc=L&gender={{ gender }}" class="pill{% if disc == 'L' %} active{% endif %}">Lead</a>
+        <a href="/v2/leaderboard?disc=S&gender={{ gender }}" class="pill{% if disc == 'S' %} active{% endif %}">Speed</a>
+        <a href="/v2/leaderboard?disc=BL&gender={{ gender }}" class="pill{% if disc == 'BL' %} active{% endif %}">Boulder + Lead</a>
+      </div>
+      <div class="toggle" style="display:flex;border:1px solid var(--line-2);border-radius:999px;padding:3px;background:var(--paper-2)">
+        <a href="/v2/leaderboard?disc={{ disc }}&gender=M"
+           style="padding:6px 14px;border-radius:999px;font-size:12.5px;font-weight:500;text-decoration:none;
+             background:{% if gender == 'M' %}var(--paper){% else %}transparent{% endif %};
+             color:{% if gender == 'M' %}var(--ink){% else %}var(--ink-2){% endif %}">Men</a>
+        <a href="/v2/leaderboard?disc={{ disc }}&gender=F"
+           style="padding:6px 14px;border-radius:999px;font-size:12.5px;font-weight:500;text-decoration:none;
+             background:{% if gender == 'F' %}var(--paper){% else %}transparent{% endif %};
+             color:{% if gender == 'F' %}var(--ink){% else %}var(--ink-2){% endif %}">Women</a>
+      </div>
+    </div>
+
+    <div class="card reveal d2">
+      <table class="lb" id="lb-table">
+        <thead><tr>
+          <th>#</th>
+          <th>Athlete</th>
+          <th>Born</th>
+          <th>Events</th>
+          <th style="text-align:right">&mu; &plusmn; &sigma;</th>
+          <th style="text-align:right">90d &Delta;</th>
+        </tr></thead>
+        <tbody>
+          {%- for row in rows -%}
+          <tr>
+            <td class="rank mono{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
+            <td class="athlete">
+              {{ row.name }}
+              <span class="nat">{{ row.nationality }}</span>
+            </td>
+            <td class="disc num" style="font-size:12.5px">{{ row.year_of_birth or '—' }}</td>
+            <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
+            <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
+            <td class="change">
+              {%- set delta = row.delta_90d -%}
+              <span class="badge {% if delta > 1 %}up{% elif delta < -1 %}dn{% else %}flat{% endif %}">
+                <span class="arr">{% if delta > 1 %}&#9650;{% elif delta < -1 %}&#9660;{% else %}&ndash;{% endif %}</span>
+                {% if delta > 0 %}+{% endif %}{{ delta }}
+              </span>
+            </td>
+          </tr>
+          {%- endfor -%}
+          {%- if not rows -%}
+          <tr><td colspan="6" style="padding:32px;text-align:center;color:var(--dim)">No data available for this discipline and gender.</td></tr>
+          {%- endif -%}
+        </tbody>
+      </table>
+      <div class="summary-bar">
+        <span>Showing<b id="showing-count">{{ rows | length }}</b><span style="margin-left:14px">of<b>{{ total_count }}</b>in {{ disc_label }} &middot; {{ gender_label }}</span></span>
+        <span>Top &mu;<b>{{ top_mu }}</b><span style="margin-left:14px">Median<b>{{ median_mu }}</b></span></span>
+      </div>
+    </div>
+  </section>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var input = document.getElementById('lb-search');
+  if (!input) return;
+  input.addEventListener('input', function() {
+    var q = input.value.toLowerCase().trim();
+    var tbody = document.querySelector('#lb-table tbody');
+    var rows = tbody.querySelectorAll('tr');
+    var visible = 0;
+    rows.forEach(function(tr) {
+      var text = tr.innerText.toLowerCase();
+      var show = !q || text.includes(q);
+      tr.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    var cnt = document.getElementById('showing-count');
+    if (cnt) cnt.textContent = visible;
+  });
+})();
+</script>
+{% endblock %}

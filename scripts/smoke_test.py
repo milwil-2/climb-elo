@@ -379,6 +379,65 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
         f"HTTP {status}",
     )
 
+    # ── v2 routes ──────────────────────────────────────────────────────
+    print("\n── v2 monochrome dashboard routes ────────────────────────────")
+
+    assert_route(
+        "GET /v2/ — monochrome landing",
+        "/v2/",
+        must_contain=["Climbing ELO", "Ratings, not", "Boulder"],
+        base_url=base_url,
+    )
+    ss(base_url + "/v2/", "v2_landing")
+
+    assert_route(
+        "GET /v2/leaderboard — full board",
+        "/v2/leaderboard",
+        must_contain=["Climbing ELO", "Leaderboard", "Boulder"],
+        base_url=base_url,
+    )
+    ss(base_url + "/v2/leaderboard", "v2_leaderboard")
+
+    assert_route(
+        "GET /v2/projections — projection cards",
+        "/v2/projections",
+        must_contain=["Climbing ELO", "Projections", "simulated"],
+        base_url=base_url,
+    )
+    ss(base_url + "/v2/projections", "v2_projections")
+
+    assert_route(
+        "GET /v2/head-to-head — H2H form",
+        "/v2/head-to-head",
+        must_contain=["Climbing ELO", "Head-to-head", "probability"],
+        base_url=base_url,
+    )
+    ss(base_url + "/v2/head-to-head", "v2_h2h_form")
+
+    v2_h2h_path = f"/v2/head-to-head/{LEAD_ATHLETE_A}/{LEAD_ATHLETE_B}?discipline=L"
+    assert_route(
+        "GET /v2/head-to-head/{a}/{b} — H2H result with ring",
+        v2_h2h_path,
+        must_contain=["Climbing ELO", "%", "wins"],
+        base_url=base_url,
+    )
+    ss(base_url + v2_h2h_path, "v2_h2h_result")
+
+    status_ath, body_ath = http_get(base_url + f"/v2/athletes/{POPULAR_ATHLETE}")
+    record(
+        f"GET /v2/athletes/{POPULAR_ATHLETE} — athlete profile",
+        status_ath == 200 and "Climbing ELO" in body_ath,
+        f"HTTP {status_ath}",
+    )
+    ss(base_url + f"/v2/athletes/{POPULAR_ATHLETE}", "v2_athlete")
+
+    assert_route(
+        "GET /v2/api — API reference page",
+        "/v2/api",
+        must_contain=["Climbing ELO", "leaderboard", "no auth"],
+        base_url=base_url,
+    )
+    ss(base_url + "/v2/api", "v2_api")
 
 # ---------------------------------------------------------------------------
 # Entry point
