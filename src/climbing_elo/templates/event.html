@@ -1,11 +1,25 @@
 {% extends "base.html" %}
 {% block title %}{{ event.name }} — Climbing ELO{% endblock %}
+{% block head %}
+<style>
+    .table-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        margin: 1rem 0;
+    }
+    .table-scroll table {
+        margin: 0;
+        min-width: 480px;
+    }
+</style>
+{% endblock %}
 {% block content %}
 <h1>{{ event.name }} ({{ event.season }})</h1>
 <p style="color: #808890; margin-bottom: 1rem;">{{ event.tier }}</p>
 
 {% for rnd in rounds %}
 <h2>{{ rnd.round_type }} — {{ rnd.gender }}</h2>
+<div class="table-scroll">
 <table>
     <thead>
         <tr>
@@ -34,5 +48,6 @@
         {% endfor %}
     </tbody>
 </table>
+</div>
 {% endfor %}
 {% endblock %}

@@ -56,6 +56,66 @@
         padding: 0.4rem 0.6rem;
         font-size: 0.85rem;
     }
+    /* Nationality filter */
+    .nat-filter-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+    .nat-filter-row label {
+        font-size: 0.8rem;
+        color: #808890;
+        white-space: nowrap;
+    }
+    select.nat-filter, select.nat-filter:focus {
+        background: #1a1d28;
+        color: #e0e0e0;
+        border: 1px solid #2a2d3a;
+        border-radius: 4px;
+        padding: 0.25rem 0.5rem;
+        font-size: 0.8rem;
+        outline: none;
+        cursor: pointer;
+    }
+    select.nat-filter:hover {
+        border-color: #7c8aff;
+    }
+    /* Pagination controls */
+    .pagination {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+        font-size: 0.82rem;
+        color: #808890;
+    }
+    .pagination button {
+        background: #1a1d28;
+        color: #c0c0c0;
+        border: 1px solid #2a2d3a;
+        border-radius: 4px;
+        padding: 0.25rem 0.65rem;
+        cursor: pointer;
+        font-size: 0.82rem;
+        transition: border-color 0.15s, color 0.15s;
+    }
+    .pagination button:hover:not(:disabled) {
+        border-color: #7c8aff;
+        color: #7c8aff;
+    }
+    .pagination button:disabled {
+        opacity: 0.35;
+        cursor: default;
+    }
+    .pagination .page-info {
+        color: #808890;
+    }
+    /* Horizontal scroll for tables on mobile */
+    .table-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
 </style>
 {% endblock %}
 {% block content %}
@@ -75,10 +135,25 @@
 <div class="tab-content {% if loop.first %}active{% endif %}" id="tab-{{ key }}">
     {% if data.has_data %}
     <div class="gender-columns">
+        {# Men #}
         <div class="gender-section">
             <h2>Men</h2>
             {% if data.men %}
-            <table class="compact-table">
+            <div class="nat-filter-row">
+                <label for="nat-men-{{ key }}">Nationality:</label>
+                <select class="nat-filter" id="nat-men-{{ key }}"
+                        data-table="tbl-men-{{ key }}"
+                        data-page-info="pg-men-{{ key }}"
+                        data-btn-prev="prev-men-{{ key }}"
+                        data-btn-next="next-men-{{ key }}">
+                    <option value="">All</option>
+                    {% for n in data.men_nats %}
+                    <option value="{{ n }}">{{ n }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="table-scroll">
+            <table class="compact-table" id="tbl-men-{{ key }}">
                 <thead>
                     <tr>
                         <th>#</th>
@@ -91,7 +166,7 @@
                 </thead>
                 <tbody>
                     {% for a in data.men %}
-                    <tr>
+                    <tr data-nat="{{ a.nationality }}">
                         <td>{{ a.rank }}</td>
                         <td><a href="/athletes/{{ a.id }}">{{ a.name }}</a>{% if a.provisional %} <span class="badge badge-provisional">P</span>{% endif %}</td>
                         <td>{{ a.nationality }}</td>
@@ -102,14 +177,35 @@
                     {% endfor %}
                 </tbody>
             </table>
+            </div>
+            <div class="pagination">
+                <button id="prev-men-{{ key }}" disabled>&lsaquo; Prev</button>
+                <span class="page-info" id="pg-men-{{ key }}"></span>
+                <button id="next-men-{{ key }}">Next &rsaquo;</button>
+            </div>
             {% else %}
             <p class="placeholder-msg">No ratings yet</p>
             {% endif %}
         </div>
+        {# Women #}
         <div class="gender-section">
             <h2>Women</h2>
             {% if data.women %}
-            <table class="compact-table">
+            <div class="nat-filter-row">
+                <label for="nat-women-{{ key }}">Nationality:</label>
+                <select class="nat-filter" id="nat-women-{{ key }}"
+                        data-table="tbl-women-{{ key }}"
+                        data-page-info="pg-women-{{ key }}"
+                        data-btn-prev="prev-women-{{ key }}"
+                        data-btn-next="next-women-{{ key }}">
+                    <option value="">All</option>
+                    {% for n in data.women_nats %}
+                    <option value="{{ n }}">{{ n }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="table-scroll">
+            <table class="compact-table" id="tbl-women-{{ key }}">
                 <thead>
                     <tr>
                         <th>#</th>
@@ -122,7 +218,7 @@
                 </thead>
                 <tbody>
                     {% for a in data.women %}
-                    <tr>
+                    <tr data-nat="{{ a.nationality }}">
                         <td>{{ a.rank }}</td>
                         <td><a href="/athletes/{{ a.id }}">{{ a.name }}</a>{% if a.provisional %} <span class="badge badge-provisional">P</span>{% endif %}</td>
                         <td>{{ a.nationality }}</td>
@@ -133,6 +229,12 @@
                     {% endfor %}
                 </tbody>
             </table>
+            </div>
+            <div class="pagination">
+                <button id="prev-women-{{ key }}" disabled>&lsaquo; Prev</button>
+                <span class="page-info" id="pg-women-{{ key }}"></span>
+                <button id="next-women-{{ key }}">Next &rsaquo;</button>
+            </div>
             {% else %}
             <p class="placeholder-msg">No ratings yet</p>
             {% endif %}
@@ -149,6 +251,7 @@
 
 {% block scripts %}
 <script>
+// ── Tab switching ────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
         if (tab.classList.contains('disabled')) return;
@@ -156,6 +259,87 @@ document.querySelectorAll('.tab').forEach(tab => {
         document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
         tab.classList.add('active');
         document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    });
+});
+
+// ── Pagination + nationality filter ─────────────────────────────
+const PAGE_SIZE = 25;
+
+// State per table: { rows, filteredRows, currentPage }
+const tableState = {};
+
+function initTable(tableId) {
+    const table = document.getElementById(tableId);
+    if (!table) return;
+    const rows = Array.from(table.querySelectorAll('tbody tr'));
+    tableState[tableId] = { rows, filteredRows: rows, currentPage: 1 };
+    renderPage(tableId);
+}
+
+function renderPage(tableId) {
+    const state = tableState[tableId];
+    if (!state) return;
+    const { filteredRows, currentPage } = state;
+    const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+    const start = (currentPage - 1) * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+
+    state.rows.forEach(r => r.style.display = 'none');
+    filteredRows.forEach((r, i) => {
+        r.style.display = (i >= start && i < end) ? '' : 'none';
+    });
+
+    // Update controls — find them via data attributes on the select
+    const sel = document.querySelector(`select[data-table="${tableId}"]`);
+    if (!sel) return;
+    const pgInfo = document.getElementById(sel.dataset.pageInfo);
+    const btnPrev = document.getElementById(sel.dataset.btnPrev);
+    const btnNext = document.getElementById(sel.dataset.btnNext);
+
+    if (pgInfo) pgInfo.textContent = filteredRows.length > 0
+        ? `${start + 1}–${Math.min(end, filteredRows.length)} of ${filteredRows.length}`
+        : '0 results';
+    if (btnPrev) btnPrev.disabled = currentPage <= 1;
+    if (btnNext) btnNext.disabled = currentPage >= totalPages;
+}
+
+function applyFilter(tableId, nat) {
+    const state = tableState[tableId];
+    if (!state) return;
+    state.filteredRows = nat
+        ? state.rows.filter(r => r.dataset.nat === nat)
+        : state.rows;
+    state.currentPage = 1;
+    renderPage(tableId);
+}
+
+// Wire up nationality dropdowns
+document.querySelectorAll('select.nat-filter').forEach(sel => {
+    const tableId = sel.dataset.table;
+    initTable(tableId);
+
+    sel.addEventListener('change', () => {
+        applyFilter(tableId, sel.value);
+    });
+
+    // Wire prev/next buttons
+    const btnPrev = document.getElementById(sel.dataset.btnPrev);
+    const btnNext = document.getElementById(sel.dataset.btnNext);
+    if (btnPrev) btnPrev.addEventListener('click', () => {
+        const state = tableState[tableId];
+        if (state && state.currentPage > 1) {
+            state.currentPage--;
+            renderPage(tableId);
+        }
+    });
+    if (btnNext) btnNext.addEventListener('click', () => {
+        const state = tableState[tableId];
+        if (!state) return;
+        const total = Math.ceil(state.filteredRows.length / PAGE_SIZE);
+        if (state.currentPage < total) {
+            state.currentPage++;
+            renderPage(tableId);
+        }
     });
 });
 </script>

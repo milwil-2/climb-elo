@@ -1,7 +1,51 @@
 {% extends "base.html" %}
 {% block title %}Events — Climbing ELO{% endblock %}
+{% block head %}
+<style>
+    .filter-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 1.25rem;
+        flex-wrap: wrap;
+    }
+    .filter-bar label {
+        font-size: 0.85rem;
+        color: #808890;
+    }
+    select.season-select, select.season-select:focus {
+        background: #1a1d28;
+        color: #e0e0e0;
+        border: 1px solid #2a2d3a;
+        border-radius: 4px;
+        padding: 0.3rem 0.6rem;
+        font-size: 0.85rem;
+        outline: none;
+        cursor: pointer;
+    }
+    select.season-select:hover {
+        border-color: #7c8aff;
+    }
+    .table-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+</style>
+{% endblock %}
 {% block content %}
 <h1>Events</h1>
+
+<div class="filter-bar">
+    <label for="season-select">Season:</label>
+    <select class="season-select" id="season-select" onchange="gotoSeason(this.value)">
+        <option value="" {% if not selected_season %}selected{% endif %}>All seasons</option>
+        {% for s in all_seasons %}
+        <option value="{{ s }}" {% if selected_season == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+    </select>
+</div>
+
+<div class="table-scroll">
 <table>
     <thead>
         <tr>
@@ -20,6 +64,24 @@
             <td>{{ e.date }}</td>
         </tr>
         {% endfor %}
+        {% if not events %}
+        <tr><td colspan="4" style="text-align:center; color:#505560; font-style:italic; padding:2rem;">No events found for this season.</td></tr>
+        {% endif %}
     </tbody>
 </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function gotoSeason(val) {
+    const url = new URL(window.location.href);
+    if (val) {
+        url.searchParams.set('season', val);
+    } else {
+        url.searchParams.delete('season');
+    }
+    window.location.href = url.toString();
+}
+</script>
 {% endblock %}
