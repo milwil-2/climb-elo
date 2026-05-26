@@ -689,6 +689,27 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
                     athlete_ids_ordered.append(res.athlete_id)
                     seen.add(res.athlete_id)
 
+        # When the event has no stored results (typical for upcoming events the
+        # IFSC has not yet published a registered-athletes list for), fall back
+        # to the likely-competitor roster derived from this season's attendance.
+        # The template surfaces a `from_likely_roster` tag so users know the
+        # projection is based on a predicted roster rather than registrations.
+        from_likely_roster = False
+        if not athlete_ids_ordered:
+            _roster_cache_key = (
+                f"roster:{event.discipline.value}:{event.season}:{gender_enum.value}"
+            )
+            cached_roster = likely_roster_cache.get(_roster_cache_key)
+            if cached_roster is None:
+                cached_roster = likely_competitors(
+                    session, event.discipline, event.season, gender_enum
+                )
+                likely_roster_cache.set(_roster_cache_key, cached_roster)
+            athlete_ids_ordered = list(
+                cached_roster[:_MAX_ATHLETES_PER_PROJECTION_CARD]
+            )
+            from_likely_roster = bool(athlete_ids_ordered)
+
         if not athlete_ids_ordered:
             return templates.TemplateResponse(
                 request,
@@ -706,7 +727,11 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
                     "gender": gender_enum.value,
                     "rows": [],
                     "winner": None,
-                    "error": "No athlete results found for this event.",
+                    "from_likely_roster": False,
+                    "error": (
+                        "No registration data available and not enough season "
+                        "history to build a predicted roster."
+                    ),
                 },
             )
 
@@ -817,6 +842,7 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
             "round_configs": [{"round_type": rc.round_type} for rc in round_configs]
             if round_configs
             else [],
+            "from_likely_roster": from_likely_roster,
             "error": None,
         },
     )
