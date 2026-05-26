@@ -38,3 +38,6 @@ htmlcov/
 
 # uv
 .python-version
+
+# Claude Code worktrees
+.claude/worktrees/
