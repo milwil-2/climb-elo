@@ -136,16 +136,19 @@ def _parse_boulder_score(
     # If ascent-level structured data is available, compute directly from it.
     # This handles 2025+ format and is the most accurate for any year.
     if ascents:
-        tops = sum(1 for a in ascents if a.get("top"))
-        zones = sum(1 for a in ascents if a.get("zone"))
-        top_attempts = sum(
-            (a.get("top_tries") or 0) for a in ascents if a.get("top")
-        )
-        zone_attempts = sum(
-            (a.get("zone_tries") or 0) for a in ascents if a.get("zone")
-        )
-        normalized = tops * 1000 + zones * 100 - top_attempts * 10 - zone_attempts
-        return (raw, float(normalized))
+        try:
+            tops = sum(1 for a in ascents if a.get("top"))
+            zones = sum(1 for a in ascents if a.get("zone"))
+            top_attempts = sum(
+                int(a.get("top_tries") or 0) for a in ascents if a.get("top")
+            )
+            zone_attempts = sum(
+                int(a.get("zone_tries") or 0) for a in ascents if a.get("zone")
+            )
+            normalized = tops * 1000 + zones * 100 - top_attempts * 10 - zone_attempts
+            return (raw, float(normalized))
+        except (TypeError, ValueError):
+            log.debug("Malformed ascent data, falling back to score string parse")
 
     # Fall back to parsing the score string (older data with no ascent details).
 
@@ -235,9 +238,15 @@ def scrape_season(
     season_name = season_info.get("name", "?")
     disc_lower = discipline.lower()
 
-    # Map discipline string to the Discipline enum
+    if disc_lower not in ("lead", "boulder", "speed"):
+        raise ValueError(
+            f"Unsupported discipline {discipline!r}; expected one of: lead, boulder, speed"
+        )
+
     if disc_lower == "boulder":
         db_discipline = Discipline.BOULDER
+    elif disc_lower == "speed":
+        db_discipline = Discipline.SPEED
     else:
         db_discipline = Discipline.LEAD
 
@@ -379,10 +388,16 @@ def scrape_season(
                     dns = rank is None
                     dnf = False
 
+                    try:
+                        rank_int = int(rank) if rank is not None else 999
+                    except (TypeError, ValueError):
+                        log.warning("Non-integer rank %r for athlete %s; skipping", rank, athlete.id)
+                        continue
+
                     result = Result(
                         round_id=db_round.id,
                         athlete_id=athlete.id,
-                        rank=rank if rank else 999,
+                        rank=rank_int,
                         raw_score=raw_str,
                         score_normalized=normalized,
                         dnf=dnf,
