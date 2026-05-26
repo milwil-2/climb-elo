@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 
@@ -26,7 +27,7 @@ def _get_session():
     return factory()
 
 
-def _get_rankings(session, gender: Gender, discipline: Discipline, limit: int = 50):
+def _get_rankings(session, gender: Gender, discipline: Discipline, limit: int = 200):
     stmt = (
         select(Rating, Athlete)
         .join(Athlete, Rating.athlete_id == Athlete.id)
@@ -50,6 +51,17 @@ def _get_rankings(session, gender: Gender, discipline: Discipline, limit: int = 
     ]
 
 
+def _get_nationalities(session, gender: Gender, discipline: Discipline) -> list[str]:
+    stmt = (
+        select(Athlete.nationality)
+        .join(Rating, Rating.athlete_id == Athlete.id)
+        .where(Rating.discipline == discipline, Athlete.gender == gender, Athlete.nationality.isnot(None))
+        .distinct()
+        .order_by(Athlete.nationality)
+    )
+    return [n for n in session.execute(stmt).scalars() if n]
+
+
 @router.get("/", response_class=HTMLResponse)
 async def leaderboard(request: Request):
     templates = request.app.state.templates
@@ -64,11 +76,15 @@ async def leaderboard(request: Request):
         for key, label, disc in disciplines:
             men = _get_rankings(session, Gender.M, disc)
             women = _get_rankings(session, Gender.F, disc)
+            men_nats = _get_nationalities(session, Gender.M, disc)
+            women_nats = _get_nationalities(session, Gender.F, disc)
             standings[key] = {
                 "label": label,
                 "has_data": len(men) > 0 or len(women) > 0,
                 "men": men,
                 "women": women,
+                "men_nats": men_nats,
+                "women_nats": women_nats,
             }
     return templates.TemplateResponse(request, "index.html", {"standings": standings})
 
@@ -144,15 +160,24 @@ async def athlete_profile(request: Request, athlete_id: int):
 
 
 @router.get("/events", response_class=HTMLResponse)
-async def event_list(request: Request):
+async def event_list(request: Request, season: Optional[int] = Query(default=None)):
     templates = request.app.state.templates
     with _get_session() as session:
-        stmt = (
-            select(Event)
-            .where(Event.discipline == Discipline.LEAD)
-            .order_by(Event.start_date.desc())
-            .limit(200)
+        # Fetch all available seasons for the dropdown
+        all_seasons = list(
+            session.execute(
+                select(Event.season)
+                .where(Event.discipline == Discipline.LEAD)
+                .distinct()
+                .order_by(Event.season.desc())
+            ).scalars()
         )
+
+        stmt = select(Event).where(Event.discipline == Discipline.LEAD)
+        if season is not None:
+            stmt = stmt.where(Event.season == season)
+        stmt = stmt.order_by(Event.start_date.desc()).limit(500)
+
         events = list(session.execute(stmt).scalars())
         event_data = [
             {
@@ -164,7 +189,11 @@ async def event_list(request: Request):
             }
             for e in events
         ]
-    return templates.TemplateResponse(request, "events.html", {"events": event_data})
+    return templates.TemplateResponse(request, "events.html", {
+        "events": event_data,
+        "all_seasons": all_seasons,
+        "selected_season": season,
+    })
 
 
 @router.get("/events/{event_id}", response_class=HTMLResponse)
