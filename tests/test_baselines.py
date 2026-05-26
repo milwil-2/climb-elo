@@ -22,6 +22,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from climbing_elo.engine.baselines import (
+    AscentStatsEngine,
     IFSCOfficialEngine,
     PersistenceEngine,
     RandomEngine,
@@ -141,8 +142,14 @@ def baseline_dataset(db_session, six_athletes):
 # ---------------------------------------------------------------------------
 
 
-def test_all_four_baselines_registered():
-    for name in ("random", "persistence", "ifsc_official", "stripped_elo"):
+def test_all_baselines_registered():
+    for name in (
+        "random",
+        "persistence",
+        "ifsc_official",
+        "ascentstats",
+        "stripped_elo",
+    ):
         assert name in BACKTEST_VARIANTS, f"{name!r} not registered"
 
 
@@ -241,13 +248,63 @@ def test_persistence_engine_end_to_end(db_session, baseline_dataset):
 # ---------------------------------------------------------------------------
 
 
-def test_ifsc_official_stub_returns_defaults(db_session, six_athletes):
+def test_ifsc_official_unmatched_athletes_get_defaults(db_session, six_athletes):
+    """Athletes whose names aren't in any IFSC ranking fixture fall through
+    to the default-μ branch (no rank → no opinion)."""
     engine = IFSCOfficialEngine(db_session)
     fc = engine.predict([a.id for a in six_athletes], Discipline.LEAD)
     for a in six_athletes:
         assert fc[a.id].mu == 1500.0
         assert fc[a.id].sigma == 350.0
         assert fc[a.id].n_events == 0
+
+
+def test_ifsc_official_matches_known_athlete_and_derives_mu(db_session):
+    """Seed athletes who appear in the most recent IFSC boulder fixture
+    and confirm the engine produces rank-derived μ values (not defaults).
+
+    The engine probes years descending from the current calendar year and
+    uses the first year for which a fixture exists — currently 2025. Pick
+    athletes whose rank in 2025 is unambiguous: Anraku #1 (high μ),
+    Elias Arriagada Kruger #20 (low μ)."""
+    a = Athlete(name="Sorato Anraku", gender=Gender.M)
+    db_session.add(a)
+    b = Athlete(name="Elias Arriagada Kruger", gender=Gender.M)  # rank 20 in 2025 BM
+    db_session.add(b)
+    # And one that isn't in the fixture at all.
+    c = Athlete(name="Unknown Climber", gender=Gender.M)
+    db_session.add(c)
+    db_session.commit()
+
+    engine = IFSCOfficialEngine(db_session)
+    fc = engine.predict([a.id, b.id, c.id], Discipline.BOULDER)
+
+    # Rank-1 athlete should sit well above default.
+    assert fc[a.id].mu > 1500.0
+    # Rank-20 sits well below.
+    assert fc[b.id].mu < 1500.0
+    # Unknown stays at default.
+    assert fc[c.id].mu == 1500.0
+    # And the rank-1 athlete should be ahead of the rank-20 athlete.
+    assert fc[a.id].mu > fc[b.id].mu
+
+
+def test_ifsc_official_handles_name_normalization(db_session):
+    """Diacritic-stripped + override-keyed names still match.
+
+    AscentStats / Wikipedia use 'Anze Peharc' (no diacritic) — our DB might
+    store the Slovenian form. The normalize_name helper handles both
+    directions.
+    """
+    a = Athlete(name="Anže Peharc", gender=Gender.M)  # rank 14 in 2024 BM
+    db_session.add(a)
+    db_session.commit()
+
+    engine = IFSCOfficialEngine(db_session)
+    fc = engine.predict([a.id], Discipline.BOULDER)
+    # If normalization worked, we picked up rank 14 (≈ default territory)
+    # and definitely have an n_events > 0 from the rank-table presence.
+    assert fc[a.id].n_events > 0
 
 
 def test_ifsc_official_end_to_end(db_session, baseline_dataset):
@@ -262,6 +319,53 @@ def test_ifsc_official_end_to_end(db_session, baseline_dataset):
     ) as runner:
         report = runner.run()
     assert report.variant == "ifsc_official"
+
+
+# ---------------------------------------------------------------------------
+# AscentStatsEngine
+# ---------------------------------------------------------------------------
+
+
+def test_ascentstats_matches_known_athlete_boulder(db_session):
+    """Garnbret + Anraku are #1 in the 2026 boulder women / men fixtures."""
+    janja = Athlete(name="Janja Garnbret", gender=Gender.F)
+    anraku = Athlete(name="Sorato Anraku", gender=Gender.M)
+    db_session.add_all([janja, anraku])
+    db_session.commit()
+
+    engine = AscentStatsEngine(db_session)
+    fc = engine.predict([janja.id, anraku.id], Discipline.BOULDER)
+    # Both are rank-1 in their respective gender brackets.
+    assert fc[janja.id].mu > 1500.0
+    assert fc[anraku.id].mu > 1500.0
+
+
+def test_ascentstats_returns_defaults_for_lead(db_session):
+    """AscentStats only publishes Boulder — Lead/Speed should fall through
+    to the default-μ branch even for athletes whose names are in the
+    boulder snapshot."""
+    a = Athlete(name="Janja Garnbret", gender=Gender.F)
+    db_session.add(a)
+    db_session.commit()
+
+    engine = AscentStatsEngine(db_session)
+    fc = engine.predict([a.id], Discipline.LEAD)
+    assert fc[a.id].mu == 1500.0
+    assert fc[a.id].sigma == 350.0
+
+
+def test_ascentstats_end_to_end(db_session, baseline_dataset):
+    dataset = BacktestDataset(
+        disciplines=(Discipline.LEAD,), n_simulations=200, rng_seed=5
+    )
+    with BacktestRunner(
+        dataset=dataset,
+        variant="ascentstats",
+        oos_mode=HoldoutMode(n_seasons=1),
+        in_memory_session=db_session,
+    ) as runner:
+        report = runner.run()
+    assert report.variant == "ascentstats"
 
 
 # ---------------------------------------------------------------------------

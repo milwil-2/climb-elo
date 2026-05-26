@@ -325,14 +325,16 @@ def _parse_wikipedia_standings(html: str, gender: GenderKey) -> list[RankedAthle
     # Find a header that mentions the section, then take the next ~50 KB
     # of HTML and try to extract rows.
     header_pat = re.compile(
-        rf'<h[2-4][^>]*>.*?{re.escape(section)}.*?</h[2-4]>',
+        rf"<h[2-4][^>]*>.*?{re.escape(section)}.*?</h[2-4]>",
         re.IGNORECASE | re.DOTALL,
     )
     m = header_pat.search(html)
     if not m:
         return []
     chunk = html[m.end() : m.end() + 80_000]
-    table_match = re.search(r'<table[^>]*class="[^"]*wikitable[^"]*".*?</table>', chunk, re.DOTALL)
+    table_match = re.search(
+        r'<table[^>]*class="[^"]*wikitable[^"]*".*?</table>', chunk, re.DOTALL
+    )
     if not table_match:
         return []
     table = table_match.group(0)
@@ -407,9 +409,7 @@ def refresh_ifsc_official(
     ranking = fetch_ifsc_official_ranking(season, discipline, gender)
     if not ranking:
         return None
-    path = _cache_path(
-        "ifsc_official", season, discipline, gender, cache_dir=cache_dir
-    )
+    path = _cache_path("ifsc_official", season, discipline, gender, cache_dir=cache_dir)
     _write_cache(path, "ifsc_official", season, discipline, gender, ranking)
     return path
 
@@ -492,9 +492,7 @@ def _parse_ascentstats_table(html: str) -> list[RankedAthlete]:
                 continue
         if not name:
             continue
-        out.append(
-            RankedAthlete(rank=rank, name=name, country=country, rating=rating)
-        )
+        out.append(RankedAthlete(rank=rank, name=name, country=country, rating=rating))
     return out
 
 
@@ -508,9 +506,7 @@ def refresh_ascentstats(
     ranking = fetch_ascentstats_ranking(season, gender)
     if not ranking:
         return None
-    path = _cache_path(
-        "ascentstats", season, "boulder", gender, cache_dir=cache_dir
-    )
+    path = _cache_path("ascentstats", season, "boulder", gender, cache_dir=cache_dir)
     _write_cache(path, "ascentstats", season, "boulder", gender, ranking)
     return path
 
@@ -534,7 +530,9 @@ def refresh_all(
     for season in seasons:
         for discipline in ("boulder", "lead", "speed"):  # type: ignore[assignment]
             for gender in ("M", "F"):  # type: ignore[assignment]
-                p = refresh_ifsc_official(season, discipline, gender, cache_dir=cache_dir)
+                p = refresh_ifsc_official(
+                    season, discipline, gender, cache_dir=cache_dir
+                )
                 if p:
                     written["ifsc_official"].append(p)
         for gender in ("M", "F"):  # type: ignore[assignment]
