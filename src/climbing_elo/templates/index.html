@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Leaderboard — Climbing ELO{% endblock %}
+{% block content %}
+<h1>Lead ELO Leaderboard</h1>
+<table>
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Athlete</th>
+            <th>Nat</th>
+            <th>Gender</th>
+            <th>Rating</th>
+            <th>&sigma;</th>
+            <th>Events</th>
+            <th>Status</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for a in athletes %}
+        <tr>
+            <td>{{ a.rank }}</td>
+            <td><a href="/athletes/{{ a.id }}">{{ a.name }}</a></td>
+            <td>{{ a.nationality }}</td>
+            <td>{{ a.gender }}</td>
+            <td><strong>{{ a.mu }}</strong></td>
+            <td>{{ a.sigma }}</td>
+            <td>{{ a.n_events }}</td>
+            <td>
+                {% if a.provisional %}
+                <span class="badge badge-provisional">Provisional</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

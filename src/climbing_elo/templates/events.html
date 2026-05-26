@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Events — Climbing ELO{% endblock %}
+{% block content %}
+<h1>Events</h1>
+<table>
+    <thead>
+        <tr>
+            <th>Event</th>
+            <th>Season</th>
+            <th>Tier</th>
+            <th>Date</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for e in events %}
+        <tr>
+            <td><a href="/events/{{ e.id }}">{{ e.name }}</a></td>
+            <td>{{ e.season }}</td>
+            <td>{{ e.tier }}</td>
+            <td>{{ e.date }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

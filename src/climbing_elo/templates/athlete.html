@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}{{ athlete.name }} — Climbing ELO{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+{% endblock %}
+
+{% block content %}
+<h1>{{ athlete.name }}</h1>
+<div class="card">
+    <div class="stats-row">
+        <div class="stat">
+            <div class="stat-value">{{ rating.mu or '—' }}</div>
+            <div class="stat-label">Rating</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">&plusmn;{{ rating.sigma or '—' }}</div>
+            <div class="stat-label">Uncertainty</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ rating.n_events }}</div>
+            <div class="stat-label">Events</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ athlete.nationality }}</div>
+            <div class="stat-label">Nationality</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ athlete.gender }}</div>
+            <div class="stat-label">Gender</div>
+        </div>
+    </div>
+</div>
+
+<h2>Rating History</h2>
+<div class="card">
+    <div class="chart-container">
+        <canvas id="ratingChart"></canvas>
+    </div>
+</div>
+
+<h2>Recent Events</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Event</th>
+            <th>Season</th>
+            <th>Before</th>
+            <th>After</th>
+            <th>&Delta;</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for e in recent_events %}
+        <tr>
+            <td><a href="/events/{{ e.event_id }}">{{ e.event_name }}</a></td>
+            <td>{{ e.season }}</td>
+            <td>{{ e.mu_before }}</td>
+            <td>{{ e.mu_after }}</td>
+            <td class="{{ e.delta_class }}">{{ '%+.1f'|format(e.delta) }}</td>
+            <td><a href="/breakdown/{{ athlete.id }}/{{ e.event_id }}">details</a></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ctx = document.getElementById('ratingChart').getContext('2d');
+const labels = {{ chart_labels|safe }};
+const mu = {{ chart_mu|safe }};
+const upper = {{ chart_sigma_upper|safe }};
+const lower = {{ chart_sigma_lower|safe }};
+
+new Chart(ctx, {
+    type: 'line',
+    data: {
+        labels: labels,
+        datasets: [
+            {
+                label: 'Rating (μ)',
+                data: mu,
+                borderColor: '#7c8aff',
+                backgroundColor: 'rgba(124,138,255,0.1)',
+                borderWidth: 2,
+                pointRadius: 1,
+                tension: 0.3,
+            },
+            {
+                label: '+σ',
+                data: upper,
+                borderColor: 'rgba(124,138,255,0.2)',
+                borderWidth: 1,
+                borderDash: [4, 4],
+                pointRadius: 0,
+                fill: false,
+            },
+            {
+                label: '-σ',
+                data: lower,
+                borderColor: 'rgba(124,138,255,0.2)',
+                borderWidth: 1,
+                borderDash: [4, 4],
+                pointRadius: 0,
+                fill: '-1',
+                backgroundColor: 'rgba(124,138,255,0.05)',
+            },
+        ],
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { display: false },
+        },
+        scales: {
+            x: {
+                display: false,
+            },
+            y: {
+                grid: { color: 'rgba(255,255,255,0.05)' },
+                ticks: { color: '#808890' },
+            },
+        },
+    },
+});
+</script>
+{% endblock %}

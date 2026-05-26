@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ event.name }} — Climbing ELO{% endblock %}
+{% block content %}
+<h1>{{ event.name }} ({{ event.season }})</h1>
+<p style="color: #808890; margin-bottom: 1rem;">{{ event.tier }}</p>
+
+{% for rnd in rounds %}
+<h2>{{ rnd.round_type }} — {{ rnd.gender }}</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Rank</th>
+            <th>Athlete</th>
+            <th>Nat</th>
+            <th>Score</th>
+            <th>Before</th>
+            <th>After</th>
+            <th>&Delta;</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for r in rnd.results %}
+        <tr>
+            <td>{{ r.rank }}</td>
+            <td><a href="/athletes/{{ r.athlete_id }}">{{ r.name }}</a></td>
+            <td>{{ r.nationality }}</td>
+            <td>{{ r.raw_score }}</td>
+            <td>{{ r.mu_before }}</td>
+            <td>{{ r.mu_after }}</td>
+            <td class="{{ r.delta_class }}">
+                {% if r.delta != '—' %}{{ '%+.1f'|format(r.delta) }}{% else %}—{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endfor %}
+{% endblock %}

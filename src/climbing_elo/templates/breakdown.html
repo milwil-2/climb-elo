@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Rating Breakdown — {{ athlete.name }} — Climbing ELO{% endblock %}
+{% block content %}
+<h1>Rating Breakdown</h1>
+<p style="color: #808890;">
+    <a href="/athletes/{{ athlete.id }}" style="color: #7c8aff;">{{ athlete.name }}</a>
+    at <a href="/events/{{ event.id }}" style="color: #7c8aff;">{{ event.name }} ({{ event.season }})</a>
+</p>
+
+{% for rnd in rounds %}
+<div class="card">
+    <h2 style="margin-top: 0;">{{ rnd.round_type }}</h2>
+    <div class="stats-row" style="margin-bottom: 1rem;">
+        <div class="stat">
+            <div class="stat-value">{{ rnd.mu_before }}</div>
+            <div class="stat-label">Before</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ rnd.mu_after }}</div>
+            <div class="stat-label">After</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value {% if rnd.delta > 0 %}positive{% elif rnd.delta < 0 %}negative{% endif %}">
+                {{ '%+.1f'|format(rnd.delta) }}
+            </div>
+            <div class="stat-label">Delta</div>
+        </div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Opponent</th>
+                <th>Result</th>
+                <th>Expected</th>
+                <th>Actual</th>
+                <th>&Delta;&mu;</th>
+                <th>Margin</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in rnd.pairs %}
+            <tr>
+                <td>{{ p.opponent_name }}</td>
+                <td>
+                    {% if p.result == 'won' %}
+                    <span class="positive">Won</span>
+                    {% else %}
+                    <span class="negative">Lost</span>
+                    {% endif %}
+                </td>
+                <td>{{ '%.3f'|format(p.expected) }}</td>
+                <td>{{ p.actual|int }}</td>
+                <td class="{% if p.delta > 0 %}positive{% elif p.delta < 0 %}negative{% endif %}">
+                    {{ '%+.2f'|format(p.delta) }}
+                </td>
+                <td>{{ '%.1f'|format(p.margin_multiplier) }}x</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endfor %}
+{% endblock %}
