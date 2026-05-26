@@ -18,6 +18,11 @@ name: Auto-add issues to Climbing ELO project
 on:
   issues:
     types: [opened, reopened, transferred, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      issue_url:
+        description: "URL of issue to add (for manual testing)"
+        required: false
 
 jobs:
   add-to-project:
