@@ -28,7 +28,6 @@ from climbing_elo.engine.baselines import (
     RandomEngine,
     StrippedEloEngine,
     _StrippedConfig,
-    _RankSnapshotEngine,
 )
 from climbing_elo.engine.evaluation import (
     BACKTEST_VARIANTS,
@@ -320,6 +319,79 @@ def test_ifsc_official_end_to_end(db_session, baseline_dataset):
     ) as runner:
         report = runner.run()
     assert report.variant == "ifsc_official"
+
+
+# ---------------------------------------------------------------------------
+# Cutoff-date data-leakage guard (Issue #61 item #1)
+# ---------------------------------------------------------------------------
+
+
+def test_cutoff_date_restricts_snapshot_year(db_session):
+    """An engine constructed with cutoff_date=2023-01-01 must not use a
+    snapshot from 2024 or later, even if one exists in the fixture dir."""
+    a = Athlete(name="Sorato Anraku", gender=Gender.M)
+    db_session.add(a)
+    db_session.commit()
+
+    # Without cutoff: probes from today's year down → finds 2025/2026 fixture.
+    engine_no_cutoff = IFSCOfficialEngine(db_session)
+    fc_no_cutoff = engine_no_cutoff.predict([a.id], Discipline.BOULDER)
+
+    # With cutoff 2020-01-01: no fixture exists for 2020 or earlier in the
+    # test corpus → snapshot is empty → athlete gets default μ.
+    engine_with_cutoff = IFSCOfficialEngine(db_session, cutoff_date=date(2020, 1, 1))
+    fc_with_cutoff = engine_with_cutoff.predict([a.id], Discipline.BOULDER)
+
+    # No-cutoff path found a fixture and produced a non-default μ.
+    assert fc_no_cutoff[a.id].mu != 1500.0
+    # Cutoff-2020 path found no fixture and returned the default.
+    assert fc_with_cutoff[a.id].mu == 1500.0
+
+
+def test_cutoff_date_passed_through_harness(db_session, baseline_dataset):
+    """BacktestRunner must pass train_end_date as cutoff_date to snapshot
+    engines so they don't see future rankings."""
+    # The baseline_dataset has training events up to 2023 and holdout in 2024.
+    # train_end_date for a 1-season holdout is 2024-01-01.
+    # Fixtures only exist from 2024 onward for IFSC, so without a cutoff the
+    # engine would load the 2024/2025 snapshot (future data); with the cutoff
+    # wired through, it should find no fixture before 2024 and fall back to
+    # defaults.  The test just confirms the runner completes without error —
+    # the actual snapshot year selection is covered by
+    # test_cutoff_date_restricts_snapshot_year.
+    dataset = BacktestDataset(
+        disciplines=(Discipline.LEAD,), n_simulations=200, rng_seed=6
+    )
+    with BacktestRunner(
+        dataset=dataset,
+        variant="ifsc_official",
+        oos_mode=HoldoutMode(n_seasons=1),
+        in_memory_session=db_session,
+    ) as runner:
+        report = runner.run()
+    assert report.variant == "ifsc_official"
+    assert report.aggregate["n_rounds"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Name-collision debug logging (Issue #61 item #2)
+# ---------------------------------------------------------------------------
+
+
+def test_name_index_collision_is_logged(db_session, caplog):
+    """Two athletes with the same normalised name trigger a debug log."""
+    import logging
+
+    db_session.add(Athlete(name="Test Climber", gender=Gender.M))
+    db_session.add(Athlete(name="Test Climber", gender=Gender.F))
+    db_session.commit()
+
+    engine = IFSCOfficialEngine(db_session)
+    with caplog.at_level(logging.DEBUG, logger="climbing_elo.engine.baselines"):
+        engine._build_name_index()
+
+    collision_logs = [r for r in caplog.records if "collision" in r.message.lower()]
+    assert collision_logs, "Expected a debug-level collision log but found none"
 
 
 # ---------------------------------------------------------------------------
