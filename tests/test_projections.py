@@ -5,9 +5,13 @@ import pytest
 
 from climbing_elo.engine.projections import (
     AthleteProjectionInput,
+    ProgressionResult,
+    RoundConfig,
     compute_podium_probabilities,
+    default_event_format,
     expected_finish_ranks,
     predict_winner,
+    simulate_event_progression,
 )
 
 # ---------------------------------------------------------------------------
@@ -216,3 +220,212 @@ class TestExpectedFinishRanks:
         athletes = [make_athlete(i, mu=2000 - i * 100) for i in range(1, 6)]
         ranked = expected_finish_ranks(athletes)
         assert ranked == [1, 2, 3, 4, 5]
+
+
+# ---------------------------------------------------------------------------
+# simulate_event_progression
+# ---------------------------------------------------------------------------
+
+def make_rounds_two() -> list[RoundConfig]:
+    """Qualification (top 4) → final."""
+    return [
+        RoundConfig(round_type="qualification", advance_count=4),
+        RoundConfig(round_type="final", advance_count=4),
+    ]
+
+
+def make_rounds_three() -> list[RoundConfig]:
+    """Qualification (top 6) → semifinal (top 3) → final."""
+    return [
+        RoundConfig(round_type="qualification", advance_count=6),
+        RoundConfig(round_type="semifinal", advance_count=3),
+        RoundConfig(round_type="final", advance_count=3),
+    ]
+
+
+class TestSimulateEventProgression:
+    def test_empty_input_returns_empty(self):
+        result = simulate_event_progression([], rounds=make_rounds_two())
+        assert result == []
+
+    def test_returns_correct_schema(self):
+        athletes = [make_athlete(i, mu=1500) for i in range(1, 5)]
+        rounds = make_rounds_two()
+        results = simulate_event_progression(athletes, rounds=rounds, n_simulations=500, rng_seed=0)
+        assert len(results) == 4
+        for pr in results:
+            assert isinstance(pr, ProgressionResult)
+            assert isinstance(pr.athlete_id, int)
+            assert isinstance(pr.name, str)
+            assert isinstance(pr.mu, (int, float))
+            assert isinstance(pr.advance_probs, dict)
+            assert isinstance(pr.final_podium_prob, float)
+            assert isinstance(pr.final_win_prob, float)
+            # Must have an entry for every round_type
+            for rc in rounds:
+                assert rc.round_type in pr.advance_probs
+
+    def test_first_round_advance_prob_is_one(self):
+        """All athletes start in round 1 — advance_prob for round 0 must be 1.0."""
+        athletes = [make_athlete(i, mu=1500) for i in range(1, 9)]
+        rounds = make_rounds_three()
+        results = simulate_event_progression(athletes, rounds=rounds, n_simulations=1000, rng_seed=1)
+        for pr in results:
+            assert pr.advance_probs["qualification"] == pytest.approx(1.0, abs=0.0)
+
+    def test_higher_mu_has_higher_advance_prob(self):
+        """A much stronger athlete should have a higher semi/final advance probability."""
+        strong = make_athlete(1, mu=2200, sigma=100)
+        weak = make_athlete(2, mu=1000, sigma=100)
+        # 8-athlete field — top 4 advance
+        others = [make_athlete(i + 3, mu=1500, sigma=100) for i in range(6)]
+        athletes = [strong, weak] + others
+        rounds = [
+            RoundConfig(round_type="qualification", advance_count=4),
+            RoundConfig(round_type="final", advance_count=4),
+        ]
+        results = simulate_event_progression(athletes, rounds=rounds, n_simulations=5000, rng_seed=2)
+        by_id = {r.athlete_id: r for r in results}
+        # Strong should advance with near-certainty
+        assert by_id[1].advance_probs["final"] > by_id[2].advance_probs["final"]
+        assert by_id[1].advance_probs["final"] > 0.9
+
+    def test_advance_probs_monotonically_decreasing(self):
+        """Probability of reaching each later round must be <= probability of reaching an earlier round."""
+        athletes = [make_athlete(i, mu=1700 - i * 50, sigma=150) for i in range(1, 9)]
+        rounds = make_rounds_three()
+        results = simulate_event_progression(athletes, rounds=rounds, n_simulations=2000, rng_seed=3)
+        for pr in results:
+            q = pr.advance_probs["qualification"]
+            s = pr.advance_probs["semifinal"]
+            f = pr.advance_probs["final"]
+            assert q >= s - 1e-9, f"athlete {pr.athlete_id}: qual {q} < semi {s}"
+            assert s >= f - 1e-9, f"athlete {pr.athlete_id}: semi {s} < final {f}"
+
+    def test_sum_of_advance_probs_approx_advance_count(self):
+        """Sum of round-2 advance_probs ≈ advance_count from round-1.
+
+        With many sims and no bias the sum should be close to K.
+        """
+        n_sims = 10_000
+        k_advance = 4
+        athletes = [make_athlete(i, mu=1500, sigma=150) for i in range(1, 9)]
+        rounds = [
+            RoundConfig(round_type="qualification", advance_count=k_advance),
+            RoundConfig(round_type="final", advance_count=k_advance),
+        ]
+        results = simulate_event_progression(athletes, rounds=rounds, n_simulations=n_sims, rng_seed=4)
+        total = sum(pr.advance_probs["final"] for pr in results)
+        # Each sim advances exactly k_advance athletes, so sum = k_advance.
+        assert total == pytest.approx(k_advance, abs=0.1)
+
+    def test_sum_of_win_probs_approx_one(self):
+        athletes = [make_athlete(i, mu=1500, sigma=120) for i in range(1, 7)]
+        rounds = [
+            RoundConfig(round_type="qualification", advance_count=4),
+            RoundConfig(round_type="final", advance_count=4),
+        ]
+        results = simulate_event_progression(athletes, rounds=rounds, n_simulations=5000, rng_seed=5)
+        total_win = sum(pr.final_win_prob for pr in results)
+        assert total_win == pytest.approx(1.0, abs=0.02)
+
+    def test_single_round_works(self):
+        """A single-round format (just a final) should behave like compute_podium_probabilities."""
+        athletes = [make_athlete(i, mu=1500 - i * 30, sigma=100) for i in range(1, 6)]
+        rounds = [RoundConfig(round_type="final", advance_count=5)]
+        results = simulate_event_progression(athletes, rounds=rounds, n_simulations=5000, rng_seed=6)
+        assert len(results) == 5
+        total_win = sum(pr.final_win_prob for pr in results)
+        assert total_win == pytest.approx(1.0, abs=0.02)
+        # All advance_probs for "final" must be 1.0 (everyone starts here)
+        for pr in results:
+            assert pr.advance_probs["final"] == pytest.approx(1.0, abs=0.0)
+
+    def test_empty_rounds_raises(self):
+        athletes = [make_athlete(1, mu=1500)]
+        with pytest.raises(ValueError, match="rounds must contain"):
+            simulate_event_progression(athletes, rounds=[])
+
+    def test_results_sorted_by_descending_mu(self):
+        athletes = [make_athlete(i, mu=1000 + i * 100, sigma=80) for i in range(1, 6)]
+        rounds = make_rounds_two()
+        results = simulate_event_progression(athletes, rounds=rounds, n_simulations=500, rng_seed=7)
+        mus = [r.mu for r in results]
+        assert mus == sorted(mus, reverse=True)
+
+    def test_final_podium_le_one(self):
+        athletes = [make_athlete(i, mu=1500, sigma=150) for i in range(1, 6)]
+        rounds = make_rounds_two()
+        results = simulate_event_progression(athletes, rounds=rounds, n_simulations=2000, rng_seed=8)
+        for pr in results:
+            assert 0.0 <= pr.final_podium_prob <= 1.0
+            assert 0.0 <= pr.final_win_prob <= 1.0
+
+    def test_sum_of_podium_probs_approx_three(self):
+        """Sum of final podium probs across all athletes ≈ min(3, field_size)."""
+        athletes = [make_athlete(i, mu=1500, sigma=150) for i in range(1, 9)]
+        rounds = make_rounds_three()
+        results = simulate_event_progression(athletes, rounds=rounds, n_simulations=8000, rng_seed=9)
+        # In each sim exactly 3 athletes are on the podium (since 3 advance to final)
+        total = sum(pr.final_podium_prob for pr in results)
+        assert total == pytest.approx(3.0, abs=0.15)
+
+    def test_reproducible_with_same_seed(self):
+        athletes = [make_athlete(i, mu=1500 - i * 40, sigma=120) for i in range(1, 7)]
+        rounds = make_rounds_three()
+        r1 = simulate_event_progression(athletes, rounds=rounds, n_simulations=2000, rng_seed=42)
+        r2 = simulate_event_progression(athletes, rounds=rounds, n_simulations=2000, rng_seed=42)
+        for a, b in zip(r1, r2):
+            assert a.advance_probs == b.advance_probs
+            assert a.final_podium_prob == b.final_podium_prob
+            assert a.final_win_prob == b.final_win_prob
+
+
+# ---------------------------------------------------------------------------
+# default_event_format
+# ---------------------------------------------------------------------------
+
+class TestDefaultEventFormat:
+    def test_olympics_returns_three_rounds(self):
+        fmt = default_event_format("olympics")
+        assert len(fmt) == 3
+        assert fmt[0].round_type == "qualification"
+        assert fmt[1].round_type == "semifinal"
+        assert fmt[2].round_type == "final"
+        assert fmt[0].advance_count == 20
+        assert fmt[1].advance_count == 8
+
+    def test_world_championship_same_as_olympics(self):
+        oly = default_event_format("olympics")
+        wch = default_event_format("world_championship")
+        assert len(oly) == len(wch)
+        for a, b in zip(oly, wch):
+            assert a.round_type == b.round_type
+            assert a.advance_count == b.advance_count
+
+    def test_world_cup_returns_three_rounds(self):
+        fmt = default_event_format("world_cup")
+        assert len(fmt) == 3
+        assert fmt[0].round_type == "qualification"
+        assert fmt[0].advance_count == 26
+        assert fmt[1].advance_count == 8
+
+    def test_continental_returns_two_rounds(self):
+        fmt = default_event_format("continental")
+        assert len(fmt) == 2
+        assert fmt[0].round_type == "qualification"
+        assert fmt[1].round_type == "final"
+        assert fmt[0].advance_count == 20
+
+    def test_each_format_returns_valid_round_configs(self):
+        for tier in ("olympics", "world_championship", "world_cup", "continental"):
+            fmt = default_event_format(tier)
+            assert len(fmt) >= 1
+            for rc in fmt:
+                assert isinstance(rc, RoundConfig)
+                assert rc.round_type != ""
+                assert rc.advance_count > 0
+
+    def test_unknown_tier_raises(self):
+        with pytest.raises(ValueError, match="Unknown event tier"):
+            default_event_format("unknown_tier")

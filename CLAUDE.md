@@ -68,10 +68,14 @@ K-factors are tiered by EventTier × RoundType, doubled from the PRD baseline af
 `engine/projections.py` provides Monte Carlo outcome prediction:
 
 - `compute_podium_probabilities(athletes, n_simulations=10_000)` — draws N(μ, σ) performance scores per simulation, ranks athletes, and tallies win/podium/top-8 fractions. Returns `{athlete_id: {win, podium, top_8, expected_rank}}`. 10k sims for 20 athletes runs in ~15ms (numpy vectorized).
+- `simulate_event_progression(athletes, rounds, n_simulations=10_000)` — multi-round Monte Carlo. Each trial draws N(μ, σ) for all athletes, advances the top-K to the next round, re-draws, and repeats until the final. Returns a list of `ProgressionResult` dataclasses with `advance_probs` (per-round), `final_podium_prob`, and `final_win_prob`. Runs pure Python per-sim (no vectorisation across rounds), so it is slower than `compute_podium_probabilities` — keep n_simulations ≤ 10k for latency-sensitive routes.
+- `default_event_format(tier: str) -> list[RoundConfig]` — returns the default `RoundConfig` list for a given `EventTier` string value: Olympics/World Championship (qual→20, semi→8, final), World Cup (qual→26, semi→8, final), Continental (qual→20, final).
 - `predict_winner(athletes)` — deterministic: returns athlete_id with highest μ.
 - `expected_finish_ranks(athletes)` — returns athlete_ids sorted by descending μ.
 
 Athletes with no rating for a discipline receive defaults (μ=1500, σ=350).
+
+The `/projections/{event_id}` HTML route automatically uses `simulate_event_progression` when the event has ≥ 2 rounds recorded in the DB (detected by counting distinct `RoundType` values for the requested gender). Single-round events fall back to `compute_podium_probabilities`.
 
 ## Public REST API (v1)
 

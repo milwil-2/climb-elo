@@ -12,8 +12,12 @@ from climbing_elo.cache import predictions_cache
 from climbing_elo.database import get_session_factory
 from climbing_elo.engine.projections import (
     AthleteProjectionInput,
+    ProgressionResult,
+    RoundConfig,
     compute_podium_probabilities,
+    default_event_format,
     predict_winner,
+    simulate_event_progression,
 )
 from climbing_elo.models import (
     Athlete,
@@ -377,6 +381,62 @@ def _build_projection_rows(
     return rows
 
 
+def _build_progression_rows(
+    progression: list[ProgressionResult],
+    round_configs: list[RoundConfig],
+) -> list[dict]:
+    """Convert ProgressionResult objects to template-friendly dicts.
+
+    Each row contains per-round advance probabilities (pre-formatted as
+    percentage strings + raw floats for colour-coding) plus final podium/win.
+    Rows are already sorted by descending mu (best first) by
+    simulate_event_progression, so we just assign display ranks here.
+    """
+    rows = []
+    for i, pr in enumerate(progression):
+        round_probs = []
+        for rc in round_configs:
+            raw = pr.advance_probs.get(rc.round_type, 0.0)
+            pct = raw * 100
+            if pct >= 70:
+                css = "prob-green"
+            elif pct >= 30:
+                css = "prob-yellow"
+            else:
+                css = "prob-red"
+            round_probs.append({
+                "round_type": rc.round_type,
+                "round_label": rc.round_type.title(),
+                "raw": raw,
+                "pct": f"{pct:.1f}%",
+                "css": css,
+            })
+
+        # Final podium colour
+        fp_raw = pr.final_podium_prob
+        fp_pct = fp_raw * 100
+        if fp_pct >= 70:
+            fp_css = "prob-green"
+        elif fp_pct >= 30:
+            fp_css = "prob-yellow"
+        else:
+            fp_css = "prob-red"
+
+        rows.append({
+            "proj_rank": i + 1,
+            "athlete_id": pr.athlete_id,
+            "name": pr.name,
+            "mu": round(pr.mu, 1),
+            "round_probs": round_probs,
+            "final_podium": f"{fp_pct:.1f}%",
+            "final_podium_raw": fp_raw,
+            "final_podium_css": fp_css,
+            "final_win": f"{pr.final_win_prob * 100:.1f}%",
+            "final_win_raw": pr.final_win_prob,
+        })
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # GET /projections/new  — manual projection form
 # POST /projections/new — run projection and render results inline
@@ -597,15 +657,57 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
                 name=athlete.name,
             ))
 
-        probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
-        rows = _build_projection_rows(session, proj_inputs, probs)
-        winner_id = predict_winner(proj_inputs)
-        winner_name = next(
-            (r["name"] for r in rows if r["athlete_id"] == winner_id), None
-        )
-
         # Available genders for this event
         available_genders = sorted({rnd.gender.value for rnd in event.rounds})
+
+        # Determine whether the event has multiple rounds we can simulate progression for.
+        # We use the actual rounds present in the DB; fall back to default_event_format
+        # when fewer than 2 gender-specific rounds are found.
+        gender_round_types = sorted(
+            {rnd.round_type for rnd in event.rounds if rnd.gender == gender_enum},
+            key=lambda rt: rt.value,
+        )
+        use_progression = len(gender_round_types) >= 2
+
+        if use_progression:
+            # Build RoundConfig list from actual DB rounds, ordered qualification → semi → final.
+            _rt_order = {
+                RoundType.QUALIFICATION: 0,
+                RoundType.SEMI: 1,
+                RoundType.FINAL: 2,
+            }
+            # Use default advance counts for each round type.
+            _default_format = default_event_format(event.tier.value)
+            _default_advance = {rc.round_type: rc.advance_count for rc in _default_format}
+            _round_type_to_str = {
+                RoundType.QUALIFICATION: "qualification",
+                RoundType.SEMI: "semifinal",
+                RoundType.FINAL: "final",
+            }
+
+            sorted_rt = sorted(gender_round_types, key=lambda rt: _rt_order.get(rt, 99))
+            round_configs: list[RoundConfig] = []
+            for rt in sorted_rt:
+                rt_str = _round_type_to_str.get(rt, rt.value)
+                advance = _default_advance.get(rt_str, 8)
+                round_configs.append(RoundConfig(round_type=rt_str, advance_count=advance))
+
+            progression_results = simulate_event_progression(
+                proj_inputs, rounds=round_configs, n_simulations=10_000
+            )
+            winner_name = progression_results[0].name if progression_results else None
+
+            # Build template rows from ProgressionResult objects.
+            rows = _build_progression_rows(progression_results, round_configs)
+        else:
+            probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
+            rows = _build_projection_rows(session, proj_inputs, probs)
+            winner_id = predict_winner(proj_inputs)
+            winner_name = next(
+                (r["name"] for r in rows if r["athlete_id"] == winner_id), None
+            )
+            progression_results = None
+            round_configs = []
 
     return templates.TemplateResponse(request, "projections.html", {
         "event": {
@@ -619,6 +721,8 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
         "available_genders": available_genders,
         "rows": rows,
         "winner": winner_name,
+        "use_progression": use_progression,
+        "round_configs": [{"round_type": rc.round_type} for rc in round_configs] if round_configs else [],
         "error": None,
     })
 
