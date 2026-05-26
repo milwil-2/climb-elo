@@ -1131,8 +1131,16 @@ def make_default_output_dir(root: Path | None = None) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# OOS mode registration — Issue #39 plug-ins
+# Plug-in registration via import side-effects
 # ---------------------------------------------------------------------------
-# Importing the module registers WalkForwardMode / LeaveOneEventOutMode /
-# LeaveOneAthleteOutMode into ``OOS_MODES`` at import time.
+# OOS mode registration — Issue #39 plug-ins.
+# Importing this registers WalkForwardMode / LeaveOneEventOutMode /
+# LeaveOneAthleteOutMode into ``OOS_MODES``.
 from . import oos_modes  # noqa: E402,F401
+
+# Variant registration — Issue #38 baselines.
+# Importing baselines fires the ``register_variant`` calls in that module,
+# adding ``random``, ``persistence``, ``ifsc_official``, and ``stripped_elo``
+# to ``BACKTEST_VARIANTS``. Keep this import at the bottom of the module
+# so the registry / protocols are fully defined first (avoids circular import).
+from climbing_elo.engine import baselines as _baselines  # noqa: F401, E402
