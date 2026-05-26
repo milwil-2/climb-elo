@@ -109,6 +109,20 @@ uv run python scripts/restore_snapshot.py --date 2026-06-01   # restore specific
 
 The `/predictions` page caches per-event Monte Carlo results via the in-memory `TTLCache` at `src/climbing_elo/cache.py` (1-hour TTL). Cache key includes a fingerprint of athletes + ratings, so stale ratings don't silently persist. Call `predictions_cache.clear()` after a scrape for immediate freshness, or run `uv run python scripts/clear_cache.py`. Multi-worker deploys get per-worker caches (acceptable for read-only data).
 
+A separate `likely_roster_cache` (also `TTLCache`, 1-hour TTL) stores results from `engine/likely_roster.py`. Cache key: `"roster:{discipline.value}:{season}:{gender.value}"`. Flushed by `scripts/clear_cache.py` alongside `predictions_cache`.
+
+## Predictions Roster Fallback
+
+The IFSC API publishes a registered-athletes list only ~7-14 days before an event. For upcoming events without a stored list, `/predictions` falls back to a **likely-competitor roster** computed by `engine/likely_roster.py`:
+
+- **Definition**: an athlete is a likely competitor in discipline X, season Y, gender G if they competed in ≥ 60% of the season's finished World Cup events (for gender G) to date.
+- **Finished event**: an Event row that has ≥1 non-DNS Result stored in the DB (i.e. the scraper + backfill have processed it).
+- **Early-season fallback**: if fewer than 3 World Cup events have finished, the function falls back to the top-64 athletes by current μ (filtered by gender, requiring ≥3 career events).
+- **Cap**: at most 64 athletes are returned, ordered by μ descending (matches `_MAX_ATHLETES_PER_PROJECTION_CARD`).
+- **Tier filter**: only `EventTier.WORLD_CUP` events count toward the denominator; continental/championship events are excluded.
+- **DNS exclusion**: a DNS result does not count as participation.
+- When the fallback is used, the prediction card shows a "Predicted roster based on season attendance" disclaimer and the `from_likely_roster` flag is `True` in the template context.
+
 ## Testing
 
-Tests use an in-memory SQLite database (`conftest.py:db_session`). Fixtures `sample_event` and `eight_athletes` provide pre-built test data. `test_elo.py` validates pairwise math (zero-sum invariant across all 3 disciplines). `test_backfill.py` runs a 3-event integration test and checks reproducibility. `test_api.py` covers all v1 REST endpoints. `test_projections.py` covers Monte Carlo invariants. `test_combined.py` covers the Boulder+Lead aggregate. `test_scraper_upcoming.py` covers upcoming-event filter logic. `test_snapshot.py` covers snapshot/restore round-trips. `test_health_check.py` covers CLI exit codes + Discord rate-limiting. `test_cache.py` covers TTLCache thread-safety + expiry.
+Tests use an in-memory SQLite database (`conftest.py:db_session`). Fixtures `sample_event` and `eight_athletes` provide pre-built test data. `test_elo.py` validates pairwise math (zero-sum invariant across all 3 disciplines). `test_backfill.py` runs a 3-event integration test and checks reproducibility. `test_api.py` covers all v1 REST endpoints. `test_projections.py` covers Monte Carlo invariants. `test_combined.py` covers the Boulder+Lead aggregate. `test_scraper_upcoming.py` covers upcoming-event filter logic. `test_snapshot.py` covers snapshot/restore round-trips. `test_health_check.py` covers CLI exit codes + Discord rate-limiting. `test_cache.py` covers TTLCache thread-safety + expiry. `test_likely_roster.py` covers the likely-competitor fallback logic (empty season, early season, mid-season threshold, boundary, gender separation, tier filtering, cap, DNS exclusion).
