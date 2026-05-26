@@ -63,8 +63,31 @@ def _record_alert_sent() -> None:
         pass  # Non-fatal; worst case we send an extra alert
 
 
+_ALLOWED_WEBHOOK_HOSTS = ("discord.com", "discordapp.com")
+
+
+def _is_allowed_webhook_url(url: str) -> bool:
+    """Restrict webhook target to Discord hosts to prevent SSRF."""
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host == "discord.com" or host.endswith(".discord.com") \
+        or host == "discordapp.com" or host.endswith(".discordapp.com")
+
+
 def _post_discord_alert(webhook_url: str, timestamp: str) -> None:
     """POST a Discord webhook message.  Never logs the URL itself."""
+    if not _is_allowed_webhook_url(webhook_url):
+        print(
+            "[health_check] Refusing to POST: webhook URL is not a Discord host",
+            file=sys.stderr,
+        )
+        return
     import httpx
 
     payload = {

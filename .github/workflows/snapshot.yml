@@ -1,0 +1,172 @@
+name: Daily DB Snapshot
+
+# Design choice: the snapshot workflow runs a fresh scrape + backfill of recent
+# events (last 90 days) before snapshotting so the archive stays current.
+# This means the snapshot is self-contained — a restore gives a ready-to-use DB.
+# If the scrape step ever fails (e.g. the IFSC API is temporarily down) the job
+# fails and the previous day's snapshot is still valid.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # 03:00 UTC daily
+  workflow_dispatch:        # allow manual runs
+
+permissions:
+  contents: write           # required to create/update GitHub Releases and upload assets
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      # -----------------------------------------------------------------------
+      # Refresh data so the snapshot is current.
+      # We scrape the current + previous season to pick up any late result edits.
+      - name: Scrape recent IFSC results
+        run: |
+          CURRENT_YEAR=$(date +%Y)
+          PREV_YEAR=$((CURRENT_YEAR - 1))
+          uv run python scripts/scrape_ifsc.py \
+            --min-year "$PREV_YEAR" \
+            --max-year "$CURRENT_YEAR"
+
+      - name: Run backfill (all disciplines)
+        run: |
+          for discipline in lead boulder speed; do
+            uv run python scripts/run_backfill.py --discipline "$discipline"
+          done
+
+      - name: Compute combined ratings
+        run: uv run python scripts/compute_combined_ratings.py
+
+      # -----------------------------------------------------------------------
+      - name: Create snapshot
+        run: uv run python scripts/snapshot_db.py
+
+      # -----------------------------------------------------------------------
+      # Retention policy:
+      #   - Every daily snapshot is uploaded unconditionally.
+      #   - The release description is updated on each run to reflect the latest date.
+      #   - Old assets beyond the 30-day window are pruned by the cleanup step below.
+      #   - Monthly (1st of month) and yearly (Jan 1) snapshots are tagged with
+      #     a special prefix and kept longer (12 monthly, 5 yearly).
+      - name: Determine snapshot metadata
+        id: meta
+        run: |
+          SNAPSHOT_DATE=$(date -u +%Y-%m-%d)
+          MONTH_DAY=$(date -u +%m-%d)
+          DAY=$(date -u +%d)
+
+          echo "date=${SNAPSHOT_DATE}" >> "$GITHUB_OUTPUT"
+          echo "gz_file=snapshots/climbing_elo_${SNAPSHOT_DATE}.db.gz" >> "$GITHUB_OUTPUT"
+          echo "sha_file=snapshots/climbing_elo_${SNAPSHOT_DATE}.db.gz.sha256" >> "$GITHUB_OUTPUT"
+
+          # Mark monthly / yearly snapshots so the cleanup step skips them
+          if [ "$MONTH_DAY" = "01-01" ]; then
+            echo "retention=yearly" >> "$GITHUB_OUTPUT"
+          elif [ "$DAY" = "01" ]; then
+            echo "retention=monthly" >> "$GITHUB_OUTPUT"
+          else
+            echo "retention=daily" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view db-snapshots --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create db-snapshots \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "DB Snapshots" \
+              --notes "Daily SQLite snapshots of the climbing ELO database. Restore with: \`uv run python scripts/restore_snapshot.py\`" \
+              --prerelease
+          fi
+
+      - name: Upload snapshot assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload db-snapshots \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            "${{ steps.meta.outputs.gz_file }}" \
+            "${{ steps.meta.outputs.sha_file }}"
+
+      # -----------------------------------------------------------------------
+      # Prune daily snapshots older than 30 days.
+      # Monthly snapshots (day=01) are kept for 12 months.
+      # Yearly snapshots (Jan 01) are kept for 5 years.
+      - name: Prune old snapshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 << 'PYEOF'
+          import subprocess, json, re
+          from datetime import date, timedelta
+
+          result = subprocess.run(
+              ["gh", "release", "view", "db-snapshots",
+               "--repo", "${{ github.repository }}",
+               "--json", "assets"],
+              capture_output=True, text=True, check=True
+          )
+          assets = json.loads(result.stdout).get("assets", [])
+
+          today = date.today()
+          cutoff_daily   = today - timedelta(days=30)
+          cutoff_monthly = today - timedelta(days=365)
+          cutoff_yearly  = today - timedelta(days=365 * 5)
+
+          DATE_RE = re.compile(r"climbing_elo_(\d{4}-\d{2}-\d{2})\.db\.gz$")
+
+          to_delete = []
+          for asset in assets:
+              name = asset["name"]
+              m = DATE_RE.match(name)
+              if not m:
+                  continue
+              snap_date = date.fromisoformat(m.group(1))
+              is_first_of_year  = snap_date.month == 1  and snap_date.day == 1
+              is_first_of_month = snap_date.day == 1
+
+              if is_first_of_year:
+                  if snap_date < cutoff_yearly:
+                      to_delete.append(name)
+              elif is_first_of_month:
+                  if snap_date < cutoff_monthly:
+                      to_delete.append(name)
+              else:
+                  if snap_date < cutoff_daily:
+                      to_delete.append(name)
+
+          if to_delete:
+              print(f"Deleting {len(to_delete)} old asset(s): {to_delete}")
+              for name in to_delete:
+                  subprocess.run(
+                      ["gh", "release", "delete-asset", "db-snapshots", name,
+                       "--repo", "${{ github.repository }}", "--yes"],
+                      check=True
+                  )
+                  # Also delete the sidecar if present
+                  subprocess.run(
+                      ["gh", "release", "delete-asset", "db-snapshots", f"{name}.sha256",
+                       "--repo", "${{ github.repository }}", "--yes"],
+                      check=False  # sidecar may already be gone
+                  )
+          else:
+              print("No assets to prune.")
+          PYEOF

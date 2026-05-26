@@ -46,3 +46,6 @@ htmlcov/
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# DB snapshots (uploaded to GitHub Releases, not committed)
+snapshots/

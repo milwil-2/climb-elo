@@ -6,10 +6,17 @@ on:
     - cron: "*/30 * * * *"
   workflow_dispatch:
 
+# Default to read-only; individual steps elevate where needed.
+permissions: read-all
+
 jobs:
   health-check:
     name: Ping ifsc.results.info
     runs-on: ubuntu-latest
+    # Need issues:write for the auto-issue-on-failure step.
+    permissions:
+      contents: read
+      issues: write
 
     steps:
       - name: Checkout

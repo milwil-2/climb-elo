@@ -8,6 +8,7 @@ from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 
+from climbing_elo.cache import predictions_cache
 from climbing_elo.database import get_session_factory
 from climbing_elo.engine.projections import (
     AthleteProjectionInput,
@@ -747,7 +748,26 @@ async def predictions(request: Request):
                                 :_MAX_ATHLETES_PER_PROJECTION_CARD
                             ]
 
-                        probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
+                        # Cache key encodes event, discipline, gender, and the
+                        # sorted athlete+rating fingerprint so stale ratings
+                        # don't silently persist. TTL=1h handles staleness;
+                        # callers can call predictions_cache.clear() after a
+                        # scrape run for immediate freshness.
+                        _athlete_fingerprint = ":".join(
+                            f"{a.athlete_id},{a.mu:.2f},{a.sigma:.2f}"
+                            for a in sorted(proj_inputs, key=lambda a: a.athlete_id)
+                        )
+                        _cache_key = (
+                            f"projections:event:{ev.id}"
+                            f":disc:{disc_enum.value}"
+                            f":gender:{gender_enum.value}"
+                            f":athletes:{_athlete_fingerprint}"
+                        )
+
+                        probs = predictions_cache.get(_cache_key)
+                        if probs is None:
+                            probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
+                            predictions_cache.set(_cache_key, probs)
 
                         # Build predicted top-3 sorted by expected_rank.
                         ranked = sorted(proj_inputs, key=lambda a: probs[a.athlete_id]["expected_rank"])
