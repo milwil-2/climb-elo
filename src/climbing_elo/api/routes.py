@@ -762,6 +762,8 @@ async def head_to_head_result(
 
         # --- rating history for chart ---
         def _load_history(athlete_id: int) -> tuple[list[str], list[float]]:
+            # Cap at most-recent 200 events so the chart query is bounded.
+            # Use desc + reverse to get the tail of the timeline, not the head.
             rows = list(
                 session.execute(
                     select(RatingHistory, Event)
@@ -770,9 +772,11 @@ async def head_to_head_result(
                         RatingHistory.athlete_id == athlete_id,
                         Event.discipline == disc,
                     )
-                    .order_by(Event.start_date.asc())
+                    .order_by(Event.start_date.desc())
+                    .limit(200)
                 ).all()
             )
+            rows.reverse()
             labels = [f"{ev.name} ({ev.season})" for _rh, ev in rows]
             mus = [round(rh.mu_after, 1) for rh, _ev in rows]
             return labels, mus
@@ -824,9 +828,10 @@ async def head_to_head_result(
             if most_recent_shared_event
             else None
         ),
-        "chart_labels": json.dumps(all_labels),
-        "chart_mu_a": json.dumps(aligned_a),
-        "chart_mu_b": json.dumps(aligned_b),
+        # Pass raw Python lists; template uses |tojson for safe HTML escaping.
+        "chart_labels": all_labels,
+        "chart_mu_a": aligned_a,
+        "chart_mu_b": aligned_b,
         "disciplines": [
             {"key": k, "label": v}
             for k, v in [
