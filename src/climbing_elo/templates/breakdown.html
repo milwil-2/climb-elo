@@ -1,5 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Rating Breakdown — {{ athlete.name }} — Climbing ELO{% endblock %}
+{% block head %}
+<style>
+    .table-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .table-scroll table {
+        min-width: 480px;
+    }
+</style>
+{% endblock %}
 {% block content %}
 <h1>Rating Breakdown</h1>
 <p style="color: #808890;">
@@ -27,6 +38,7 @@
         </div>
     </div>
 
+    <div class="table-scroll">
     <table>
         <thead>
             <tr>
@@ -59,6 +71,7 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
 {% endfor %}
 {% endblock %}
