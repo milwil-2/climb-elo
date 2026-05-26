@@ -1,6 +1,6 @@
 # Climbing ELO — Rating System Research & Improvement Plan
 
-**Status:** Research synthesis, May 2026. Not yet implemented.
+**Status:** Research synthesis, May 2026 (revised after CLAUDE.md update revealing that the Boulder+Lead geometric-mean composite, Monte Carlo projections engine, Speed P-L wiring, and v1 REST API are already implemented).
 **Audience:** Project owner or a future agent picking up rating-engine work.
 **Companion files:** `engine/elo.py`, `engine/backfill.py`, `models.py`, `scripts/run_backtest.py`.
 
@@ -10,13 +10,14 @@ This document combines a deep read of the current implementation, an academic-li
 
 ## 1. Executive Summary
 
-The current engine is well-tuned for what it is — Plackett-Luce pairwise decomposition with grid-searched K-factors hitting 87.5% podium prediction on a 2025–26 holdout. The three highest-leverage improvements, in order:
+The current engine is well-tuned for what it is — Plackett-Luce pairwise decomposition with grid-searched K-factors hitting 87.5% podium prediction on a 2025–26 holdout, with a Boulder+Lead geometric-mean composite, Monte Carlo projection probabilities, and a v1 REST API already shipped. The four highest-leverage improvements, in order:
 
+0. **Expand the backtest harness** to use proper scoring rules (log-loss, Brier, calibration) on the existing Monte Carlo projection outputs, stratified by athlete tenure / event tier / round / discipline / season. Prerequisite to everything else — without it, we can't tell which of the changes below actually help.
 1. **Make σ a real Glicko-2 RD inside the update**, not just cosmetic decay. This single change retires the ad-hoc 2× provisional-K multiplier, fixes the cold-start / "rating burn-in" problem for emerging athletes, and handles sabbatical returns (Garnbret, Raboutou, Ondra) without further tuning.
 2. **Add a Whole-History Rating (WHR) batch refit as the canonical historical pass.** The literature is consistent: for our data size (~14 years × ~50 events × ~80 athletes), batch Bayesian methods dominate incremental Elo on every published prediction benchmark. Keep the current engine for live updates; WHR becomes the authoritative leaderboard after each season.
 3. **Audit the margin-of-victory multiplier against G-Elo (Szczecinski 2022).** Our current MOV formula is ad-hoc and unconditioned on rating gap, which the 538 NFL/NBA experience shows induces autocorrelation drift at the top. G-Elo gives a principled cumulative-link MOV model with proper-scoring-rule guarantees.
 
-Tier-2: per-discipline + learned-weight composite ratings (tennis pattern, relevant for Olympic Boulder+Lead); validation against AscentStats' independently-computed Bayesian Bradley-Terry ratings as a cheap external sanity check.
+Tier-2: learned composite weights replacing the fixed geometric-mean Boulder+Lead aggregate (relevant for Olympic combined-format prediction); validation against AscentStats' independently-computed Bayesian Bradley-Terry ratings as a cheap external sanity check; bracket-native Speed model replacing the current P-L-on-time approximation.
 
 Tier-3 (skip): TrueSkill / TrueSkill 2 migration; neural rating systems; score-based Gaussian likelihoods for Boulder.
 
@@ -51,16 +52,23 @@ Events processed chronologically; rounds within event ordered qual → semi → 
 
 ### 2.3 Discipline handling
 
-`Discipline` enum: `L`, `B`, `S`, `BL`. Lead and Boulder are implemented with discipline-specific margin functions. `BOULDER_LEAD` is an enum placeholder only — **no aggregate logic exists**. Speed has no engine — pairwise P-L is the wrong model anyway (it's a bracket).
+`Discipline` enum: `L`, `B`, `S`, `BL`. Lead, Boulder, and Speed are all wired into the pairwise P-L engine with discipline-specific score normalization. Speed uses time in seconds with `SPEED_MAX_GAP_SECONDS=2.0` as the margin scale, treating each round as a P-L finishing order — pragmatic, but ignores the genuine single-elimination bracket structure of the sport. `Discipline.BOULDER_LEAD` ratings are populated by `scripts/compute_combined_ratings.py` as a **geometric mean** `sqrt(μ_boulder × μ_lead)` for athletes with ≥3 events in both disciplines; σ combines via RMS. The geometric mean penalizes specialists and rewards all-rounders, matching the Olympic combined format.
 
-### 2.4 Known gaps from code inspection
+### 2.4 Projections and public API
+
+**Projections engine (`engine/projections.py`).** Monte Carlo outcome prediction: `compute_podium_probabilities(athletes, n_simulations=10_000)` draws N(μ, σ) per simulation, ranks athletes, and tallies win/podium/top-8 fractions. 10k sims for 20 athletes runs in ~15ms (numpy-vectorized). **Probabilistic forecasts are already a first-class output** — proper scoring rules (log-loss, Brier, calibration) can be applied to backtesting without additional engineering. Athletes with no rating for a discipline receive defaults (μ=1500, σ=350).
+
+**Public REST API (v1).** Read-only, no-auth endpoints under `/api/v1/` (`api/v1_routes.py`, `api/schemas.py`): leaderboard, athlete profile + history, event list + details. External validation work (e.g., comparing to AscentStats) can be done against a stable interface, and future evaluation tooling can consume the same surface human users see.
+
+### 2.5 Known gaps from code inspection
 
 - **σ doesn't feed back into updates** — biggest single architectural gap.
 - **Margin multiplier is unconditioned on rating gap** — pure score gap, so an upset by 15 holds is rewarded identically to a favorite winning by 15 holds. This is the autocorrelation-drift hazard.
 - **No pre-2025 Boulder scoring translation** despite the IFSC's mid-2025 system change (old tops/zones/attempts → new 25/10/–0.1 cardinal). Old data is currently re-normalized through the new-format margin function, which is a silent mismatch.
-- **Boulder + Lead aggregate unimplemented.**
-- **Speed engine unimplemented.**
-- **Tests cover zero-sum and reproducibility but not σ-decay correctness, numerical-accumulation stability, or large-field (>32) scaling.**
+- **Boulder + Lead aggregate uses a fixed geometric mean**, not weights learned against the actual prediction target (Olympic combined-format log-loss).
+- **Speed uses pairwise P-L on time normalization** rather than the bracket-native pairwise structure the sport actually has.
+- **Backtest validates a single metric (podium hit-rate)** without log-loss, Brier, calibration, or stratification by tenure / tier / round / discipline / season. The Monte Carlo projection engine produces probability distributions that the harness does not yet score.
+- **Tests cover zero-sum, reproducibility, projections invariants, and the BL composite** but not σ-decay correctness, numerical-accumulation stability, large-field (>32) scaling, or cold-start trajectory shape.
 
 ---
 
@@ -148,6 +156,38 @@ Why some methods fit climbing better than they fit chess or tennis.
 
 Each recommendation lists payoff, effort, and concrete next steps.
 
+### R0 — Expand the backtest harness
+
+**Payoff:** Foundational. Without finer-grained metrics, we can't tell whether R1–R7 actually help. The current harness reports one number (podium hit-rate ≥ baseline + 15pp). The existing projections engine already produces probability distributions that proper scoring rules can score directly — we're leaving the most informative validation signal on the floor.
+
+**Effort:** ~1–2 weeks.
+
+**Concrete steps:**
+
+1. **Add metrics:**
+   - Log-loss and Brier score on `compute_podium_probabilities` outputs (proper scoring rules).
+   - Calibration / reliability plots — bucket predicted probability, compare to empirical frequency. "When the model says 70% podium, do they podium ~70% of the time?"
+   - Spearman rank correlation between predicted μ-order and actual finish-order.
+   - Top-1, top-3, top-8 hit-rates separately.
+
+2. **Add stratifications:**
+   - **By athlete tenure** (`n_events` buckets: 1–3, 4–10, 11–30, 30+) — direct cold-start diagnostic.
+   - By event tier, round, discipline, season, field size.
+
+3. **Add baselines:**
+   - Random; persistence (predict same finish as last event); previous-season IFSC official ranking; stripped-down Elo (no margin / provisional / σ) to isolate the value of each feature.
+
+4. **Add out-of-sample modes:**
+   - Walk-forward chronological folds (train through season N, predict N+1).
+   - Leave-one-event-out within a season.
+   - Leave-one-athlete-out specifically for cold-start measurement — hide athlete X's first N events, measure recovery time.
+
+5. **Add variant harness:** `--variant glicko2`, `--variant whr`, `--variant g_elo`, `--variant bracket_speed`, so each of R1–R7 can be A/B'd against the current engine on the same holdout with the same metric matrix.
+
+6. **Output:** a single JSON or markdown report with the metric × stratification × variant cube, suitable for human review and future automated regression checks.
+
+**Risk:** Scope creep. Build the minimum that scores the existing engine across the metric/stratification matrix, then iterate. Probabilistic metrics (log-loss, Brier, calibration) are the priority since they unlock evaluation of every subsequent recommendation.
+
 ### R1 — Glicko-2 RD integration into the update
 
 **Payoff:** Highest. Solves three problems at once: cold-start (replaces the 2× provisional-K cliff), sabbatical returns (Garnbret/Ondra-pattern), and the underused σ field.
@@ -190,17 +230,17 @@ Each recommendation lists payoff, effort, and concrete next steps.
 3. Optionally implement G-Elo (Szczecinski 2022) as a separate code path and A/B against the simpler conditioned multiplier on the same holdout.
 4. Drop the symmetric application of margin to winner and loser — it's a bug (a 50-hold gap doesn't tell us the loser is *that* much worse; it tells us the winner is that much stronger *for this route*).
 
-### R4 — Per-discipline + learned composite weights
+### R4 — Learned composite weights (replacing the fixed geometric mean)
 
-**Payoff:** Moderate. Enables Olympic Boulder+Lead prediction; uses a method (weighted Elo) with published evidence in tennis.
+**Payoff:** Moderate. The current Boulder+Lead aggregate uses a fixed geometric mean (effectively equal weights in log-space) — a sensible default that has not been validated against the actual prediction target. Learned weights tuned to Olympic combined-format log-loss should outperform on the prediction task even if they look similar in rank order.
 
-**Effort:** ~1 week. Composite rating table; weight tuning script; prediction endpoint.
+**Effort:** ~1 week. Modify `scripts/compute_combined_ratings.py` (or a parallel script); weight-tuning loop against R0's backtest harness.
 
 **Concrete steps:**
-1. Keep per-discipline ratings as-is.
-2. Add `RatingComposite(athlete_id, lead_weight, boulder_weight, speed_weight)` — weights learned by log-loss minimization on held-out Olympic + WCh combined-format events.
-3. Initial prior: uniform weights, then let optimization run.
-4. Predict combined-format results as `pred_score = w_L × E(μ_L) + w_B × E(μ_B)`.
+1. Keep the geometric mean as a baseline variant.
+2. Parameterize: either linear `μ_combined = w_L × μ_L + w_B × μ_B` or multiplicative `μ_combined = μ_L^w_L × μ_B^w_B` (the latter generalizes the geometric mean) with `w_L + w_B = 1`.
+3. Optimize `w_L`, `w_B` by minimizing log-loss on held-out Olympic + WCh combined-format events.
+4. Compare against the current geometric mean using R0's metric matrix. Ship the learned version only if it wins on log-loss without regressing on rank correlation.
 
 ### R5 — AscentStats external validation
 
@@ -213,16 +253,18 @@ Each recommendation lists payoff, effort, and concrete next steps.
 2. Compare to our current top-N. Acceptable: same set of names, within a few rank positions. Concerning: missing names, large rank inversions.
 3. Document any discrepancies as test cases.
 
-### R6 — Speed engine (separate model)
+### R6 — Bracket-native Speed model
 
-**Payoff:** Genuine new capability. Currently zero coverage.
+**Payoff:** Speed is currently rated via pairwise P-L on time normalization (`SPEED_MAX_GAP_SECONDS=2.0`). This treats each round as a free-for-all when Speed is actually a single-elimination bracket — athletes face only a subset of opponents per event, not all of them. The structural mismatch likely inflates variance and dilutes the signal from genuine head-to-heads.
 
-**Effort:** ~2 weeks. Different statistical model (pairwise bracket + time data) and probably its own module.
+**Effort:** ~1–2 weeks.
 
 **Concrete steps:**
-1. Two-player Elo as the base, Davidson (1970) tie extension for sub-0.01s gaps.
-2. Time-margin weighting: 4.58s vs 5.10s carries information beyond who won.
-3. Krakow 2026's 4-lane format — re-check structural assumptions before implementing.
+1. Replace the per-round P-L decomposition with bracket-aware pairwise updates: only actual head-to-head matchups generate Elo deltas, not all pairwise positions.
+2. Two-player Elo as the base, Davidson (1970) tie parameter for sub-0.01s gaps.
+3. Time-margin weighting: a 4.58s vs 5.10s race carries information beyond who won — reuse the G-Elo-style conditioned MOV from R3.
+4. Validate against R0's harness — bracket-native should improve Speed-stratified log-loss without regressing on aggregate metrics.
+5. Re-check structural assumptions for Krakow 2026's 4-lane format before committing.
 
 ### R7 — Boulder pre-2025 scoring translation
 
@@ -236,9 +278,9 @@ Each recommendation lists payoff, effort, and concrete next steps.
 
 ### Sequencing recommendation
 
-`R5 (validate) → R1 (Glicko-2) → R3 (MOV audit) → R2 (WHR/ILSR batch) → R4 (composite) → R7 (Boulder translation) → R6 (Speed)`
+`R5 (AscentStats validate, ~½ day) → R0 (backtest harness, ~1–2 wk) → R1 (Glicko-2) → R3 (MOV audit) → R2 (WHR/ILSR batch) → R4 (learned composite) → R7 (Boulder translation) → R6 (Speed bracket)`
 
-R1 and R3 are inside `engine/elo.py` and should be done together since they interact (the MOV conditioning depends on the rating-gap term which Glicko-2 affects via expected score). R2 is independent and parallelizable.
+R5 first: cheapest diagnostic; may surface issues that change priorities. R0 next: without it we cannot measure whether R1–R7 actually help, and the rest of the work is uninterpretable. R1 and R3 are both inside `engine/elo.py` and should be done together since they interact (MOV conditioning depends on the rating-gap term which Glicko-2 affects via expected score). R2 is independent of R1/R3 and parallelizable with them. R6 last because Speed is structurally different and isolated from the Lead/Boulder pipeline.
 
 ---
 
