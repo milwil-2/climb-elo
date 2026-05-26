@@ -1,171 +1,166 @@
 #!/usr/bin/env python3
-"""Backtest the Lead ELO model against historical results.
+"""Backtest the climbing ELO model across the metric × stratification matrix.
 
-Splits data into training (all but last N seasons) and holdout (last N seasons).
-For each holdout event final, predicts top-3 by pre-event ELO and compares to
-actual podium. Reports hit-rate vs. an attendance-based baseline.
+This script is a thin CLI shim around :class:`BacktestRunner` in
+``engine/evaluation.py``. The legacy single-metric implementation (172 lines,
+Lead-only, with a destructive ``delete()`` against the production Ratings
+table) has been replaced by a probabilistic harness that:
 
-Methodology:
-  1. Clear all ratings and rating history.
-  2. Run backfill on training events only (start_date < cutoff).
-  3. For each holdout event final, use the ELO ratings frozen at the end of
-     training to predict the podium (athletes with no history get mu=1500).
-  4. Baseline: predict by n_events attended (proxy for accumulated points).
+  - Runs against a private *copy* of the production DB (state-safe).
+  - Scores ``log-loss / Brier / calibration / Spearman / top-K hit rates`` on
+    every holdout round.
+  - Stratifies by tenure, tier, round, discipline, season, and field size.
+  - Writes JSON + markdown reports to ``data/backtests/<timestamp>/``.
+
+The default invocation reproduces the legacy 2-season holdout shape, but
+across Lead AND Boulder, with the full metric matrix.
+
+Usage
+-----
+
+::
+
+    # Default — 2-season holdout, current variant, Lead + Boulder
+    uv run python scripts/run_backtest.py
+
+    # Pick a single discipline
+    uv run python scripts/run_backtest.py --discipline lead
+
+    # Pick a variant (Issue #38 will add baselines: random, persistence, ...)
+    uv run python scripts/run_backtest.py --variant current
+
+    # Pick an OOS mode (Issue #39 will add walk-forward, leave-one-out, ...)
+    uv run python scripts/run_backtest.py --oos holdout
+
+    # Shrink MC budget for a fast smoke test
+    uv run python scripts/run_backtest.py --n-sims 2000
 """
+
+from __future__ import annotations
+
+import argparse
 import logging
 import sys
-from datetime import date
 
-from sqlalchemy import delete, func, select
-
-from climbing_elo.database import init_db
-from climbing_elo.engine.backfill import run_backfill
-from climbing_elo.models import (
-    Discipline,
-    Event,
-    Rating,
-    RatingHistory,
-    Result,
-    RoundType,
+from climbing_elo.database import DEFAULT_DB_PATH
+from climbing_elo.engine.evaluation import (
+    BACKTEST_VARIANTS,
+    OOS_MODES,
+    BacktestDataset,
+    BacktestRunner,
+    HoldoutMode,
+    make_default_output_dir,
 )
+from climbing_elo.models import Discipline
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
-HOLDOUT_SEASONS = 2
+
+DISCIPLINE_ALIASES = {
+    "lead": Discipline.LEAD,
+    "boulder": Discipline.BOULDER,
+    "speed": Discipline.SPEED,
+}
 
 
-def main() -> None:
-    SessionFactory = init_db()
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Backtest the climbing ELO model with probabilistic metrics."
+    )
+    p.add_argument(
+        "--discipline",
+        choices=sorted(DISCIPLINE_ALIASES) + ["all"],
+        default="all",
+        help="Which discipline(s) to score (default: lead + boulder).",
+    )
+    p.add_argument(
+        "--variant",
+        choices=sorted(BACKTEST_VARIANTS.keys()),
+        default="current",
+        help="Rating engine variant (Issue #38 adds baselines).",
+    )
+    p.add_argument(
+        "--oos",
+        choices=sorted(OOS_MODES.keys()),
+        default="holdout",
+        help="Out-of-sample mode (Issue #39 adds walk-forward etc.).",
+    )
+    p.add_argument(
+        "--holdout-seasons",
+        type=int,
+        default=2,
+        help="Number of trailing seasons to hold out (holdout mode only).",
+    )
+    p.add_argument(
+        "--n-sims",
+        type=int,
+        default=10_000,
+        help="Monte Carlo simulations per round (default: 10000).",
+    )
+    p.add_argument(
+        "--rng-seed",
+        type=int,
+        default=42,
+        help="Seed for reproducible MC draws.",
+    )
+    p.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory for report.json + report.md (default: data/backtests/<utc-timestamp>).",
+    )
+    p.add_argument(
+        "--db",
+        default=str(DEFAULT_DB_PATH),
+        help="Path to source SQLite DB (read-only — a copy is used internally).",
+    )
+    return p.parse_args(argv)
 
-    with SessionFactory() as session:
-        max_season = session.execute(
-            select(func.max(Event.season)).where(Event.discipline == Discipline.LEAD)
-        ).scalar()
 
-        if max_season is None:
-            print("No Lead events in database. Run scrape_ifsc.py first.")
-            sys.exit(1)
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
 
-        cutoff_season = max_season - HOLDOUT_SEASONS + 1
-        cutoff_date = date(cutoff_season, 1, 1)
+    if args.discipline == "all":
+        disciplines = (Discipline.LEAD, Discipline.BOULDER)
+    else:
+        disciplines = (DISCIPLINE_ALIASES[args.discipline],)
 
-        print(f"Max season:    {max_season}")
-        print(f"Cutoff season: {cutoff_season}  (events before {cutoff_date} are training)")
-        print(f"Training:      seasons < {cutoff_season}")
-        print(f"Holdout:       seasons >= {cutoff_season}")
-        print()
+    # Build OOS mode from registry. Holdout mode accepts n_seasons.
+    if args.oos == "holdout":
+        oos_mode = HoldoutMode(n_seasons=args.holdout_seasons)
+    else:
+        # Future modes (Issue #39) — default-construct from the registry.
+        oos_mode = OOS_MODES[args.oos]()
 
-        # ------------------------------------------------------------------
-        # 1. Clear all ratings so we start fresh
-        # ------------------------------------------------------------------
-        session.execute(delete(RatingHistory))
-        session.execute(delete(Rating))
-        session.commit()
+    from pathlib import Path
 
-        # ------------------------------------------------------------------
-        # 2. Run backfill on training events only (end_date = cutoff_date)
-        # ------------------------------------------------------------------
-        training_count = session.execute(
-            select(func.count(Event.id)).where(
-                Event.discipline == Discipline.LEAD,
-                Event.start_date < cutoff_date,
-            )
-        ).scalar()
+    output_dir = Path(args.output_dir) if args.output_dir else make_default_output_dir()
 
-        holdout_events = session.execute(
-            select(Event)
-            .where(
-                Event.discipline == Discipline.LEAD,
-                Event.start_date >= cutoff_date,
-            )
-            .order_by(Event.start_date.asc())
-        ).scalars().all()
+    dataset = BacktestDataset(
+        disciplines=disciplines,
+        n_simulations=args.n_sims,
+        rng_seed=args.rng_seed,
+        source_db_path=Path(args.db),
+    )
 
-        print(f"Training events: {training_count}")
-        print(f"Holdout events:  {len(holdout_events)}")
-        print()
+    with BacktestRunner(
+        dataset=dataset,
+        variant=args.variant,
+        oos_mode=oos_mode,
+        output_dir=output_dir,
+    ) as runner:
+        report = runner.run()
 
-        report = run_backfill(session, Discipline.LEAD, end_date=cutoff_date)
-        if report.errors:
-            print(f"Backfill errors: {len(report.errors)}")
-
-        # Snapshot training-end ratings (mu per athlete) for holdout evaluation.
-        training_ratings: dict[int, float] = {}
-        training_n_events: dict[int, int] = {}
-        for rating in session.execute(
-            select(Rating).where(Rating.discipline == Discipline.LEAD)
-        ).scalars():
-            training_ratings[rating.athlete_id] = rating.mu
-            training_n_events[rating.athlete_id] = rating.n_events
-
-        # ------------------------------------------------------------------
-        # 3. Evaluate holdout finals using training-end ratings
-        # ------------------------------------------------------------------
-        elo_hits = 0
-        baseline_hits = 0
-        total_finals = 0
-
-        for event in holdout_events:
-            finals = [r for r in event.rounds if r.round_type == RoundType.FINAL]
-            for rnd in finals:
-                results = list(
-                    session.execute(
-                        select(Result)
-                        .where(Result.round_id == rnd.id, ~Result.dns)
-                        .order_by(Result.rank.asc())
-                    ).scalars()
-                )
-                if len(results) < 3:
-                    continue
-
-                actual_podium = {r.athlete_id for r in results[:3]}
-
-                # ELO prediction: use training-end mu (default 1500 if unknown)
-                pre_event_ratings: dict[int, float] = {
-                    res.athlete_id: training_ratings.get(res.athlete_id, 1500.0)
-                    for res in results
-                }
-                elo_top3 = set(
-                    sorted(pre_event_ratings, key=pre_event_ratings.get, reverse=True)[:3]
-                )
-
-                # Baseline: predict by most events attended
-                event_counts: dict[int, int] = {
-                    res.athlete_id: training_n_events.get(res.athlete_id, 0)
-                    for res in results
-                }
-                baseline_top3 = set(
-                    sorted(event_counts, key=event_counts.get, reverse=True)[:3]
-                )
-
-                elo_hit = len(elo_top3 & actual_podium) > 0
-                baseline_hit = len(baseline_top3 & actual_podium) > 0
-
-                elo_hits += int(elo_hit)
-                baseline_hits += int(baseline_hit)
-                total_finals += 1
-
-                event_label = f"{event.name} ({event.season}) {rnd.gender.value}"
-                elo_marker = "+" if elo_hit else "-"
-                base_marker = "+" if baseline_hit else "-"
-                print(f"  [ELO:{elo_marker}] [BASE:{base_marker}] {event_label}")
-
-        if total_finals == 0:
-            print("\nNo holdout finals to evaluate.")
-            sys.exit(0)
-
-        elo_rate = elo_hits / total_finals * 100
-        baseline_rate = baseline_hits / total_finals * 100
-        delta = elo_rate - baseline_rate
-
-        print(f"\n{'='*55}")
-        print(f"Results ({total_finals} finals evaluated):")
-        print(f"  ELO podium hit-rate:      {elo_rate:.1f}%")
-        print(f"  Baseline podium hit-rate: {baseline_rate:.1f}%")
-        print(f"  Delta:                    {delta:+.1f} pp")
-        print(f"  Target:                   +15 pp")
-        print(f"  {'PASS' if delta >= 15 else 'BELOW TARGET'}")
+    # Print a one-line summary so cron/CI can grep for it.
+    agg = report.aggregate
+    print(f"Backtest report -> {output_dir}")
+    print(
+        f"  rounds={agg.get('n_rounds')} | "
+        f"LL win={agg.get('log_loss_win'):.4f} | "
+        f"LL podium={agg.get('log_loss_podium'):.4f} | "
+        f"top-3 hit={agg.get('hit_rate_top3'):.4f}"
+    )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
