@@ -22,6 +22,14 @@ uv run python scripts/compute_combined_ratings.py  # populate BOULDER_LEAD aggre
 
 The system is a three-stage pipeline: **scrape → backfill → serve**.
 
+### Data Source
+
+All competition data is fetched from `ifsc.results.info` — the legacy IFSC results API (no auth required, just a Referer header). This is still the canonical, fully-populated data source despite IFSC rebranding to "World Climbing" in 2025.
+
+**Why not worldclimbing.com?** The new `worldclimbing.com` site is a Next.js marketing/UI front-end with no public API. The underlying results data continues to be served by `ifsc.results.info`, which had full 2026 season data (both finished and upcoming events) at the time of investigation (Issue #30, May 2025).
+
+**If the legacy API is ever deprecated:** See [Issue #30](https://github.com/milwil-2/climb-elo/issues/30) for the migration investigation notes. A scraper targeting `worldclimbing.com`'s internal Next.js data endpoints would need to be reverse-engineered at that point.
+
 **Scrape** (`scraper/ifsc_api.py`) fetches Lead, Boulder, or Speed results from `ifsc.results.info` (no auth — just a Referer header) and writes Athlete/Event/Round/Result rows to SQLite. The API structure is: `/api/v1/` → seasons → `season_leagues/{id}` → events + d_cat IDs → `events/{id}/result/{d_cat_id}` → full rankings. Only `league_id=1` (World Cup) is scraped. Discipline categories are identified by matching the d_cat discipline field.
 
 **Backfill** (`engine/backfill.py`) processes all events chronologically, computing ELO updates per round (qualification → semi → final). Each round calls `calculate_round_updates()` from `engine/elo.py`, which decomposes the multi-athlete finishing order into all pairwise contests using Plackett-Luce. The critical normalization is `pair_k = base_k / (n - 1)` — without this, deltas scale with field size. Rating changes across a round sum to zero. Commits are per-event (atomic). The `n_events` counter increments once per event, not per round.
