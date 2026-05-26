@@ -49,3 +49,6 @@ htmlcov/
 
 # DB snapshots (uploaded to GitHub Releases, not committed)
 snapshots/
+
+# Smoke test screenshots (written to /tmp by default; gitignore in case path is changed)
+screenshots/
