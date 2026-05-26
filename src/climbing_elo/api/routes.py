@@ -642,6 +642,203 @@ _MAX_UPCOMING_PER_DISCIPLINE = 50
 _MAX_ATHLETES_PER_PROJECTION_CARD = 64
 
 
+# ---------------------------------------------------------------------------
+# GET /head-to-head        — autocomplete form
+# GET /head-to-head/{a}/{b} — result page
+# ---------------------------------------------------------------------------
+
+@router.get("/head-to-head", response_class=HTMLResponse)
+async def head_to_head_form(request: Request):
+    """Render the head-to-head athlete selection form."""
+    templates = request.app.state.templates
+    with _get_session() as session:
+        athletes = list(
+            session.execute(
+                select(Athlete).order_by(Athlete.name)
+            ).scalars()
+        )
+        athlete_list = [
+            {"id": a.id, "name": a.name, "gender": a.gender.value}
+            for a in athletes
+        ]
+    return templates.TemplateResponse(request, "head_to_head_new.html", {
+        "athletes": athlete_list,
+        "disciplines": [
+            {"key": k, "label": v}
+            for k, v in [
+                ("lead", "Lead"),
+                ("boulder", "Boulder"),
+                ("speed", "Speed"),
+                ("combined", "Combined"),
+            ]
+        ],
+    })
+
+
+@router.get("/head-to-head/{a_id}/{b_id}", response_class=HTMLResponse)
+async def head_to_head_result(
+    request: Request,
+    a_id: int,
+    b_id: int,
+    discipline: str = Query(default="lead"),
+):
+    """Return a head-to-head comparison page for two athletes."""
+    from climbing_elo.engine.elo import expected_score as _expected_score
+
+    templates = request.app.state.templates
+
+    # --- validate inputs ---
+    if a_id == b_id:
+        return HTMLResponse("Cannot compare an athlete against themselves.", status_code=400)
+
+    disc = _DISCIPLINE_FROM_STR.get(discipline)
+    if disc is None:
+        return HTMLResponse(
+            f"Invalid discipline '{discipline}'. Must be one of: lead, boulder, speed, combined.",
+            status_code=400,
+        )
+
+    with _get_session() as session:
+        athlete_a = session.get(Athlete, a_id)
+        athlete_b = session.get(Athlete, b_id)
+
+        if not athlete_a:
+            return HTMLResponse(f"Athlete {a_id} not found.", status_code=404)
+        if not athlete_b:
+            return HTMLResponse(f"Athlete {b_id} not found.", status_code=404)
+
+        rating_a = session.execute(
+            select(Rating).where(
+                Rating.athlete_id == a_id,
+                Rating.discipline == disc,
+            )
+        ).scalar_one_or_none()
+        rating_b = session.execute(
+            select(Rating).where(
+                Rating.athlete_id == b_id,
+                Rating.discipline == disc,
+            )
+        ).scalar_one_or_none()
+
+        if rating_a is None:
+            return HTMLResponse(
+                f"{athlete_a.name} has no {_DISCIPLINE_DISPLAY[disc]} rating.",
+                status_code=404,
+            )
+        if rating_b is None:
+            return HTMLResponse(
+                f"{athlete_b.name} has no {_DISCIPLINE_DISPLAY[disc]} rating.",
+                status_code=404,
+            )
+
+        # --- win probability (analytic) ---
+        win_a = _expected_score(rating_a.mu, rating_b.mu)
+        win_b = 1.0 - win_a
+
+        # --- past meetings ---
+        # Events in which both athletes have a Result (for this discipline)
+        shared_subq = (
+            select(Round.event_id)
+            .join(Event, Round.event_id == Event.id)
+            .join(Result, Result.round_id == Round.id)
+            .where(
+                Event.discipline == disc,
+                Result.athlete_id.in_([a_id, b_id]),
+            )
+            .group_by(Round.event_id)
+            .having(func.count(func.distinct(Result.athlete_id)) == 2)
+            .subquery()
+        )
+
+        shared_events = list(
+            session.execute(
+                select(Event)
+                .join(shared_subq, Event.id == shared_subq.c.event_id)
+                .order_by(Event.start_date.desc())
+            ).scalars()
+        )
+        past_meetings = len(shared_events)
+        most_recent_shared_event = shared_events[0] if shared_events else None
+
+        # --- rating history for chart ---
+        def _load_history(athlete_id: int) -> tuple[list[str], list[float]]:
+            rows = list(
+                session.execute(
+                    select(RatingHistory, Event)
+                    .join(Event, RatingHistory.event_id == Event.id)
+                    .where(
+                        RatingHistory.athlete_id == athlete_id,
+                        Event.discipline == disc,
+                    )
+                    .order_by(Event.start_date.asc())
+                ).all()
+            )
+            labels = [f"{ev.name} ({ev.season})" for _rh, ev in rows]
+            mus = [round(rh.mu_after, 1) for rh, _ev in rows]
+            return labels, mus
+
+        labels_a, mus_a = _load_history(a_id)
+        labels_b, mus_b = _load_history(b_id)
+
+        # Merge label sets for the shared time axis
+        all_labels = sorted(set(labels_a) | set(labels_b))
+
+        # Map each athlete's history into the merged axis (None for gaps)
+        def _align(labels: list[str], mus: list[float], all_lbl: list[str]) -> list[float | None]:
+            lmap = dict(zip(labels, mus))
+            return [lmap.get(l) for l in all_lbl]
+
+        aligned_a = _align(labels_a, mus_a, all_labels)
+        aligned_b = _align(labels_b, mus_b, all_labels)
+
+    return templates.TemplateResponse(request, "head_to_head.html", {
+        "athlete_a": {
+            "id": athlete_a.id,
+            "name": athlete_a.name,
+            "nationality": athlete_a.nationality or "—",
+            "gender": athlete_a.gender.value,
+            "mu": round(rating_a.mu, 1),
+            "sigma": round(rating_a.sigma, 1),
+            "n_events": rating_a.n_events,
+        },
+        "athlete_b": {
+            "id": athlete_b.id,
+            "name": athlete_b.name,
+            "nationality": athlete_b.nationality or "—",
+            "gender": athlete_b.gender.value,
+            "mu": round(rating_b.mu, 1),
+            "sigma": round(rating_b.sigma, 1),
+            "n_events": rating_b.n_events,
+        },
+        "discipline_key": discipline,
+        "discipline_label": _DISCIPLINE_DISPLAY[disc],
+        "win_a": round(win_a * 100, 1),
+        "win_b": round(win_b * 100, 1),
+        "past_meetings": past_meetings,
+        "most_recent_shared_event": (
+            {
+                "id": most_recent_shared_event.id,
+                "name": most_recent_shared_event.name,
+                "season": most_recent_shared_event.season,
+            }
+            if most_recent_shared_event
+            else None
+        ),
+        "chart_labels": json.dumps(all_labels),
+        "chart_mu_a": json.dumps(aligned_a),
+        "chart_mu_b": json.dumps(aligned_b),
+        "disciplines": [
+            {"key": k, "label": v}
+            for k, v in [
+                ("lead", "Lead"),
+                ("boulder", "Boulder"),
+                ("speed", "Speed"),
+                ("combined", "Combined"),
+            ]
+        ],
+    })
+
+
 @router.get("/predictions", response_class=HTMLResponse)
 async def predictions(request: Request):
     """List upcoming World Climbing (formerly IFSC) events with ELO-based outcome predictions.
