@@ -64,13 +64,18 @@ jobs:
         run: uv run python scripts/scrape_upcoming.py --all-disciplines
 
       # ----------------------------------------------------------------------
-      - name: Scrape recent IFSC results (current + previous season)
+      - name: Scrape recent IFSC results (all disciplines, current + previous season)
         run: |
           CURRENT_YEAR=$(date +%Y)
           PREV_YEAR=$((CURRENT_YEAR - 1))
-          uv run python scripts/scrape_ifsc.py \
-            --min-year "$PREV_YEAR" \
-            --max-year "$CURRENT_YEAR"
+          for discipline in lead boulder speed; do
+            echo "::group::Scrape — $discipline"
+            uv run python scripts/scrape_ifsc.py \
+              --discipline "$discipline" \
+              --min-year "$PREV_YEAR" \
+              --max-year "$CURRENT_YEAR"
+            echo "::endgroup::"
+          done
 
       # ----------------------------------------------------------------------
       - name: Historical backfill (manual trigger only)
