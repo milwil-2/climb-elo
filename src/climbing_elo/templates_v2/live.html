@@ -1,0 +1,500 @@
+{% extends "base.html" %}
+{% block title %}Live &mdash; {{ event.name }} &mdash; Climbing ELO{% endblock %}
+
+{% block head %}
+<style>
+  .page-head{padding:80px 0 32px;border-bottom:1px solid var(--line)}
+  .page-head h1{font-size:clamp(28px,3.6vw,40px);line-height:1.1;letter-spacing:-0.025em;font-weight:600}
+  .page-head h1 em{font-style:italic;font-weight:400}
+  .page-head .crumbs{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:20px;font-weight:500}
+  .page-head .crumbs a:hover{color:var(--ink)}
+  .ev-meta{display:flex;align-items:center;gap:14px;margin-top:18px;font-size:11px;color:var(--dim);letter-spacing:0.12em;text-transform:uppercase}
+  .ev-meta .sep{width:4px;height:4px;border-radius:50%;background:var(--line-2)}
+
+  .live-section{padding:32px 0 88px}
+
+  .status-bar{
+    display:flex;align-items:center;gap:12px;padding:14px 18px;
+    border:1px solid var(--line-2);background:var(--paper-2);
+    font-size:13px;color:var(--ink-2);margin-bottom:24px;width:fit-content;
+  }
+  .status-dot{width:7px;height:7px;border-radius:50%;background:var(--dim);flex-shrink:0;transition:background .3s}
+  .status-dot.connecting{background:var(--ink-2)}
+  .status-dot.live{
+    background:var(--ink);
+    box-shadow:0 0 0 0 rgba(245,245,245,0.7);
+    animation:pulse-live 1.8s ease-out infinite;
+  }
+  .status-dot.disconnected{background:var(--dim)}
+  @keyframes pulse-live{
+    0%   { box-shadow:0 0 0 0 rgba(245,245,245,0.6); }
+    70%  { box-shadow:0 0 0 8px rgba(245,245,245,0); }
+    100% { box-shadow:0 0 0 0 rgba(245,245,245,0); }
+  }
+  #status-text{color:var(--ink);font-weight:600}
+  #reconnect-btn{
+    display:none;margin-left:6px;padding:5px 12px;font-size:11px;
+    border:1px solid var(--line-2);background:transparent;color:var(--ink);
+    letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;transition:border-color .15s;
+  }
+  #reconnect-btn:hover{border-color:var(--ink)}
+
+  .gender-tabs{
+    display:flex;gap:24px;margin-bottom:24px;border-bottom:1px solid var(--line);
+  }
+  .gender-tab{
+    padding:10px 0;font-size:13px;color:var(--dim);font-weight:500;
+    border-bottom:1px solid transparent;transition:color .15s,border-color .15s;
+  }
+  .gender-tab:hover{color:var(--ink)}
+  .gender-tab.active{color:var(--ink);border-bottom-color:var(--ink)}
+
+  .live-panels{display:grid;grid-template-columns:1fr 1fr;gap:28px;align-items:start}
+  @media (max-width:920px){.live-panels{grid-template-columns:1fr}}
+
+  .panel{border:1px solid var(--line);background:transparent}
+  .panel-head{
+    padding:14px 18px;border-bottom:1px solid var(--line);
+    display:flex;align-items:center;gap:10px;
+  }
+  .panel-head .ttl{font-size:10.5px;color:var(--dim);letter-spacing:0.16em;text-transform:uppercase;font-weight:500}
+  .updating-badge{
+    display:none;font-size:10px;color:var(--ink-2);letter-spacing:0.14em;text-transform:uppercase;
+    font-weight:500;animation:blink 1s step-end infinite;
+  }
+  .updating-badge.show{display:inline-block}
+  @keyframes blink{50%{opacity:0}}
+
+  table.lb-live{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.lb-live thead th{
+    text-align:left;padding:12px 16px;font-size:10.5px;font-weight:500;color:var(--dim);
+    letter-spacing:0.14em;text-transform:uppercase;border-bottom:1px solid var(--line);
+  }
+  table.lb-live tbody tr{border-bottom:1px solid var(--line);transition:background .15s}
+  table.lb-live tbody tr:last-child{border-bottom:none}
+  table.lb-live tbody tr:hover{background:var(--paper-2)}
+  table.lb-live tbody td{padding:12px 16px;vertical-align:middle}
+
+  td.rk-cell{width:48px}
+  td.rk-cell .rk-pill{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:30px;height:30px;border:1px solid var(--line-2);
+    font-size:12px;font-weight:600;color:var(--ink-2);font-variant-numeric:tabular-nums;
+  }
+  td.rk-cell .rk-pill.top{border-color:var(--ink);color:var(--ink)}
+  td.score-cell{font-variant-numeric:tabular-nums;color:var(--ink-2)}
+  td.round-cell{font-size:10.5px;color:var(--ink-2);letter-spacing:0.14em;text-transform:uppercase}
+
+  @keyframes row-flash{
+    0%   { background: rgba(245,245,245,0.10); }
+    100% { background: transparent; }
+  }
+  tr.row-flash td{animation:row-flash 1.4s ease-out forwards}
+
+  .prob-bar-wrap{display:flex;align-items:center;gap:8px}
+  .prob-bar{height:2px;background:var(--ink);min-width:2px;flex-shrink:0}
+  .prob-text{font-size:12px;color:var(--ink);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+  td.proj-name a{font-weight:500;transition:color .15s}
+  td.proj-name a:hover{color:var(--dim)}
+  td.proj-name .locked{
+    display:inline-block;margin-left:8px;font-size:9.5px;color:var(--dim);
+    letter-spacing:0.14em;text-transform:uppercase;font-weight:500;
+  }
+
+  .empty-state{padding:32px;text-align:center;color:var(--dim);font-size:13px}
+  .proj-note{
+    padding:12px 18px;border-top:1px solid var(--line);
+    font-size:11px;color:var(--dim);letter-spacing:0.06em;
+  }
+</style>
+{% endblock %}
+
+{% block body %}
+<main>
+  <section class="page-head">
+    <div class="crumbs reveal">
+      <a href="/v2/">Home</a> / <a href="/v2/events">Events</a> /
+      <a href="/v2/events/{{ event.id }}">{{ event.name }}</a> / Live
+    </div>
+    <h1 class="reveal d2">{{ event.name }} <em>live</em>.</h1>
+    <div class="ev-meta reveal d3">
+      <span>{{ event.tier }}</span>
+      <span class="sep"></span>
+      <span>{{ event.discipline_label }}</span>
+      <span class="sep"></span>
+      <span>Season {{ event.season }}</span>
+    </div>
+  </section>
+
+  <section class="live-section">
+    <div class="status-bar reveal">
+      <span class="status-dot connecting" id="status-dot"></span>
+      <span id="status-text">Connecting&hellip;</span>
+      <button id="reconnect-btn" onclick="reconnectNow()">Reconnect</button>
+    </div>
+
+    {% if available_genders and available_genders|length > 1 %}
+    <div class="gender-tabs reveal">
+      {% for g in available_genders %}
+      <a class="gender-tab {% if g == gender %}active{% endif %}"
+         href="/v2/live/{{ event.id }}?gender={{ g }}">
+        {{ "Men" if g == "M" else "Women" }}
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="live-panels">
+      <!-- Leaderboard panel -->
+      <div class="panel reveal">
+        <div class="panel-head">
+          <span class="ttl">Live leaderboard</span>
+          <span class="updating-badge" id="lb-updating">updating&hellip;</span>
+        </div>
+        {% if leaderboard %}
+        <table class="lb-live" id="leaderboard-table">
+          <thead><tr>
+            <th>Rank</th>
+            <th>Athlete</th>
+            <th>Score</th>
+            <th>Round</th>
+          </tr></thead>
+          <tbody id="leaderboard-body">
+            {% for row in leaderboard %}
+            <tr id="athlete-row-{{ row.athlete_id }}" data-athlete-id="{{ row.athlete_id }}" data-rank="{{ row.rank if row.rank else '' }}">
+              <td class="rk-cell">
+                <span class="rk-pill{% if row.rank and row.rank <= 3 %} top{% endif %}" id="rank-{{ row.athlete_id }}">
+                  {{ row.rank if row.rank else "—" }}
+                </span>
+              </td>
+              <td><a href="/v2/athletes/{{ row.athlete_id }}">{{ row.name }}</a></td>
+              <td class="score-cell" id="score-{{ row.athlete_id }}">{{ row.score }}</td>
+              <td class="round-cell" id="round-{{ row.athlete_id }}">{{ row.round_type | title }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state" id="lb-empty">No results yet. Waiting for live data&hellip;</div>
+        <table class="lb-live" id="leaderboard-table" style="display:none">
+          <thead><tr>
+            <th>Rank</th>
+            <th>Athlete</th>
+            <th>Score</th>
+            <th>Round</th>
+          </tr></thead>
+          <tbody id="leaderboard-body"></tbody>
+        </table>
+        {% endif %}
+      </div>
+
+      <!-- Projections panel -->
+      <div class="panel reveal d2">
+        <div class="panel-head">
+          <span class="ttl">Live projections</span>
+          <span class="updating-badge" id="proj-updating">recalculating&hellip;</span>
+        </div>
+        {% if projections %}
+        <table class="lb-live" id="projections-table">
+          <thead><tr>
+            <th>#</th>
+            <th>Athlete</th>
+            <th>Win</th>
+            <th>Podium</th>
+          </tr></thead>
+          <tbody id="projections-body">
+            {% for row in projections %}
+            <tr id="proj-row-{{ row.athlete_id }}">
+              <td class="rk-cell">
+                <span class="rk-pill{% if row.proj_rank <= 3 %} top{% endif %}">{{ row.proj_rank }}</span>
+              </td>
+              <td class="proj-name">
+                <a href="/v2/athletes/{{ row.athlete_id }}">{{ row.name }}</a>
+                {% if row.is_completed %}<span class="locked">Finished</span>{% endif %}
+              </td>
+              <td>
+                <div class="prob-bar-wrap">
+                  <div class="prob-bar" style="width:{{ [(row.win_raw * 100)|round(0)|int, 100]|min }}px"></div>
+                  <span class="prob-text">{{ row.win }}%</span>
+                </div>
+              </td>
+              <td>
+                <div class="prob-bar-wrap">
+                  <div class="prob-bar" style="width:{{ [(row.podium_raw * 100)|round(0)|int, 100]|min }}px;opacity:0.55"></div>
+                  <span class="prob-text">{{ row.podium }}%</span>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state" id="proj-empty">Projections will appear once results arrive.</div>
+        <table class="lb-live" id="projections-table" style="display:none">
+          <thead><tr>
+            <th>#</th>
+            <th>Athlete</th>
+            <th>Win</th>
+            <th>Podium</th>
+          </tr></thead>
+          <tbody id="projections-body"></tbody>
+        </table>
+        {% endif %}
+        <div class="proj-note">
+          Monte Carlo &middot; finished athletes locked at their actual rank.
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  "use strict";
+
+  // SSE backend is shared between / and /v2 surfaces — same endpoint.
+  var STREAM_URL = {{ stream_url | tojson }};
+
+  var MAX_RECONNECT_ATTEMPTS = 10;
+  var RECONNECT_BASE_MS      = 1000;
+  var RECONNECT_MAX_MS       = 30000;
+  var PROJECTION_THROTTLE_MS = 2000;
+
+  // athlete_id (int) → { name, rank, score, round_type }
+  var athleteState = {};
+  var initialAthletes = {{ initial_athletes | tojson }};
+  Object.keys(initialAthletes).forEach(function(id) {
+    athleteState[parseInt(id, 10)] = initialAthletes[id];
+  });
+
+  var reconnectAttempts = 0;
+  var reconnectTimer    = null;
+  var es                = null;
+  var projThrottleTimer = null;
+  var projPending       = false;
+
+  // Status helpers
+  var dot        = document.getElementById("status-dot");
+  var statusText = document.getElementById("status-text");
+  var reconnBtn  = document.getElementById("reconnect-btn");
+
+  function setStatus(state, msg) {
+    dot.className = "status-dot " + state;
+    statusText.textContent = msg;
+    reconnBtn.style.display = (state === "disconnected") ? "inline-block" : "none";
+  }
+
+  // Leaderboard DOM helpers
+  var lbBody     = document.getElementById("leaderboard-body");
+  var lbTable    = document.getElementById("leaderboard-table");
+  var lbEmpty    = document.getElementById("lb-empty");
+  var lbUpdating = document.getElementById("lb-updating");
+
+  function rkPillClass(rank) {
+    return "rk-pill" + (rank !== null && rank <= 3 ? " top" : "");
+  }
+
+  function showLbTable() {
+    if (lbEmpty) lbEmpty.style.display = "none";
+    if (lbTable) lbTable.style.display = "";
+  }
+
+  function flashRow(row) {
+    row.classList.remove("row-flash");
+    void row.offsetWidth;  // restart animation
+    row.classList.add("row-flash");
+    setTimeout(function() { row.classList.remove("row-flash"); }, 1400);
+  }
+
+  function upsertLeaderboardRow(data) {
+    var aid = data.athlete_id;
+    var row = document.getElementById("athlete-row-" + aid);
+
+    if (row) {
+      var rankEl  = document.getElementById("rank-"  + aid);
+      var scoreEl = document.getElementById("score-" + aid);
+      var roundEl = document.getElementById("round-" + aid);
+      if (rankEl) {
+        rankEl.className = rkPillClass(data.rank);
+        rankEl.textContent = data.rank !== null ? data.rank : "—";
+      }
+      if (scoreEl) scoreEl.textContent = data.score || "—";
+      if (roundEl) {
+        var rt = data.round_type || "";
+        roundEl.textContent = rt.charAt(0).toUpperCase() + rt.slice(1);
+      }
+      row.dataset.rank = data.rank !== null ? data.rank : "";
+      flashRow(row);
+    } else {
+      showLbTable();
+      row = document.createElement("tr");
+      row.id = "athlete-row-" + aid;
+      row.dataset.athleteId = aid;
+      row.dataset.rank = data.rank !== null ? data.rank : "";
+
+      var tdRank = document.createElement("td");
+      tdRank.className = "rk-cell";
+      var pill = document.createElement("span");
+      pill.id = "rank-" + aid;
+      pill.className = rkPillClass(data.rank);
+      pill.textContent = data.rank !== null ? data.rank : "—";
+      tdRank.appendChild(pill);
+
+      var tdName = document.createElement("td");
+      var link = document.createElement("a");
+      link.href = "/v2/athletes/" + aid;
+      link.textContent = data.name;
+      tdName.appendChild(link);
+
+      var tdScore = document.createElement("td");
+      tdScore.id = "score-" + aid;
+      tdScore.className = "score-cell";
+      tdScore.textContent = data.score || "—";
+
+      var tdRound = document.createElement("td");
+      tdRound.id = "round-" + aid;
+      tdRound.className = "round-cell";
+      var rt2 = data.round_type || "";
+      tdRound.textContent = rt2.charAt(0).toUpperCase() + rt2.slice(1);
+
+      row.appendChild(tdRank);
+      row.appendChild(tdName);
+      row.appendChild(tdScore);
+      row.appendChild(tdRound);
+      lbBody.appendChild(row);
+      flashRow(row);
+    }
+
+    // Re-sort by rank ascending
+    var rows = Array.prototype.slice.call(lbBody.querySelectorAll("tr"));
+    rows.sort(function(a, b) {
+      var ra = parseInt(a.dataset.rank, 10) || 9999;
+      var rb = parseInt(b.dataset.rank, 10) || 9999;
+      return ra - rb;
+    });
+    rows.forEach(function(r) { lbBody.appendChild(r); });
+  }
+
+  // Projection refresh (throttled HTML fetch — Monte Carlo is server-side).
+  var projBody     = document.getElementById("projections-body");
+  var projTable    = document.getElementById("projections-table");
+  var projEmpty    = document.getElementById("proj-empty");
+  var projUpdating = document.getElementById("proj-updating");
+
+  function showProjUpdating(show) {
+    projUpdating.className = "updating-badge" + (show ? " show" : "");
+  }
+  function showProjTable() {
+    if (projEmpty) projEmpty.style.display = "none";
+    if (projTable) projTable.style.display = "";
+  }
+
+  function scheduleProjectionRefresh() {
+    if (projThrottleTimer !== null) { projPending = true; return; }
+    showProjUpdating(true);
+    projThrottleTimer = setTimeout(function() {
+      projThrottleTimer = null;
+      doProjectionRefresh();
+      if (projPending) { projPending = false; scheduleProjectionRefresh(); }
+    }, PROJECTION_THROTTLE_MS);
+  }
+
+  function doProjectionRefresh() {
+    var url = window.location.pathname + window.location.search;
+    fetch(url, { headers: { "Accept": "text/html" } })
+      .then(function(resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.text();
+      })
+      .then(function(html) {
+        var parser = new DOMParser();
+        var doc = parser.parseFromString(html, "text/html");
+        var newBody = doc.getElementById("projections-body");
+        var newTable = doc.getElementById("projections-table");
+        if (newBody && projBody) {
+          projBody.innerHTML = newBody.innerHTML;
+          showProjTable();
+        } else if (newTable && projTable) {
+          projTable.innerHTML = newTable.innerHTML;
+        }
+        showProjUpdating(false);
+      })
+      .catch(function(err) {
+        console.warn("Projection refresh failed:", err);
+        showProjUpdating(false);
+      });
+  }
+
+  // SSE connection (shared endpoint /live/{id}/stream — not v2-prefixed)
+  function connect() {
+    setStatus("connecting", "Connecting…");
+    if (es) { es.close(); es = null; }
+    es = new EventSource(STREAM_URL);
+
+    es.onopen = function() {
+      setStatus("live", "Live");
+      reconnectAttempts = 0;
+    };
+
+    es.onmessage = function(evt) {
+      var data;
+      try { data = JSON.parse(evt.data); } catch (e) { return; }
+      if (data.type !== "new_result") return;
+
+      var aid = data.athlete_id;
+      athleteState[aid] = {
+        name:       data.name,
+        rank:       data.rank,
+        score:      data.score || "—",
+        round_type: data.round_type,
+      };
+
+      lbUpdating.className = "updating-badge show";
+      setTimeout(function() { lbUpdating.className = "updating-badge"; }, 1800);
+
+      upsertLeaderboardRow({
+        athlete_id: aid,
+        name:       data.name,
+        rank:       data.rank,
+        score:      data.score || "—",
+        round_type: data.round_type,
+      });
+
+      scheduleProjectionRefresh();
+    };
+
+    es.onerror = function() {
+      es.close();
+      es = null;
+
+      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        setStatus("disconnected", "Disconnected · Max retries reached");
+        return;
+      }
+      var delay = Math.min(
+        RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts),
+        RECONNECT_MAX_MS
+      );
+      reconnectAttempts++;
+      var secsLeft = Math.round(delay / 1000);
+      setStatus("disconnected", "Disconnected · Retrying in " + secsLeft + "s");
+      reconnectTimer = setTimeout(function() {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    };
+  }
+
+  window.reconnectNow = function() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    reconnectAttempts = 0;
+    connect();
+  };
+
+  connect();
+})();
+</script>
+{% endblock %}
