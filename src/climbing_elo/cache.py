@@ -25,6 +25,7 @@ approach is chosen for the MVP:
 - If tighter freshness is needed, callers can call ``predictions_cache.clear()``
   after a scrape run, or reduce ``ttl_seconds``.
 """
+
 from __future__ import annotations
 
 import time

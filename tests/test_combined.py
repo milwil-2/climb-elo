@@ -1,4 +1,5 @@
 """Tests for the Boulder+Lead combined rating computation."""
+
 from __future__ import annotations
 
 import math
@@ -24,13 +25,13 @@ from compute_combined_ratings import (
     MIN_EVENTS,
     compute_combined_mu,
     compute_combined_sigma,
-    main as run_main,
 )
 
 
 # ---------------------------------------------------------------------------
 # Pure maths tests
 # ---------------------------------------------------------------------------
+
 
 class TestComputeCombinedMu:
     """Geometric mean: sqrt(mu_b * mu_l)."""
@@ -77,7 +78,7 @@ class TestComputeCombinedSigma:
     def test_rms_formula(self):
         sigma_b = 120.0
         sigma_l = 80.0
-        expected = math.sqrt((120.0 ** 2 + 80.0 ** 2) / 2.0)
+        expected = math.sqrt((120.0**2 + 80.0**2) / 2.0)
         assert compute_combined_sigma(sigma_b, sigma_l) == pytest.approx(expected)
 
     def test_symmetry(self):
@@ -95,12 +96,13 @@ class TestComputeCombinedSigma:
     def test_zero_sigma_gives_half_rms(self):
         """Edge case: one sigma is zero (fully certain)."""
         combined = compute_combined_sigma(0.0, 100.0)
-        assert combined == pytest.approx(math.sqrt((0 + 100 ** 2) / 2.0))
+        assert combined == pytest.approx(math.sqrt((0 + 100**2) / 2.0))
 
 
 # ---------------------------------------------------------------------------
 # Integration tests: end-to-end against an in-memory DB
 # ---------------------------------------------------------------------------
+
 
 def _make_athlete(session: Session, name: str, gender: Gender) -> Athlete:
     a = Athlete(name=name, gender=gender)
@@ -145,9 +147,13 @@ class TestCombinedRatingIntegration:
         _make_rating(db_session, both, Discipline.BOULDER, mu=1700.0)
         db_session.commit()
 
-        bl_ratings = db_session.execute(
-            select(Rating).where(Rating.discipline == Discipline.BOULDER_LEAD)
-        ).scalars().all()
+        bl_ratings = (
+            db_session.execute(
+                select(Rating).where(Rating.discipline == Discipline.BOULDER_LEAD)
+            )
+            .scalars()
+            .all()
+        )
         # None yet — we haven't run the script
         assert len(bl_ratings) == 0
 
@@ -167,9 +173,7 @@ class TestCombinedRatingIntegration:
         sigma_b = 120.0
         sigma_l = 80.0
         result = compute_combined_sigma(sigma_b, sigma_l)
-        assert result == pytest.approx(
-            math.sqrt((120.0 ** 2 + 80.0 ** 2) / 2.0), rel=1e-6
-        )
+        assert result == pytest.approx(math.sqrt((120.0**2 + 80.0**2) / 2.0), rel=1e-6)
 
     def test_janja_ranking_logic(self):
         """Top all-rounder (equal high ratings) should beat a specialist."""

@@ -9,13 +9,13 @@ Covers:
 - __contains__ and __len__ helpers
 - Global predictions_cache singleton exists and is a TTLCache
 """
+
 from __future__ import annotations
 
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-import pytest
 
 from climbing_elo.cache import TTLCache, predictions_cache
 
@@ -23,6 +23,7 @@ from climbing_elo.cache import TTLCache, predictions_cache
 # ---------------------------------------------------------------------------
 # Basic get / set
 # ---------------------------------------------------------------------------
+
 
 class TestTTLCacheBasic:
     def test_get_set_roundtrip(self):
@@ -52,6 +53,7 @@ class TestTTLCacheBasic:
 # ---------------------------------------------------------------------------
 # TTL expiration
 # ---------------------------------------------------------------------------
+
 
 class TestTTLExpiration:
     def test_value_available_before_expiry(self):
@@ -96,6 +98,7 @@ class TestTTLExpiration:
 # Invalidation
 # ---------------------------------------------------------------------------
 
+
 class TestTTLCacheInvalidation:
     def test_invalidate_removes_entry(self):
         cache = TTLCache(ttl_seconds=3600)
@@ -120,6 +123,7 @@ class TestTTLCacheInvalidation:
 # Clear
 # ---------------------------------------------------------------------------
 
+
 class TestTTLCacheClear:
     def test_clear_removes_all_entries(self):
         cache = TTLCache(ttl_seconds=3600)
@@ -139,6 +143,7 @@ class TestTTLCacheClear:
 # ---------------------------------------------------------------------------
 # __contains__ and __len__
 # ---------------------------------------------------------------------------
+
 
 class TestTTLCacheHelpers:
     def test_contains_true_for_fresh_key(self):
@@ -164,6 +169,7 @@ class TestTTLCacheHelpers:
 # ---------------------------------------------------------------------------
 # Thread safety
 # ---------------------------------------------------------------------------
+
 
 class TestTTLCacheThreadSafety:
     def test_concurrent_set_get_no_exception(self):
@@ -222,6 +228,7 @@ class TestTTLCacheThreadSafety:
 # ---------------------------------------------------------------------------
 # Global singleton
 # ---------------------------------------------------------------------------
+
 
 class TestGlobalSingleton:
     def test_predictions_cache_is_ttl_cache(self):

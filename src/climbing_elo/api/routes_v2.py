@@ -3,12 +3,12 @@
 Mounted at /v2/. All routes produce HTML via templates_v2/ Jinja templates.
 The original dashboard at / (routes.py) remains untouched.
 """
+
 from __future__ import annotations
 
 import json
 import math
-from datetime import date, datetime, timezone
-from typing import Optional
+from datetime import date
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -167,11 +167,13 @@ def _ticker_context(session) -> dict:
         # Sort by abs delta descending
         movers.sort(key=lambda x: abs(x[1]), reverse=True)
         for name, delta in movers[:10]:
-            ticker_items.append({
-                "kind": "delta",
-                "name": name,
-                "delta": delta,
-            })
+            ticker_items.append(
+                {
+                    "kind": "delta",
+                    "name": name,
+                    "delta": delta,
+                }
+            )
     except Exception:
         pass
 
@@ -188,12 +190,14 @@ def _ticker_context(session) -> dict:
         )
         for ev in upcoming:
             days = (ev.start_date - today).days
-            ticker_items.append({
-                "kind": "upcoming",
-                "name": ev.name,
-                "days": days,
-                "tag": f"In {days}d",
-            })
+            ticker_items.append(
+                {
+                    "kind": "upcoming",
+                    "name": ev.name,
+                    "days": days,
+                    "tag": f"In {days}d",
+                }
+            )
     except Exception:
         pass
 
@@ -211,6 +215,7 @@ def _nav_context(active_page: str) -> dict:
 # ---------------------------------------------------------------------------
 # GET /v2/  — Landing page
 # ---------------------------------------------------------------------------
+
 
 @router.get("/", response_class=HTMLResponse)
 async def v2_landing(request: Request):
@@ -230,7 +235,9 @@ async def v2_landing(request: Request):
         # App metrics
         total_athletes = session.execute(select(func.count(Athlete.id))).scalar_one()
         total_events = session.execute(select(func.count(Event.id))).scalar_one()
-        total_ratings = session.execute(select(func.count(RatingHistory.id))).scalar_one()
+        total_ratings = session.execute(
+            select(func.count(RatingHistory.id))
+        ).scalar_one()
 
         ticker = _ticker_context(session)
 
@@ -256,6 +263,7 @@ async def v2_landing(request: Request):
 # ---------------------------------------------------------------------------
 # GET /v2/leaderboard
 # ---------------------------------------------------------------------------
+
 
 @router.get("/leaderboard", response_class=HTMLResponse)
 async def v2_leaderboard(
@@ -305,6 +313,7 @@ async def v2_leaderboard(
 # GET /v2/athletes  — redirect to first athlete in default discipline
 # ---------------------------------------------------------------------------
 
+
 @router.get("/athletes", response_class=HTMLResponse)
 async def v2_athletes_index(request: Request):
     with _session() as session:
@@ -318,17 +327,22 @@ async def v2_athletes_index(request: Request):
     t = _templates(request)
     with _session() as session:
         ticker = _ticker_context(session)
-    return t.TemplateResponse(request, "athletes.html", {
-        "athlete": None,
-        "sidebar_athletes": [],
-        **ticker,
-        **_nav_context("athletes"),
-    })
+    return t.TemplateResponse(
+        request,
+        "athletes.html",
+        {
+            "athlete": None,
+            "sidebar_athletes": [],
+            **ticker,
+            **_nav_context("athletes"),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
 # GET /v2/athletes/{athlete_id}  — athlete profile
 # ---------------------------------------------------------------------------
+
 
 @router.get("/athletes/{athlete_id}", response_class=HTMLResponse)
 async def v2_athlete_profile(request: Request, athlete_id: int):
@@ -362,14 +376,17 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
         # Primary rating = best by mu (prefer Lead then Boulder then Speed)
         pref_order = ["L", "B", "S", "BL"]
         primary_disc_key = next((k for k in pref_order if k in ratings_by_disc), None)
-        primary_rating = ratings_by_disc.get(primary_disc_key or "L", {"mu": None, "sigma": None})
+        primary_rating = ratings_by_disc.get(
+            primary_disc_key or "L", {"mu": None, "sigma": None}
+        )
         primary_disc_label = _DISC_LABEL.get(
-            _DISC_KEY_TO_ENUM.get(primary_disc_key or "L", Discipline.LEAD),
-            "Lead"
+            _DISC_KEY_TO_ENUM.get(primary_disc_key or "L", Discipline.LEAD), "Lead"
         )
 
         # Rating history for chart (use primary discipline)
-        primary_disc_enum = _DISC_KEY_TO_ENUM.get(primary_disc_key or "L", Discipline.LEAD)
+        primary_disc_enum = _DISC_KEY_TO_ENUM.get(
+            primary_disc_key or "L", Discipline.LEAD
+        )
         history_rows = list(
             session.execute(
                 select(RatingHistory, Event)
@@ -429,16 +446,18 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
                 Discipline.BOULDER_LEAD: "B+L",
             }.get(ev.discipline, ev.discipline.value)
 
-            recent_events.append({
-                "event_id": ev.id,
-                "event_name": ev.name,
-                "date": str(ev.start_date),
-                "discipline": disc_display,
-                "place": place_row,
-                "delta": delta,
-                "delta_sign": "+" if delta > 0 else ("−" if delta < 0 else ""),
-                "delta_abs": abs(delta),
-            })
+            recent_events.append(
+                {
+                    "event_id": ev.id,
+                    "event_name": ev.name,
+                    "date": str(ev.start_date),
+                    "discipline": disc_display,
+                    "place": place_row,
+                    "delta": delta,
+                    "delta_sign": "+" if delta > 0 else ("−" if delta < 0 else ""),
+                    "delta_abs": abs(delta),
+                }
+            )
             if len(recent_events) >= 5:
                 break
 
@@ -476,6 +495,7 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
 # GET /v2/projections
 # ---------------------------------------------------------------------------
 
+
 @router.get("/projections", response_class=HTMLResponse)
 async def v2_projections(request: Request):
     t = _templates(request)
@@ -509,8 +529,12 @@ async def v2_projections(request: Request):
             days_until = (ev.start_date - today).days
 
             # Get top athletes for this discipline (both genders for display)
-            top_athletes_m = _get_rankings_v2(session, Gender.M, ev.discipline, limit=20)
-            top_athletes_f = _get_rankings_v2(session, Gender.F, ev.discipline, limit=20)
+            top_athletes_m = _get_rankings_v2(
+                session, Gender.M, ev.discipline, limit=20
+            )
+            top_athletes_f = _get_rankings_v2(
+                session, Gender.F, ev.discipline, limit=20
+            )
 
             # Run projections for men
             proj_rows_m = []
@@ -524,40 +548,53 @@ async def v2_projections(request: Request):
                 _cache_key = f"v2:proj:{ev.id}:M:{ev.discipline.value}"
                 probs_m = predictions_cache.get(_cache_key)
                 if probs_m is None:
-                    probs_m = compute_podium_probabilities(inputs_m, n_simulations=10_000)
+                    probs_m = compute_podium_probabilities(
+                        inputs_m, n_simulations=10_000
+                    )
                     predictions_cache.set(_cache_key, probs_m)
 
-                sorted_m = sorted(inputs_m, key=lambda a: probs_m[a.athlete_id]["expected_rank"])
-                max_p = max((probs_m[a.athlete_id]["podium"] for a in sorted_m[:6]), default=0.001)
+                sorted_m = sorted(
+                    inputs_m, key=lambda a: probs_m[a.athlete_id]["expected_rank"]
+                )
+                max_p = max(
+                    (probs_m[a.athlete_id]["podium"] for a in sorted_m[:6]),
+                    default=0.001,
+                )
                 for i, a in enumerate(sorted_m[:6]):
                     p = probs_m[a.athlete_id]["podium"]
-                    proj_rows_m.append({
-                        "rank": i + 1,
-                        "name": a.name,
-                        "pct_win": f"{probs_m[a.athlete_id]['win'] * 100:.1f}",
-                        "pct_podium": f"{p * 100:.1f}",
-                        "pct_top8": f"{probs_m[a.athlete_id]['top_8'] * 100:.1f}",
-                        "p_podium_raw": p,
-                        "bar_pct": min(100.0, (p / max_p) * 100) if max_p > 0 else 0.0,
-                    })
+                    proj_rows_m.append(
+                        {
+                            "rank": i + 1,
+                            "name": a.name,
+                            "pct_win": f"{probs_m[a.athlete_id]['win'] * 100:.1f}",
+                            "pct_podium": f"{p * 100:.1f}",
+                            "pct_top8": f"{probs_m[a.athlete_id]['top_8'] * 100:.1f}",
+                            "p_podium_raw": p,
+                            "bar_pct": min(100.0, (p / max_p) * 100)
+                            if max_p > 0
+                            else 0.0,
+                        }
+                    )
 
             disc_label = _DISC_LABEL.get(ev.discipline, ev.discipline.value)
-            proj_cards.append({
-                "event_id": ev.id,
-                "event_name": ev.name,
-                "date": str(ev.start_date),
-                "discipline": disc_label,
-                "discipline_key": {
-                    Discipline.LEAD: "L",
-                    Discipline.BOULDER: "B",
-                    Discipline.SPEED: "S",
-                    Discipline.BOULDER_LEAD: "BL",
-                }.get(ev.discipline, "L"),
-                "days_until": days_until,
-                "athletes_m": len(top_athletes_m),
-                "athletes_f": len(top_athletes_f),
-                "proj_rows": proj_rows_m,
-            })
+            proj_cards.append(
+                {
+                    "event_id": ev.id,
+                    "event_name": ev.name,
+                    "date": str(ev.start_date),
+                    "discipline": disc_label,
+                    "discipline_key": {
+                        Discipline.LEAD: "L",
+                        Discipline.BOULDER: "B",
+                        Discipline.SPEED: "S",
+                        Discipline.BOULDER_LEAD: "BL",
+                    }.get(ev.discipline, "L"),
+                    "days_until": days_until,
+                    "athletes_m": len(top_athletes_m),
+                    "athletes_f": len(top_athletes_f),
+                    "proj_rows": proj_rows_m,
+                }
+            )
 
         ticker = _ticker_context(session)
 
@@ -573,6 +610,7 @@ async def v2_projections(request: Request):
 # GET /v2/head-to-head  — athlete selection form
 # ---------------------------------------------------------------------------
 
+
 @router.get("/head-to-head", response_class=HTMLResponse)
 async def v2_h2h_form(request: Request):
     t = _templates(request)
@@ -580,7 +618,9 @@ async def v2_h2h_form(request: Request):
     with _session() as session:
         # Load top athletes by discipline for the selects
         men_boulder = _get_rankings_v2(session, Gender.M, Discipline.BOULDER, limit=20)
-        women_boulder = _get_rankings_v2(session, Gender.F, Discipline.BOULDER, limit=20)
+        women_boulder = _get_rankings_v2(
+            session, Gender.F, Discipline.BOULDER, limit=20
+        )
         men_lead = _get_rankings_v2(session, Gender.M, Discipline.LEAD, limit=20)
         women_lead = _get_rankings_v2(session, Gender.F, Discipline.LEAD, limit=20)
 
@@ -602,6 +642,7 @@ async def v2_h2h_form(request: Request):
 # GET /v2/head-to-head/{a_id}/{b_id}  — H2H result
 # ---------------------------------------------------------------------------
 
+
 @router.get("/head-to-head/{a_id}/{b_id}", response_class=HTMLResponse)
 async def v2_h2h_result(
     request: Request,
@@ -612,7 +653,9 @@ async def v2_h2h_result(
     t = _templates(request)
 
     if a_id == b_id:
-        return HTMLResponse("Cannot compare an athlete against themselves.", status_code=400)
+        return HTMLResponse(
+            "Cannot compare an athlete against themselves.", status_code=400
+        )
 
     disc_enum = _DISC_KEY_TO_ENUM.get(discipline.upper(), Discipline.LEAD)
 
@@ -691,8 +734,8 @@ async def v2_h2h_result(
         all_labels = sorted(set(labels_a) | set(labels_b))
         lmap_a = dict(zip(labels_a, mus_a))
         lmap_b = dict(zip(labels_b, mus_b))
-        aligned_a = [lmap_a.get(l) for l in all_labels]
-        aligned_b = [lmap_b.get(l) for l in all_labels]
+        aligned_a = [lmap_a.get(lbl) for lbl in all_labels]
+        aligned_b = [lmap_b.get(lbl) for lbl in all_labels]
 
         # Ring geometry: R=70, C=2πR
         R = 70
@@ -756,6 +799,7 @@ async def v2_h2h_result(
 # ---------------------------------------------------------------------------
 # GET /v2/api  — API reference page
 # ---------------------------------------------------------------------------
+
 
 @router.get("/api", response_class=HTMLResponse)
 async def v2_api_page(request: Request):

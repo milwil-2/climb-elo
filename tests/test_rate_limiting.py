@@ -20,6 +20,7 @@ The tests drive requests to structured endpoints — they do NOT start the real
 server.  create_app() is patched so routes use the test DB (same monkey-patch
 pattern as test_api.py).
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -48,6 +49,7 @@ from climbing_elo.models import (
 # Module-scoped test DB
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def test_db_path(tmp_path_factory):
     return tmp_path_factory.mktemp("rl_db") / "test.db"
@@ -66,16 +68,28 @@ def test_factory(test_db_path):
     session.add_all([adam, janja])
     session.flush()
 
-    session.add(Rating(
-        athlete_id=adam.id, discipline=Discipline.LEAD,
-        mu=1750.0, sigma=120.0, n_events=10, provisional=False,
-        last_event_at=date(2024, 6, 1),
-    ))
-    session.add(Rating(
-        athlete_id=janja.id, discipline=Discipline.LEAD,
-        mu=1800.0, sigma=100.0, n_events=12, provisional=False,
-        last_event_at=date(2024, 6, 1),
-    ))
+    session.add(
+        Rating(
+            athlete_id=adam.id,
+            discipline=Discipline.LEAD,
+            mu=1750.0,
+            sigma=120.0,
+            n_events=10,
+            provisional=False,
+            last_event_at=date(2024, 6, 1),
+        )
+    )
+    session.add(
+        Rating(
+            athlete_id=janja.id,
+            discipline=Discipline.LEAD,
+            mu=1800.0,
+            sigma=100.0,
+            n_events=12,
+            provisional=False,
+            last_event_at=date(2024, 6, 1),
+        )
+    )
 
     event = Event(
         name="Innsbruck World Cup",
@@ -129,6 +143,7 @@ def client(test_db_path, test_factory):
 # Reset limiter state between every test
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def reset_limiter():
     """Reset in-memory rate-limit counters before each test."""
@@ -140,6 +155,7 @@ def reset_limiter():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _athlete_ids(test_factory) -> list[int]:
     return [test_factory._adam_id, test_factory._janja_id]
@@ -156,6 +172,7 @@ def _post_projection(client, test_factory) -> int:
 # ---------------------------------------------------------------------------
 # Tests — POST /api/v1/projections  (10/minute limit)
 # ---------------------------------------------------------------------------
+
 
 class TestProjectionsRateLimit:
     def test_first_ten_requests_succeed(self, client, test_factory):
@@ -215,12 +232,15 @@ class TestProjectionsRateLimit:
 # Tests — GET /api/v1/predictions/upcoming  (60/minute limit)
 # ---------------------------------------------------------------------------
 
+
 class TestPredictionsUpcomingRateLimit:
     def test_first_sixty_requests_succeed(self, client):
         """First 60 GET /api/v1/predictions/upcoming → 200 (or 200 with no data)."""
         for i in range(60):
             resp = client.get("/api/v1/predictions/upcoming")
-            assert resp.status_code == 200, f"Request {i + 1} expected 200, got {resp.status_code}"
+            assert resp.status_code == 200, (
+                f"Request {i + 1} expected 200, got {resp.status_code}"
+            )
 
     def test_61st_request_is_429(self, client):
         """61st request within the same minute → 429."""
@@ -243,27 +263,35 @@ class TestPredictionsUpcomingRateLimit:
 # Tests — default limit (120/min) on other GET /api/v1/* endpoints
 # ---------------------------------------------------------------------------
 
+
 class TestDefaultLimitNotHitBySmallBursts:
     def test_leaderboard_small_burst_passes(self, client):
         """A burst of 30 requests to GET /api/v1/leaderboard all return 200."""
         for i in range(30):
             resp = client.get("/api/v1/leaderboard?discipline=lead&gender=M")
-            assert resp.status_code == 200, f"Request {i + 1} returned {resp.status_code}"
+            assert resp.status_code == 200, (
+                f"Request {i + 1} returned {resp.status_code}"
+            )
 
     def test_disciplines_small_burst_passes(self, client):
         """A burst of 20 requests to GET /api/v1/disciplines all return 200."""
         for i in range(20):
             resp = client.get("/api/v1/disciplines")
-            assert resp.status_code == 200, f"Request {i + 1} returned {resp.status_code}"
+            assert resp.status_code == 200, (
+                f"Request {i + 1} returned {resp.status_code}"
+            )
 
 
 # ---------------------------------------------------------------------------
 # Tests — default limit (120/min) on HTML routes
 # ---------------------------------------------------------------------------
 
+
 class TestHtmlRoutesDefaultLimit:
     def test_root_small_burst_passes(self, client):
         """A burst of 20 GET / requests all return 200."""
         for i in range(20):
             resp = client.get("/")
-            assert resp.status_code == 200, f"Request {i + 1} returned {resp.status_code}"
+            assert resp.status_code == 200, (
+                f"Request {i + 1} returned {resp.status_code}"
+            )

@@ -13,6 +13,7 @@ process (i.e. single-worker deployments).  In a multi-worker setup (gunicorn
 with multiple workers) each worker holds its own in-memory cache; restart the
 workers instead, or migrate to a shared cache backend (Issue #29).
 """
+
 from __future__ import annotations
 
 from climbing_elo.cache import predictions_cache

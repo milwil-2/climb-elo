@@ -5,7 +5,7 @@ from datetime import date
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 
 from climbing_elo.cache import likely_roster_cache, predictions_cache
@@ -69,7 +69,11 @@ def _get_nationalities(session, gender: Gender, discipline: Discipline) -> list[
     stmt = (
         select(Athlete.nationality)
         .join(Rating, Rating.athlete_id == Athlete.id)
-        .where(Rating.discipline == discipline, Athlete.gender == gender, Athlete.nationality.isnot(None))
+        .where(
+            Rating.discipline == discipline,
+            Athlete.gender == gender,
+            Athlete.nationality.isnot(None),
+        )
         .distinct()
         .order_by(Athlete.nationality)
     )
@@ -157,36 +161,46 @@ async def athlete_profile(request: Request, athlete_id: int):
                 )
             ).scalar_one_or_none()
 
-            recent_events.append({
-                "event_id": event.id,
-                "event_name": event.name,
-                "season": event.season,
-                "mu_before": round(rh.mu_before, 1),
-                "mu_after": round(rh.mu_after, 1),
-                "delta": round(delta, 1),
-                "delta_class": "positive" if delta > 0 else "negative" if delta < 0 else "",
-                "place": place_row,
-            })
+            recent_events.append(
+                {
+                    "event_id": event.id,
+                    "event_name": event.name,
+                    "season": event.season,
+                    "mu_before": round(rh.mu_before, 1),
+                    "mu_after": round(rh.mu_after, 1),
+                    "delta": round(delta, 1),
+                    "delta_class": "positive"
+                    if delta > 0
+                    else "negative"
+                    if delta < 0
+                    else "",
+                    "place": place_row,
+                }
+            )
 
-    return templates.TemplateResponse(request, "athlete.html", {
-        "athlete": {
-            "id": athlete.id,
-            "name": athlete.name,
-            "nationality": athlete.nationality or "—",
-            "gender": athlete.gender.value,
+    return templates.TemplateResponse(
+        request,
+        "athlete.html",
+        {
+            "athlete": {
+                "id": athlete.id,
+                "name": athlete.name,
+                "nationality": athlete.nationality or "—",
+                "gender": athlete.gender.value,
+            },
+            "rating": {
+                "mu": round(rating.mu, 1) if rating else None,
+                "sigma": round(rating.sigma, 1) if rating else None,
+                "n_events": rating.n_events if rating else 0,
+                "provisional": rating.provisional if rating else True,
+            },
+            "chart_labels": json.dumps(chart_labels),
+            "chart_mu": json.dumps(chart_mu),
+            "chart_sigma_upper": json.dumps(chart_sigma_upper),
+            "chart_sigma_lower": json.dumps(chart_sigma_lower),
+            "recent_events": recent_events,
         },
-        "rating": {
-            "mu": round(rating.mu, 1) if rating else None,
-            "sigma": round(rating.sigma, 1) if rating else None,
-            "n_events": rating.n_events if rating else 0,
-            "provisional": rating.provisional if rating else True,
-        },
-        "chart_labels": json.dumps(chart_labels),
-        "chart_mu": json.dumps(chart_mu),
-        "chart_sigma_upper": json.dumps(chart_sigma_upper),
-        "chart_sigma_lower": json.dumps(chart_sigma_lower),
-        "recent_events": recent_events,
-    })
+    )
 
 
 @router.get("/events", response_class=HTMLResponse)
@@ -219,11 +233,15 @@ async def event_list(request: Request, season: Optional[int] = Query(default=Non
             }
             for e in events
         ]
-    return templates.TemplateResponse(request, "events.html", {
-        "events": event_data,
-        "all_seasons": all_seasons,
-        "selected_season": season,
-    })
+    return templates.TemplateResponse(
+        request,
+        "events.html",
+        {
+            "events": event_data,
+            "all_seasons": all_seasons,
+            "selected_season": season,
+        },
+    )
 
 
 @router.get("/events/{event_id}", response_class=HTMLResponse)
@@ -263,33 +281,45 @@ async def event_detail(request: Request, event_id: int):
             for res, athlete in results:
                 rh = rh_by_athlete.get(athlete.id)
                 delta = (rh.mu_after - rh.mu_before) if rh else None
-                result_rows.append({
-                    "athlete_id": athlete.id,
-                    "name": athlete.name,
-                    "nationality": athlete.nationality or "—",
-                    "rank": res.rank,
-                    "raw_score": res.raw_score or "—",
-                    "mu_before": round(rh.mu_before, 1) if rh else "—",
-                    "mu_after": round(rh.mu_after, 1) if rh else "—",
-                    "delta": round(delta, 1) if delta is not None else "—",
-                    "delta_class": "positive" if delta and delta > 0 else "negative" if delta and delta < 0 else "",
-                })
+                result_rows.append(
+                    {
+                        "athlete_id": athlete.id,
+                        "name": athlete.name,
+                        "nationality": athlete.nationality or "—",
+                        "rank": res.rank,
+                        "raw_score": res.raw_score or "—",
+                        "mu_before": round(rh.mu_before, 1) if rh else "—",
+                        "mu_after": round(rh.mu_after, 1) if rh else "—",
+                        "delta": round(delta, 1) if delta is not None else "—",
+                        "delta_class": "positive"
+                        if delta and delta > 0
+                        else "negative"
+                        if delta and delta < 0
+                        else "",
+                    }
+                )
 
-            rounds_data.append({
-                "round_type": rnd.round_type.value.title(),
-                "gender": rnd.gender.value,
-                "results": result_rows,
-            })
+            rounds_data.append(
+                {
+                    "round_type": rnd.round_type.value.title(),
+                    "gender": rnd.gender.value,
+                    "results": result_rows,
+                }
+            )
 
-    return templates.TemplateResponse(request, "event.html", {
-        "event": {
-            "id": event.id,
-            "name": event.name,
-            "season": event.season,
-            "tier": event.tier.value.replace("_", " ").title(),
+    return templates.TemplateResponse(
+        request,
+        "event.html",
+        {
+            "event": {
+                "id": event.id,
+                "name": event.name,
+                "season": event.season,
+                "tier": event.tier.value.replace("_", " ").title(),
+            },
+            "rounds": rounds_data,
         },
-        "rounds": rounds_data,
-    })
+    )
 
 
 @router.get("/breakdown/{athlete_id}/{event_id}", response_class=HTMLResponse)
@@ -319,28 +349,38 @@ async def rating_breakdown(request: Request, athlete_id: int, event_id: int):
             resolved_pairs = []
             for p in pairs:
                 opponent = session.get(Athlete, p["opponent_id"])
-                resolved_pairs.append({
-                    "opponent_name": opponent.name if opponent else f"ID {p['opponent_id']}",
-                    "result": p["result"],
-                    "expected": p["expected"],
-                    "actual": p["actual"],
-                    "delta": p["delta"],
-                    "margin_multiplier": p["margin_multiplier"],
-                })
+                resolved_pairs.append(
+                    {
+                        "opponent_name": opponent.name
+                        if opponent
+                        else f"ID {p['opponent_id']}",
+                        "result": p["result"],
+                        "expected": p["expected"],
+                        "actual": p["actual"],
+                        "delta": p["delta"],
+                        "margin_multiplier": p["margin_multiplier"],
+                    }
+                )
 
-            rounds_breakdown.append({
-                "round_type": rnd.round_type.value.title(),
-                "mu_before": round(rh.mu_before, 1),
-                "mu_after": round(rh.mu_after, 1),
-                "delta": round(rh.mu_after - rh.mu_before, 1),
-                "pairs": resolved_pairs,
-            })
+            rounds_breakdown.append(
+                {
+                    "round_type": rnd.round_type.value.title(),
+                    "mu_before": round(rh.mu_before, 1),
+                    "mu_after": round(rh.mu_after, 1),
+                    "delta": round(rh.mu_after - rh.mu_before, 1),
+                    "pairs": resolved_pairs,
+                }
+            )
 
-    return templates.TemplateResponse(request, "breakdown.html", {
-        "athlete": {"id": athlete.id, "name": athlete.name},
-        "event": {"id": event.id, "name": event.name, "season": event.season},
-        "rounds": rounds_breakdown,
-    })
+    return templates.TemplateResponse(
+        request,
+        "breakdown.html",
+        {
+            "athlete": {"id": athlete.id, "name": athlete.name},
+            "event": {"id": event.id, "name": event.name, "season": event.season},
+            "rounds": rounds_breakdown,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -371,19 +411,21 @@ def _build_projection_rows(
     rows = []
     for a in athletes:
         p = probs[a.athlete_id]
-        rows.append({
-            "athlete_id": a.athlete_id,
-            "name": a.name,
-            "mu": round(a.mu, 1),
-            "sigma": round(a.sigma, 1),
-            "win": f"{p['win'] * 100:.1f}%",
-            "podium": f"{p['podium'] * 100:.1f}%",
-            "top_8": f"{p['top_8'] * 100:.1f}%",
-            "expected_rank": p["expected_rank"],
-            # Raw floats for sorting
-            "win_raw": p["win"],
-            "podium_raw": p["podium"],
-        })
+        rows.append(
+            {
+                "athlete_id": a.athlete_id,
+                "name": a.name,
+                "mu": round(a.mu, 1),
+                "sigma": round(a.sigma, 1),
+                "win": f"{p['win'] * 100:.1f}%",
+                "podium": f"{p['podium'] * 100:.1f}%",
+                "top_8": f"{p['top_8'] * 100:.1f}%",
+                "expected_rank": p["expected_rank"],
+                # Raw floats for sorting
+                "win_raw": p["win"],
+                "podium_raw": p["podium"],
+            }
+        )
     rows.sort(key=lambda r: r["expected_rank"])
     # Assign display rank
     for i, row in enumerate(rows):
@@ -414,13 +456,15 @@ def _build_progression_rows(
                 css = "prob-yellow"
             else:
                 css = "prob-red"
-            round_probs.append({
-                "round_type": rc.round_type,
-                "round_label": rc.round_type.title(),
-                "raw": raw,
-                "pct": f"{pct:.1f}%",
-                "css": css,
-            })
+            round_probs.append(
+                {
+                    "round_type": rc.round_type,
+                    "round_label": rc.round_type.title(),
+                    "raw": raw,
+                    "pct": f"{pct:.1f}%",
+                    "css": css,
+                }
+            )
 
         # Final podium colour
         fp_raw = pr.final_podium_prob
@@ -432,18 +476,20 @@ def _build_progression_rows(
         else:
             fp_css = "prob-red"
 
-        rows.append({
-            "proj_rank": i + 1,
-            "athlete_id": pr.athlete_id,
-            "name": pr.name,
-            "mu": round(pr.mu, 1),
-            "round_probs": round_probs,
-            "final_podium": f"{fp_pct:.1f}%",
-            "final_podium_raw": fp_raw,
-            "final_podium_css": fp_css,
-            "final_win": f"{pr.final_win_prob * 100:.1f}%",
-            "final_win_raw": pr.final_win_prob,
-        })
+        rows.append(
+            {
+                "proj_rank": i + 1,
+                "athlete_id": pr.athlete_id,
+                "name": pr.name,
+                "mu": round(pr.mu, 1),
+                "round_probs": round_probs,
+                "final_podium": f"{fp_pct:.1f}%",
+                "final_podium_raw": fp_raw,
+                "final_podium_css": fp_css,
+                "final_win": f"{pr.final_win_prob * 100:.1f}%",
+                "final_win_raw": pr.final_win_prob,
+            }
+        )
     return rows
 
 
@@ -452,33 +498,35 @@ def _build_progression_rows(
 # POST /projections/new — run projection and render results inline
 # ---------------------------------------------------------------------------
 
+
 @router.get("/projections/new", response_class=HTMLResponse)
 async def projections_new_form(request: Request):
     templates = request.app.state.templates
     with _get_session() as session:
         athletes = list(
-            session.execute(
-                select(Athlete).order_by(Athlete.name)
-            ).scalars()
+            session.execute(select(Athlete).order_by(Athlete.name)).scalars()
         )
         athlete_list = [
-            {"id": a.id, "name": a.name, "gender": a.gender.value}
-            for a in athletes
+            {"id": a.id, "name": a.name, "gender": a.gender.value} for a in athletes
         ]
-    return templates.TemplateResponse(request, "projections_new.html", {
-        "athletes": athlete_list,
-        "disciplines": [
-            {"key": k, "label": v}
-            for k, v in [
-                ("lead", "Lead"),
-                ("boulder", "Boulder"),
-                ("speed", "Speed"),
-                ("combined", "Combined"),
-            ]
-        ],
-        "result": None,
-        "error": None,
-    })
+    return templates.TemplateResponse(
+        request,
+        "projections_new.html",
+        {
+            "athletes": athlete_list,
+            "disciplines": [
+                {"key": k, "label": v}
+                for k, v in [
+                    ("lead", "Lead"),
+                    ("boulder", "Boulder"),
+                    ("speed", "Speed"),
+                    ("combined", "Combined"),
+                ]
+            ],
+            "result": None,
+            "error": None,
+        },
+    )
 
 
 @router.post("/projections/new", response_class=HTMLResponse)
@@ -496,8 +544,7 @@ async def projections_new_submit(
             session.execute(select(Athlete).order_by(Athlete.name)).scalars()
         )
         athlete_list = [
-            {"id": a.id, "name": a.name, "gender": a.gender.value}
-            for a in athletes_all
+            {"id": a.id, "name": a.name, "gender": a.gender.value} for a in athletes_all
         ]
         disciplines_ctx = [
             {"key": k, "label": v}
@@ -510,31 +557,43 @@ async def projections_new_submit(
         ]
 
         if disc is None:
-            return templates.TemplateResponse(request, "projections_new.html", {
-                "athletes": athlete_list,
-                "disciplines": disciplines_ctx,
-                "result": None,
-                "error": "Invalid discipline selected.",
-            })
+            return templates.TemplateResponse(
+                request,
+                "projections_new.html",
+                {
+                    "athletes": athlete_list,
+                    "disciplines": disciplines_ctx,
+                    "result": None,
+                    "error": "Invalid discipline selected.",
+                },
+            )
 
         if len(athlete_ids) < 2:
-            return templates.TemplateResponse(request, "projections_new.html", {
-                "athletes": athlete_list,
-                "disciplines": disciplines_ctx,
-                "result": None,
-                "error": "Please select at least 2 athletes.",
-            })
+            return templates.TemplateResponse(
+                request,
+                "projections_new.html",
+                {
+                    "athletes": athlete_list,
+                    "disciplines": disciplines_ctx,
+                    "result": None,
+                    "error": "Please select at least 2 athletes.",
+                },
+            )
 
         # Bound athlete count to prevent DoS via Monte Carlo blowup.
         # 10k sims x large N becomes both memory- and CPU-expensive per request.
         MAX_ATHLETES_PER_FORM = 128
         if len(athlete_ids) > MAX_ATHLETES_PER_FORM:
-            return templates.TemplateResponse(request, "projections_new.html", {
-                "athletes": athlete_list,
-                "disciplines": disciplines_ctx,
-                "result": None,
-                "error": f"Please select at most {MAX_ATHLETES_PER_FORM} athletes.",
-            })
+            return templates.TemplateResponse(
+                request,
+                "projections_new.html",
+                {
+                    "athletes": athlete_list,
+                    "disciplines": disciplines_ctx,
+                    "result": None,
+                    "error": f"Please select at most {MAX_ATHLETES_PER_FORM} athletes.",
+                },
+            )
 
         # Load ratings for selected athletes
         proj_inputs: list[AthleteProjectionInput] = []
@@ -551,15 +610,18 @@ async def projections_new_submit(
             if rating is None:
                 # Fall back to defaults so the athlete still appears
                 from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+
                 mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
             else:
                 mu, sigma = rating.mu, rating.sigma
-            proj_inputs.append(AthleteProjectionInput(
-                athlete_id=aid,
-                mu=mu,
-                sigma=sigma,
-                name=athlete.name,
-            ))
+            proj_inputs.append(
+                AthleteProjectionInput(
+                    athlete_id=aid,
+                    mu=mu,
+                    sigma=sigma,
+                    name=athlete.name,
+                )
+            )
 
         probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
         rows = _build_projection_rows(session, proj_inputs, probs)
@@ -570,19 +632,24 @@ async def projections_new_submit(
             "source": "manual",
         }
 
-    return templates.TemplateResponse(request, "projections_new.html", {
-        "athletes": athlete_list,
-        "disciplines": disciplines_ctx,
-        "result": result_ctx,
-        "error": None,
-        "selected_discipline": discipline,
-        "selected_athlete_ids": athlete_ids,
-    })
+    return templates.TemplateResponse(
+        request,
+        "projections_new.html",
+        {
+            "athletes": athlete_list,
+            "disciplines": disciplines_ctx,
+            "result": result_ctx,
+            "error": None,
+            "selected_discipline": discipline,
+            "selected_athlete_ids": athlete_ids,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
 # GET /projections/{event_id}  — projection for a past/in-progress event
 # ---------------------------------------------------------------------------
+
 
 @router.get("/projections/{event_id}", response_class=HTMLResponse)
 async def event_projections(request: Request, event_id: int, gender: str = "M"):
@@ -605,9 +672,7 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
 
         round_priority = [RoundType.QUALIFICATION, RoundType.SEMI, RoundType.FINAL]
         rounds_by_type: dict[RoundType, Round] = {
-            rnd.round_type: rnd
-            for rnd in event.rounds
-            if rnd.gender == gender_enum
+            rnd.round_type: rnd for rnd in event.rounds if rnd.gender == gender_enum
         }
 
         for rt in round_priority:
@@ -616,8 +681,7 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
                 continue
             results = list(
                 session.execute(
-                    select(Result)
-                    .where(Result.round_id == rnd.id)
+                    select(Result).where(Result.round_id == rnd.id)
                 ).scalars()
             )
             for res in results:
@@ -626,19 +690,25 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
                     seen.add(res.athlete_id)
 
         if not athlete_ids_ordered:
-            return templates.TemplateResponse(request, "projections.html", {
-                "event": {
-                    "id": event.id,
-                    "name": event.name,
-                    "season": event.season,
-                    "tier": event.tier.value.replace("_", " ").title(),
+            return templates.TemplateResponse(
+                request,
+                "projections.html",
+                {
+                    "event": {
+                        "id": event.id,
+                        "name": event.name,
+                        "season": event.season,
+                        "tier": event.tier.value.replace("_", " ").title(),
+                    },
+                    "discipline": _DISCIPLINE_DISPLAY.get(
+                        event.discipline, event.discipline.value
+                    ),
+                    "gender": gender_enum.value,
+                    "rows": [],
+                    "winner": None,
+                    "error": "No athlete results found for this event.",
                 },
-                "discipline": _DISCIPLINE_DISPLAY.get(event.discipline, event.discipline.value),
-                "gender": gender_enum.value,
-                "rows": [],
-                "winner": None,
-                "error": "No athlete results found for this event.",
-            })
+            )
 
         # Build projection inputs
         proj_inputs: list[AthleteProjectionInput] = []
@@ -657,15 +727,18 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
             ).scalar_one_or_none()
             if rating is None:
                 from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+
                 mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
             else:
                 mu, sigma = rating.mu, rating.sigma
-            proj_inputs.append(AthleteProjectionInput(
-                athlete_id=aid,
-                mu=mu,
-                sigma=sigma,
-                name=athlete.name,
-            ))
+            proj_inputs.append(
+                AthleteProjectionInput(
+                    athlete_id=aid,
+                    mu=mu,
+                    sigma=sigma,
+                    name=athlete.name,
+                )
+            )
 
         # Available genders for this event
         available_genders = sorted({rnd.gender.value for rnd in event.rounds})
@@ -688,7 +761,9 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
             }
             # Use default advance counts for each round type.
             _default_format = default_event_format(event.tier.value)
-            _default_advance = {rc.round_type: rc.advance_count for rc in _default_format}
+            _default_advance = {
+                rc.round_type: rc.advance_count for rc in _default_format
+            }
             _round_type_to_str = {
                 RoundType.QUALIFICATION: "qualification",
                 RoundType.SEMI: "semifinal",
@@ -700,7 +775,9 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
             for rt in sorted_rt:
                 rt_str = _round_type_to_str.get(rt, rt.value)
                 advance = _default_advance.get(rt_str, 8)
-                round_configs.append(RoundConfig(round_type=rt_str, advance_count=advance))
+                round_configs.append(
+                    RoundConfig(round_type=rt_str, advance_count=advance)
+                )
 
             progression_results = simulate_event_progression(
                 proj_inputs, rounds=round_configs, n_simulations=10_000
@@ -719,22 +796,30 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
             progression_results = None
             round_configs = []
 
-    return templates.TemplateResponse(request, "projections.html", {
-        "event": {
-            "id": event.id,
-            "name": event.name,
-            "season": event.season,
-            "tier": event.tier.value.replace("_", " ").title(),
+    return templates.TemplateResponse(
+        request,
+        "projections.html",
+        {
+            "event": {
+                "id": event.id,
+                "name": event.name,
+                "season": event.season,
+                "tier": event.tier.value.replace("_", " ").title(),
+            },
+            "discipline": _DISCIPLINE_DISPLAY.get(
+                event.discipline, event.discipline.value
+            ),
+            "gender": gender_enum.value,
+            "available_genders": available_genders,
+            "rows": rows,
+            "winner": winner_name,
+            "use_progression": use_progression,
+            "round_configs": [{"round_type": rc.round_type} for rc in round_configs]
+            if round_configs
+            else [],
+            "error": None,
         },
-        "discipline": _DISCIPLINE_DISPLAY.get(event.discipline, event.discipline.value),
-        "gender": gender_enum.value,
-        "available_genders": available_genders,
-        "rows": rows,
-        "winner": winner_name,
-        "use_progression": use_progression,
-        "round_configs": [{"round_type": rc.round_type} for rc in round_configs] if round_configs else [],
-        "error": None,
-    })
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -761,32 +846,34 @@ _MAX_ATHLETES_PER_PROJECTION_CARD = 64
 # GET /head-to-head/{a}/{b} — result page
 # ---------------------------------------------------------------------------
 
+
 @router.get("/head-to-head", response_class=HTMLResponse)
 async def head_to_head_form(request: Request):
     """Render the head-to-head athlete selection form."""
     templates = request.app.state.templates
     with _get_session() as session:
         athletes = list(
-            session.execute(
-                select(Athlete).order_by(Athlete.name)
-            ).scalars()
+            session.execute(select(Athlete).order_by(Athlete.name)).scalars()
         )
         athlete_list = [
-            {"id": a.id, "name": a.name, "gender": a.gender.value}
-            for a in athletes
+            {"id": a.id, "name": a.name, "gender": a.gender.value} for a in athletes
         ]
-    return templates.TemplateResponse(request, "head_to_head_new.html", {
-        "athletes": athlete_list,
-        "disciplines": [
-            {"key": k, "label": v}
-            for k, v in [
-                ("lead", "Lead"),
-                ("boulder", "Boulder"),
-                ("speed", "Speed"),
-                ("combined", "Combined"),
-            ]
-        ],
-    })
+    return templates.TemplateResponse(
+        request,
+        "head_to_head_new.html",
+        {
+            "athletes": athlete_list,
+            "disciplines": [
+                {"key": k, "label": v}
+                for k, v in [
+                    ("lead", "Lead"),
+                    ("boulder", "Boulder"),
+                    ("speed", "Speed"),
+                    ("combined", "Combined"),
+                ]
+            ],
+        },
+    )
 
 
 @router.get("/head-to-head/{a_id}/{b_id}", response_class=HTMLResponse)
@@ -803,7 +890,9 @@ async def head_to_head_result(
 
     # --- validate inputs ---
     if a_id == b_id:
-        return HTMLResponse("Cannot compare an athlete against themselves.", status_code=400)
+        return HTMLResponse(
+            "Cannot compare an athlete against themselves.", status_code=400
+        )
 
     disc = _DISCIPLINE_FROM_STR.get(discipline)
     if disc is None:
@@ -902,65 +991,72 @@ async def head_to_head_result(
         all_labels = sorted(set(labels_a) | set(labels_b))
 
         # Map each athlete's history into the merged axis (None for gaps)
-        def _align(labels: list[str], mus: list[float], all_lbl: list[str]) -> list[float | None]:
+        def _align(
+            labels: list[str], mus: list[float], all_lbl: list[str]
+        ) -> list[float | None]:
             lmap = dict(zip(labels, mus))
-            return [lmap.get(l) for l in all_lbl]
+            return [lmap.get(lbl) for lbl in all_lbl]
 
         aligned_a = _align(labels_a, mus_a, all_labels)
         aligned_b = _align(labels_b, mus_b, all_labels)
 
-    return templates.TemplateResponse(request, "head_to_head.html", {
-        "athlete_a": {
-            "id": athlete_a.id,
-            "name": athlete_a.name,
-            "nationality": athlete_a.nationality or "—",
-            "gender": athlete_a.gender.value,
-            "mu": round(rating_a.mu, 1),
-            "sigma": round(rating_a.sigma, 1),
-            "n_events": rating_a.n_events,
+    return templates.TemplateResponse(
+        request,
+        "head_to_head.html",
+        {
+            "athlete_a": {
+                "id": athlete_a.id,
+                "name": athlete_a.name,
+                "nationality": athlete_a.nationality or "—",
+                "gender": athlete_a.gender.value,
+                "mu": round(rating_a.mu, 1),
+                "sigma": round(rating_a.sigma, 1),
+                "n_events": rating_a.n_events,
+            },
+            "athlete_b": {
+                "id": athlete_b.id,
+                "name": athlete_b.name,
+                "nationality": athlete_b.nationality or "—",
+                "gender": athlete_b.gender.value,
+                "mu": round(rating_b.mu, 1),
+                "sigma": round(rating_b.sigma, 1),
+                "n_events": rating_b.n_events,
+            },
+            "discipline_key": discipline,
+            "discipline_label": _DISCIPLINE_DISPLAY[disc],
+            "win_a": round(win_a * 100, 1),
+            "win_b": round(win_b * 100, 1),
+            "past_meetings": past_meetings,
+            "most_recent_shared_event": (
+                {
+                    "id": most_recent_shared_event.id,
+                    "name": most_recent_shared_event.name,
+                    "season": most_recent_shared_event.season,
+                }
+                if most_recent_shared_event
+                else None
+            ),
+            # Pass raw Python lists; template uses |tojson for safe HTML escaping.
+            "chart_labels": all_labels,
+            "chart_mu_a": aligned_a,
+            "chart_mu_b": aligned_b,
+            "disciplines": [
+                {"key": k, "label": v}
+                for k, v in [
+                    ("lead", "Lead"),
+                    ("boulder", "Boulder"),
+                    ("speed", "Speed"),
+                    ("combined", "Combined"),
+                ]
+            ],
         },
-        "athlete_b": {
-            "id": athlete_b.id,
-            "name": athlete_b.name,
-            "nationality": athlete_b.nationality or "—",
-            "gender": athlete_b.gender.value,
-            "mu": round(rating_b.mu, 1),
-            "sigma": round(rating_b.sigma, 1),
-            "n_events": rating_b.n_events,
-        },
-        "discipline_key": discipline,
-        "discipline_label": _DISCIPLINE_DISPLAY[disc],
-        "win_a": round(win_a * 100, 1),
-        "win_b": round(win_b * 100, 1),
-        "past_meetings": past_meetings,
-        "most_recent_shared_event": (
-            {
-                "id": most_recent_shared_event.id,
-                "name": most_recent_shared_event.name,
-                "season": most_recent_shared_event.season,
-            }
-            if most_recent_shared_event
-            else None
-        ),
-        # Pass raw Python lists; template uses |tojson for safe HTML escaping.
-        "chart_labels": all_labels,
-        "chart_mu_a": aligned_a,
-        "chart_mu_b": aligned_b,
-        "disciplines": [
-            {"key": k, "label": v}
-            for k, v in [
-                ("lead", "Lead"),
-                ("boulder", "Boulder"),
-                ("speed", "Speed"),
-                ("combined", "Combined"),
-            ]
-        ],
-    })
+    )
 
 
 # ---------------------------------------------------------------------------
 # GET /live/{event_id}  — live event view (auto-updating leaderboard + projections)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/live/{event_id}", response_class=HTMLResponse)
 async def live_event_view(request: Request, event_id: int, gender: str = "M"):
@@ -1020,7 +1116,7 @@ async def live_event_view(request: Request, event_id: int, gender: str = "M"):
 
         leaderboard_rows = sorted(
             athlete_best.values(),
-            key=lambda r: (r["rank"] if r["rank"] is not None else 9999),
+            key=lambda r: r["rank"] if r["rank"] is not None else 9999,
         )
 
         # Build projection inputs from leaderboard.
@@ -1041,6 +1137,7 @@ async def live_event_view(request: Request, event_id: int, gender: str = "M"):
             ).scalar_one_or_none()
             if rating is None:
                 from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+
                 mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
             else:
                 mu, sigma = rating.mu, rating.sigma
@@ -1064,47 +1161,57 @@ async def live_event_view(request: Request, event_id: int, gender: str = "M"):
                 n_simulations=10_000,
             )
             all_inputs = [inp for inp, _ in completed] + remaining
-            for inp in sorted(all_inputs, key=lambda a: probs[a.athlete_id]["expected_rank"]):
+            for inp in sorted(
+                all_inputs, key=lambda a: probs[a.athlete_id]["expected_rank"]
+            ):
                 p = probs[inp.athlete_id]
-                projection_rows.append({
-                    "athlete_id": inp.athlete_id,
-                    "name": inp.name,
-                    "mu": round(inp.mu, 1),
-                    "win": f"{p['win'] * 100:.1f}%",
-                    "podium": f"{p['podium'] * 100:.1f}%",
-                    "expected_rank": p["expected_rank"],
-                    "win_raw": p["win"],
-                    "podium_raw": p["podium"],
-                    "is_completed": inp.athlete_id in {aid for inp, _ in completed},
-                })
+                projection_rows.append(
+                    {
+                        "athlete_id": inp.athlete_id,
+                        "name": inp.name,
+                        "mu": round(inp.mu, 1),
+                        "win": f"{p['win'] * 100:.1f}%",
+                        "podium": f"{p['podium'] * 100:.1f}%",
+                        "expected_rank": p["expected_rank"],
+                        "win_raw": p["win"],
+                        "podium_raw": p["podium"],
+                        "is_completed": inp.athlete_id in {aid for inp, _ in completed},
+                    }
+                )
             for i, row in enumerate(projection_rows):
                 row["proj_rank"] = i + 1
 
-    return templates.TemplateResponse(request, "live.html", {
-        "event": {
-            "id": event.id,
-            "name": event.name,
-            "season": event.season,
-            "tier": event.tier.value.replace("_", " ").title(),
-            "discipline": _DISCIPLINE_DISPLAY.get(event.discipline, event.discipline.value),
+    return templates.TemplateResponse(
+        request,
+        "live.html",
+        {
+            "event": {
+                "id": event.id,
+                "name": event.name,
+                "season": event.season,
+                "tier": event.tier.value.replace("_", " ").title(),
+                "discipline": _DISCIPLINE_DISPLAY.get(
+                    event.discipline, event.discipline.value
+                ),
+            },
+            "gender": gender_enum.value,
+            "available_genders": available_genders,
+            "leaderboard": leaderboard_rows,
+            "projections": projection_rows,
+            "stream_url": f"/live/{event_id}/stream",
+            # Initial athlete data for JS to seed the leaderboard state
+            # (serialised to JSON in the template via |tojson)
+            "initial_athletes": {
+                row["athlete_id"]: {
+                    "name": row["name"],
+                    "rank": row["rank"],
+                    "score": row["score"],
+                    "round_type": row["round_type"],
+                }
+                for row in leaderboard_rows
+            },
         },
-        "gender": gender_enum.value,
-        "available_genders": available_genders,
-        "leaderboard": leaderboard_rows,
-        "projections": projection_rows,
-        "stream_url": f"/live/{event_id}/stream",
-        # Initial athlete data for JS to seed the leaderboard state
-        # (serialised to JSON in the template via |tojson)
-        "initial_athletes": {
-            row["athlete_id"]: {
-                "name": row["name"],
-                "rank": row["rank"],
-                "score": row["score"],
-                "round_type": row["round_type"],
-            }
-            for row in leaderboard_rows
-        },
-    })
+    )
 
 
 @router.get("/predictions", response_class=HTMLResponse)
@@ -1171,8 +1278,7 @@ async def predictions(request: Request):
                             if rnd.gender != gender_enum:
                                 continue
                             results_q = session.execute(
-                                select(Result)
-                                .where(
+                                select(Result).where(
                                     Result.round_id == rnd.id,
                                     Result.dns.is_(False),
                                 )
@@ -1197,25 +1303,31 @@ async def predictions(request: Request):
                                 )
                             ).scalar_one_or_none()
                             if rating is None:
-                                from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+                                from climbing_elo.engine.elo import (
+                                    DEFAULT_MU,
+                                    DEFAULT_SIGMA,
+                                )
+
                                 mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
                             else:
                                 mu, sigma = rating.mu, rating.sigma
-                            proj_inputs.append(AthleteProjectionInput(
-                                athlete_id=aid,
-                                mu=mu,
-                                sigma=sigma,
-                                name=athlete.name,
-                            ))
+                            proj_inputs.append(
+                                AthleteProjectionInput(
+                                    athlete_id=aid,
+                                    mu=mu,
+                                    sigma=sigma,
+                                    name=athlete.name,
+                                )
+                            )
 
                         # Cap per-event athlete count for the landing page Monte Carlo,
                         # so a 200-athlete qualification field doesn't make the page hang.
                         # Sort by mu descending and take the top N — the predicted podium
                         # comes from this group anyway.
                         if len(proj_inputs) > _MAX_ATHLETES_PER_PROJECTION_CARD:
-                            proj_inputs = sorted(proj_inputs, key=lambda a: a.mu, reverse=True)[
-                                :_MAX_ATHLETES_PER_PROJECTION_CARD
-                            ]
+                            proj_inputs = sorted(
+                                proj_inputs, key=lambda a: a.mu, reverse=True
+                            )[:_MAX_ATHLETES_PER_PROJECTION_CARD]
 
                         # Cache key encodes event, discipline, gender, and the
                         # sorted athlete+rating fingerprint so stale ratings
@@ -1235,11 +1347,16 @@ async def predictions(request: Request):
 
                         probs = predictions_cache.get(_cache_key)
                         if probs is None:
-                            probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
+                            probs = compute_podium_probabilities(
+                                proj_inputs, n_simulations=10_000
+                            )
                             predictions_cache.set(_cache_key, probs)
 
                         # Build predicted top-3 sorted by expected_rank.
-                        ranked = sorted(proj_inputs, key=lambda a: probs[a.athlete_id]["expected_rank"])
+                        ranked = sorted(
+                            proj_inputs,
+                            key=lambda a: probs[a.athlete_id]["expected_rank"],
+                        )
                         top3 = [
                             {
                                 "athlete_id": a.athlete_id,
@@ -1250,11 +1367,13 @@ async def predictions(request: Request):
                             }
                             for a in ranked[:3]
                         ]
-                        gender_predictions.append({
-                            "gender": gender_enum.value,
-                            "top3": top3,
-                            "total_athletes": len(proj_inputs),
-                        })
+                        gender_predictions.append(
+                            {
+                                "gender": gender_enum.value,
+                                "top3": top3,
+                                "total_athletes": len(proj_inputs),
+                            }
+                        )
 
                     predictions_data = {"genders": gender_predictions}
 
@@ -1293,23 +1412,31 @@ async def predictions(request: Request):
                                 )
                             ).scalar_one_or_none()
                             if rating is None:
-                                from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+                                from climbing_elo.engine.elo import (
+                                    DEFAULT_MU,
+                                    DEFAULT_SIGMA,
+                                )
+
                                 mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
                             else:
                                 mu, sigma = rating.mu, rating.sigma
-                            proj_inputs_fallback.append(AthleteProjectionInput(
-                                athlete_id=aid,
-                                mu=mu,
-                                sigma=sigma,
-                                name=athlete.name,
-                            ))
+                            proj_inputs_fallback.append(
+                                AthleteProjectionInput(
+                                    athlete_id=aid,
+                                    mu=mu,
+                                    sigma=sigma,
+                                    name=athlete.name,
+                                )
+                            )
 
                         if len(proj_inputs_fallback) < 2:
                             continue
 
                         _athlete_fingerprint_fb = ":".join(
                             f"{a.athlete_id},{a.mu:.2f},{a.sigma:.2f}"
-                            for a in sorted(proj_inputs_fallback, key=lambda a: a.athlete_id)
+                            for a in sorted(
+                                proj_inputs_fallback, key=lambda a: a.athlete_id
+                            )
                         )
                         _cache_key_fb = (
                             f"projections:likely:{ev.id}"
@@ -1334,39 +1461,51 @@ async def predictions(request: Request):
                                 "name": a.name,
                                 "win": f"{probs_fb[a.athlete_id]['win'] * 100:.1f}%",
                                 "podium": f"{probs_fb[a.athlete_id]['podium'] * 100:.1f}%",
-                                "expected_rank": probs_fb[a.athlete_id]["expected_rank"],
+                                "expected_rank": probs_fb[a.athlete_id][
+                                    "expected_rank"
+                                ],
                             }
                             for a in ranked_fb[:3]
                         ]
-                        gender_predictions_fallback.append({
-                            "gender": gender_enum.value,
-                            "top3": top3_fb,
-                            "total_athletes": len(proj_inputs_fallback),
-                        })
+                        gender_predictions_fallback.append(
+                            {
+                                "gender": gender_enum.value,
+                                "top3": top3_fb,
+                                "total_athletes": len(proj_inputs_fallback),
+                            }
+                        )
 
                     if gender_predictions_fallback:
                         predictions_data = {"genders": gender_predictions_fallback}
                         from_likely_roster = True
 
-                disc_events.append({
-                    "id": ev.id,
-                    "name": ev.name,
-                    "season": ev.season,
-                    "tier": ev.tier.value.replace("_", " ").title(),
-                    "date": str(ev.start_date),
-                    "has_athletes": has_athletes,
-                    "predictions": predictions_data,
-                    "from_likely_roster": from_likely_roster,
-                })
+                disc_events.append(
+                    {
+                        "id": ev.id,
+                        "name": ev.name,
+                        "season": ev.season,
+                        "tier": ev.tier.value.replace("_", " ").title(),
+                        "date": str(ev.start_date),
+                        "has_athletes": has_athletes,
+                        "predictions": predictions_data,
+                        "from_likely_roster": from_likely_roster,
+                    }
+                )
 
-            grouped.append({
-                "key": disc_key,
-                "label": disc_label,
-                "events": disc_events,
-                "has_data": len(disc_events) > 0,
-            })
+            grouped.append(
+                {
+                    "key": disc_key,
+                    "label": disc_label,
+                    "events": disc_events,
+                    "has_data": len(disc_events) > 0,
+                }
+            )
 
-    return templates.TemplateResponse(request, "predictions.html", {
-        "grouped": grouped,
-        "today": str(today),
-    })
+    return templates.TemplateResponse(
+        request,
+        "predictions.html",
+        {
+            "grouped": grouped,
+            "today": str(today),
+        },
+    )

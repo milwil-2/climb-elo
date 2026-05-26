@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Seed the database from Kaggle IFSC CSV files in data/."""
+
 import logging
 import sys
 from pathlib import Path
@@ -17,7 +18,9 @@ def main() -> None:
     if not csv_files:
         print(f"No CSV files found in {DATA_DIR}/")
         print("Download a Kaggle IFSC dataset and place the CSV files there.")
-        print("Recommended: https://www.kaggle.com/datasets/mxmlnv/ifsc-competition-climbing")
+        print(
+            "Recommended: https://www.kaggle.com/datasets/mxmlnv/ifsc-competition-climbing"
+        )
         sys.exit(1)
 
     SessionFactory = init_db()

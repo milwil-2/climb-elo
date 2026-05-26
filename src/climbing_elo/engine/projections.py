@@ -8,6 +8,7 @@ Performance model: each athlete's performance in a single event is drawn from
 N(mu, sigma). Higher score = better finish. Ties are broken randomly (extremely
 rare with continuous draws).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -81,10 +82,10 @@ def compute_podium_probabilities(
     sim_indices = np.arange(n_simulations)[:, np.newaxis]
     ranks[sim_indices, order] = np.arange(1, n + 1)[np.newaxis, :]
 
-    win_counts = (ranks == 1).sum(axis=0)      # shape (n,)
-    podium_counts = (ranks <= 3).sum(axis=0)   # shape (n,)
-    top8_counts = (ranks <= 8).sum(axis=0)     # shape (n,)
-    mean_rank = ranks.mean(axis=0)             # shape (n,)
+    win_counts = (ranks == 1).sum(axis=0)  # shape (n,)
+    podium_counts = (ranks <= 3).sum(axis=0)  # shape (n,)
+    top8_counts = (ranks <= 8).sum(axis=0)  # shape (n,)
+    mean_rank = ranks.mean(axis=0)  # shape (n,)
 
     results: dict[int, dict[str, float]] = {}
     for i, athlete in enumerate(athletes):
@@ -102,6 +103,7 @@ def compute_podium_probabilities(
 # Round-by-round progression simulation
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RoundConfig:
     """Configuration for a single event round.
@@ -111,6 +113,7 @@ class RoundConfig:
         advance_count: How many athletes advance from this round to the next.
             For the last round this value is ignored (everyone remaining competes).
     """
+
     round_type: str  # "qualification", "semifinal", "final"
     advance_count: int  # how many advance to next round
 
@@ -131,6 +134,7 @@ class ProgressionResult:
         final_win_prob: Fraction of simulations where the athlete finished 1st
             in the final round.
     """
+
     athlete_id: int
     name: str
     mu: float
@@ -258,14 +262,16 @@ def simulate_event_progression(
         for round_idx, rc in enumerate(rounds):
             adv[rc.round_type] = round(float(reached[i, round_idx]) / n_simulations, 4)
 
-        results.append(ProgressionResult(
-            athlete_id=athlete.athlete_id,
-            name=athlete.name,
-            mu=athlete.mu,
-            advance_probs=adv,
-            final_podium_prob=round(float(final_podium[i]) / n_simulations, 4),
-            final_win_prob=round(float(final_win[i]) / n_simulations, 4),
-        ))
+        results.append(
+            ProgressionResult(
+                athlete_id=athlete.athlete_id,
+                name=athlete.name,
+                mu=athlete.mu,
+                advance_probs=adv,
+                final_podium_prob=round(float(final_podium[i]) / n_simulations, 4),
+                final_win_prob=round(float(final_win[i]) / n_simulations, 4),
+            )
+        )
 
     # Sort by descending mu (highest-rated first).
     results.sort(key=lambda r: r.mu, reverse=True)
@@ -279,6 +285,7 @@ def simulate_event_progression(
 # Import here to avoid circular imports with the models package — projections.py
 # deliberately has no dependency on SQLAlchemy models.  We use a local import
 # so callers that don't need default_event_format don't pay the import cost.
+
 
 def default_event_format(tier: str) -> list[RoundConfig]:
     """Return the default round progression for an event tier.

@@ -16,6 +16,7 @@ Security:
   - Structured JSON payloads only (no raw IFSC HTML)
   - Concurrent connection cap: MAX_CONNECTIONS_PER_EVENT = 100
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -116,7 +117,11 @@ async def live_stream(event_id: int, request: Request):
         )
 
     _connection_counts[event_id] += 1
-    log.info("SSE connection opened for event %d (total=%d)", event_id, _connection_counts[event_id])
+    log.info(
+        "SSE connection opened for event %d (total=%d)",
+        event_id,
+        _connection_counts[event_id],
+    )
 
     async def _guarded_generator():
         try:
@@ -124,7 +129,11 @@ async def live_stream(event_id: int, request: Request):
                 yield chunk
         finally:
             _connection_counts[event_id] = max(0, _connection_counts[event_id] - 1)
-            log.info("SSE connection closed for event %d (total=%d)", event_id, _connection_counts[event_id])
+            log.info(
+                "SSE connection closed for event %d (total=%d)",
+                event_id,
+                _connection_counts[event_id],
+            )
 
     return StreamingResponse(
         _guarded_generator(),

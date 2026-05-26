@@ -10,6 +10,7 @@ Coverage:
 - Auto-close after timeout (SSE deadline)
 - Concurrent connection cap enforced (429)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -53,6 +54,7 @@ from climbing_elo.models import (
 # ---------------------------------------------------------------------------
 # Shared in-memory DB fixture
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def engine():
@@ -105,7 +107,10 @@ def live_round(db_session: Session, live_event: Event) -> Round:
 # Sample IFSC API response factory
 # ---------------------------------------------------------------------------
 
-def _make_ifsc_response(status: str = "live", extra_athletes: list[dict] | None = None) -> dict:
+
+def _make_ifsc_response(
+    status: str = "live", extra_athletes: list[dict] | None = None
+) -> dict:
     """Build a mock IFSC /events/{id}/result/{dcat_id} response."""
     athletes = [
         {
@@ -134,6 +139,7 @@ def _make_ifsc_response(status: str = "live", extra_athletes: list[dict] | None 
 # ---------------------------------------------------------------------------
 # EventBus unit tests
 # ---------------------------------------------------------------------------
+
 
 class TestEventBus:
     @pytest.mark.asyncio
@@ -182,6 +188,7 @@ class TestEventBus:
 # LivePoller unit tests — test _poll_once directly to avoid run() loop timing
 # ---------------------------------------------------------------------------
 
+
 class TestLivePoller:
     @pytest.mark.asyncio
     async def test_new_result_inserted(self, session_factory, live_event: Event):
@@ -198,7 +205,9 @@ class TestLivePoller:
         poller._stop_event = asyncio.Event()
 
         mock_client = AsyncMock()
-        with patch("climbing_elo.live.poller._fetch_results", return_value=ifsc_response):
+        with patch(
+            "climbing_elo.live.poller._fetch_results", return_value=ifsc_response
+        ):
             await poller._poll_once(mock_client, session_factory)
 
         session = session_factory()
@@ -211,19 +220,23 @@ class TestLivePoller:
             session.close()
 
     @pytest.mark.asyncio
-    async def test_duplicate_not_inserted(self, session_factory, live_event: Event, live_round: Round, db_session: Session):
+    async def test_duplicate_not_inserted(
+        self, session_factory, live_event: Event, live_round: Round, db_session: Session
+    ):
         """Poller skips rows that already exist in the DB (idempotent)."""
         # Pre-seed the result
         athlete = Athlete(name="Adam Ondra", gender=Gender.M, nationality="CZE")
         db_session.add(athlete)
         db_session.flush()
 
-        db_session.add(Result(
-            round_id=live_round.id,
-            athlete_id=athlete.id,
-            rank=1,
-            raw_score="TOP",
-        ))
+        db_session.add(
+            Result(
+                round_id=live_round.id,
+                athlete_id=athlete.id,
+                rank=1,
+                raw_score="TOP",
+            )
+        )
         db_session.commit()
 
         ifsc_response = _make_ifsc_response(status="live")
@@ -237,7 +250,9 @@ class TestLivePoller:
         poller._stop_event = asyncio.Event()
 
         mock_client = AsyncMock()
-        with patch("climbing_elo.live.poller._fetch_results", return_value=ifsc_response):
+        with patch(
+            "climbing_elo.live.poller._fetch_results", return_value=ifsc_response
+        ):
             await poller._poll_once(mock_client, session_factory)
 
         session = session_factory()
@@ -259,10 +274,14 @@ class TestLivePoller:
             event_db_id=live_event.id,
         )
 
-        with patch("climbing_elo.live.poller._fetch_results", return_value=ifsc_response):
+        with patch(
+            "climbing_elo.live.poller._fetch_results", return_value=ifsc_response
+        ):
             stop_ev = asyncio.Event()
             # Run with a generous timeout — poller should stop itself quickly
-            await asyncio.wait_for(poller.run(stop_ev, session_factory=session_factory), timeout=5.0)
+            await asyncio.wait_for(
+                poller.run(stop_ev, session_factory=session_factory), timeout=5.0
+            )
 
         assert stop_ev.is_set(), "Stop event should be set after finished status"
 
@@ -278,7 +297,9 @@ class TestLivePoller:
                     "firstname": "Test",
                     "lastname": "Athlete",
                     "country": "USA",
-                    "rounds": [{"round_name": "Final", "rank": "not-a-number", "score": "34+"}],
+                    "rounds": [
+                        {"round_name": "Final", "rank": "not-a-number", "score": "34+"}
+                    ],
                 }
             ],
         }
@@ -287,7 +308,9 @@ class TestLivePoller:
         poller._stop_event = asyncio.Event()
         mock_client = AsyncMock()
 
-        with patch("climbing_elo.live.poller._fetch_results", return_value=ifsc_response):
+        with patch(
+            "climbing_elo.live.poller._fetch_results", return_value=ifsc_response
+        ):
             await poller._poll_once(mock_client, session_factory)
 
         session = session_factory()
@@ -310,7 +333,9 @@ class TestLivePoller:
         mock_client = AsyncMock()
 
         with (
-            patch("climbing_elo.live.poller._fetch_results", return_value=ifsc_response),
+            patch(
+                "climbing_elo.live.poller._fetch_results", return_value=ifsc_response
+            ),
             patch("climbing_elo.live.poller.event_bus", bus),
         ):
             await poller._poll_once(mock_client, session_factory)
@@ -345,6 +370,7 @@ class TestLivePoller:
 # File-lock (mutex) tests
 # ---------------------------------------------------------------------------
 
+
 class TestPollerMutex:
     def test_lock_acquired_and_released(self):
         event_id = 77777
@@ -352,7 +378,9 @@ class TestPollerMutex:
         fd = _acquire_file_lock(event_id)
         assert fd is not None, "Should acquire lock when no lock exists"
         _release_file_lock(event_id, fd)
-        assert not _lock_path(event_id).exists(), "Lock file should be removed after release"
+        assert not _lock_path(event_id).exists(), (
+            "Lock file should be removed after release"
+        )
 
     def test_second_acquire_fails(self):
         event_id = 77778
@@ -380,13 +408,21 @@ class TestPollerMutex:
             await blocker.wait()
             return None
 
-        with patch("climbing_elo.live.poller._fetch_results", side_effect=_long_running_fetch):
-            started1 = await start_polling(event_id=event_id, dcat_id=1, event_db_id=event_id)
+        with patch(
+            "climbing_elo.live.poller._fetch_results", side_effect=_long_running_fetch
+        ):
+            started1 = await start_polling(
+                event_id=event_id, dcat_id=1, event_db_id=event_id
+            )
             await asyncio.sleep(0.05)  # Let task start
-            started2 = await start_polling(event_id=event_id, dcat_id=1, event_db_id=event_id)
+            started2 = await start_polling(
+                event_id=event_id, dcat_id=1, event_db_id=event_id
+            )
 
         assert started1 is True
-        assert started2 is False, "Second start_polling should return False (already running)"
+        assert started2 is False, (
+            "Second start_polling should return False (already running)"
+        )
 
         # Cleanup
         blocker.set()
@@ -410,8 +446,12 @@ class TestPollerMutex:
             await blocker.wait()
             return None
 
-        with patch("climbing_elo.live.poller._fetch_results", side_effect=_blocking_fetch):
-            started = await start_polling(event_id=event_id, dcat_id=1, event_db_id=event_id)
+        with patch(
+            "climbing_elo.live.poller._fetch_results", side_effect=_blocking_fetch
+        ):
+            started = await start_polling(
+                event_id=event_id, dcat_id=1, event_db_id=event_id
+            )
             assert started is True
             await asyncio.sleep(0.05)
             assert is_polling(event_id) is True
@@ -463,13 +503,17 @@ class TestSSEEndpoint:
             patch.object(_sse_module, "SSE_HEARTBEAT_INTERVAL", 0.01),
             patch.object(_sse_module, "SSE_MAX_DURATION", 0.05),
         ):
-            with sse_client.stream("GET", f"/live/{_SSE_KNOWN_EVENT_ID}/stream") as resp:
+            with sse_client.stream(
+                "GET", f"/live/{_SSE_KNOWN_EVENT_ID}/stream"
+            ) as resp:
                 assert resp.status_code == 200
                 assert "text/event-stream" in resp.headers.get("content-type", "")
 
     def test_429_over_connection_cap(self, sse_client):
         """429 when per-event connection cap is exceeded."""
-        _sse_module._connection_counts[_SSE_KNOWN_EVENT_ID] = _sse_module.MAX_CONNECTIONS_PER_EVENT
+        _sse_module._connection_counts[_SSE_KNOWN_EVENT_ID] = (
+            _sse_module.MAX_CONNECTIONS_PER_EVENT
+        )
 
         with patch("climbing_elo.api.sse._event_exists", return_value=True):
             resp = sse_client.get(f"/live/{_SSE_KNOWN_EVENT_ID}/stream")
@@ -480,11 +524,17 @@ class TestSSEEndpoint:
 
     def test_sse_data_format_parseable(self):
         """SSE data lines must be parseable as JSON (format validation)."""
-        payload = {"type": "new_result", "athlete_id": 42, "name": "Adam Ondra",
-                   "rank": 1, "score": "TOP", "round_type": "final"}
+        payload = {
+            "type": "new_result",
+            "athlete_id": 42,
+            "name": "Adam Ondra",
+            "rank": 1,
+            "score": "TOP",
+            "round_type": "final",
+        }
         line = f"data: {json.dumps(payload)}\n\n"
         assert line.startswith("data: ")
-        data_part = line[len("data: "):].strip()
+        data_part = line[len("data: ") :].strip()
         parsed = json.loads(data_part)
         assert parsed["type"] == "new_result"
         assert parsed["athlete_id"] == 42
@@ -499,6 +549,7 @@ class TestSSEEndpoint:
 # ---------------------------------------------------------------------------
 # SSE auto-close timeout test
 # ---------------------------------------------------------------------------
+
 
 class TestSSETimeout:
     @pytest.mark.asyncio
@@ -515,7 +566,7 @@ class TestSSETimeout:
 
         with (
             patch.object(_sse, "event_bus", bus),
-            patch.object(_sse, "SSE_MAX_DURATION", 0),   # Immediate deadline
+            patch.object(_sse, "SSE_MAX_DURATION", 0),  # Immediate deadline
             patch.object(_sse, "SSE_HEARTBEAT_INTERVAL", 0.01),
         ):
             chunks = []
@@ -562,11 +613,31 @@ def live_html_factory(live_html_db_path):
     sess.add_all([a1, a2])
     sess.flush()
 
-    sess.add(Rating(athlete_id=a1.id, discipline=Discipline.LEAD, mu=1700.0, sigma=100.0, n_events=5, provisional=False))
-    sess.add(Rating(athlete_id=a2.id, discipline=Discipline.LEAD, mu=1650.0, sigma=110.0, n_events=4, provisional=False))
+    sess.add(
+        Rating(
+            athlete_id=a1.id,
+            discipline=Discipline.LEAD,
+            mu=1700.0,
+            sigma=100.0,
+            n_events=5,
+            provisional=False,
+        )
+    )
+    sess.add(
+        Rating(
+            athlete_id=a2.id,
+            discipline=Discipline.LEAD,
+            mu=1650.0,
+            sigma=110.0,
+            n_events=4,
+            provisional=False,
+        )
+    )
     sess.flush()
 
-    rnd = Round(event_id=ev.id, round_type=RoundType.FINAL, gender=Gender.M, athlete_count=2)
+    rnd = Round(
+        event_id=ev.id, round_type=RoundType.FINAL, gender=Gender.M, athlete_count=2
+    )
     sess.add(rnd)
     sess.flush()
 
@@ -588,6 +659,7 @@ def live_html_client(live_html_db_path, live_html_factory):
 
     def _patched_get_engine(db_path=None):
         from sqlalchemy import create_engine
+
         return create_engine(f"sqlite:///{live_html_db_path}")
 
     _db_module.get_engine = _patched_get_engine

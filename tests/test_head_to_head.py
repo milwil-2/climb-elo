@@ -11,6 +11,7 @@ Covers:
 - "Past meetings" count is correct for seeded fixture
 - /predictions page card links to /head-to-head (no longer disabled)
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -41,6 +42,7 @@ from climbing_elo.models import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def test_db_path(tmp_path_factory):
     return tmp_path_factory.mktemp("h2h_db") / "test.db"
@@ -66,24 +68,39 @@ def test_factory(test_db_path):
     session.flush()
 
     # Ratings for Lead
-    session.add(Rating(
-        athlete_id=adam.id,
-        discipline=Discipline.LEAD,
-        mu=1750.0, sigma=120.0, n_events=15, provisional=False,
-        last_event_at=past,
-    ))
-    session.add(Rating(
-        athlete_id=janja.id,
-        discipline=Discipline.LEAD,
-        mu=1850.0, sigma=100.0, n_events=20, provisional=False,
-        last_event_at=past,
-    ))
-    session.add(Rating(
-        athlete_id=solo.id,
-        discipline=Discipline.LEAD,
-        mu=1600.0, sigma=200.0, n_events=5, provisional=False,
-        last_event_at=past,
-    ))
+    session.add(
+        Rating(
+            athlete_id=adam.id,
+            discipline=Discipline.LEAD,
+            mu=1750.0,
+            sigma=120.0,
+            n_events=15,
+            provisional=False,
+            last_event_at=past,
+        )
+    )
+    session.add(
+        Rating(
+            athlete_id=janja.id,
+            discipline=Discipline.LEAD,
+            mu=1850.0,
+            sigma=100.0,
+            n_events=20,
+            provisional=False,
+            last_event_at=past,
+        )
+    )
+    session.add(
+        Rating(
+            athlete_id=solo.id,
+            discipline=Discipline.LEAD,
+            mu=1600.0,
+            sigma=200.0,
+            n_events=5,
+            provisional=False,
+            last_event_at=past,
+        )
+    )
 
     # Two shared Lead events (adam + janja both competed)
     for i, ev_date in enumerate([past, past2]):
@@ -107,27 +124,33 @@ def test_factory(test_db_path):
         session.flush()
 
         session.add(Result(round_id=rnd.id, athlete_id=adam.id, rank=2, raw_score="30"))
-        session.add(Result(round_id=rnd.id, athlete_id=janja.id, rank=1, raw_score="TOP"))
+        session.add(
+            Result(round_id=rnd.id, athlete_id=janja.id, rank=1, raw_score="TOP")
+        )
 
         # rating history entries so the chart has data
-        session.add(RatingHistory(
-            athlete_id=adam.id,
-            event_id=ev.id,
-            round_id=rnd.id,
-            mu_before=1700.0,
-            mu_after=1750.0,
-            sigma_before=130.0,
-            sigma_after=120.0,
-        ))
-        session.add(RatingHistory(
-            athlete_id=janja.id,
-            event_id=ev.id,
-            round_id=rnd.id,
-            mu_before=1800.0,
-            mu_after=1850.0,
-            sigma_before=110.0,
-            sigma_after=100.0,
-        ))
+        session.add(
+            RatingHistory(
+                athlete_id=adam.id,
+                event_id=ev.id,
+                round_id=rnd.id,
+                mu_before=1700.0,
+                mu_after=1750.0,
+                sigma_before=130.0,
+                sigma_after=120.0,
+            )
+        )
+        session.add(
+            RatingHistory(
+                athlete_id=janja.id,
+                event_id=ev.id,
+                round_id=rnd.id,
+                mu_before=1800.0,
+                mu_after=1850.0,
+                sigma_before=110.0,
+                sigma_after=100.0,
+            )
+        )
 
     # One event where solo competed but NOT adam or janja
     solo_ev = Event(
@@ -147,7 +170,9 @@ def test_factory(test_db_path):
     )
     session.add(solo_rnd)
     session.flush()
-    session.add(Result(round_id=solo_rnd.id, athlete_id=solo.id, rank=1, raw_score="20"))
+    session.add(
+        Result(round_id=solo_rnd.id, athlete_id=solo.id, rank=1, raw_score="20")
+    )
 
     session.commit()
 
@@ -191,6 +216,7 @@ def client(test_db_path, test_factory):
 # Tests — form page (/head-to-head)
 # ---------------------------------------------------------------------------
 
+
 class TestHeadToHeadForm:
     def test_form_returns_200(self, client):
         tc, *_ = client
@@ -224,6 +250,7 @@ class TestHeadToHeadForm:
 # ---------------------------------------------------------------------------
 # Tests — result page (/head-to-head/{a_id}/{b_id})
 # ---------------------------------------------------------------------------
+
 
 class TestHeadToHeadResult:
     def test_result_returns_200(self, client):
@@ -260,10 +287,14 @@ class TestHeadToHeadResult:
         #   <div class="prob-bar-a" style="width:XX.X%">
         #       <span class="prob-bar-pct">XX.X%</span>
         # Extract percentages from the prob-bar-pct spans specifically.
-        pcts = [float(x) for x in re.findall(r'class="prob-bar-pct">(\d+\.\d+)%', r.text)]
+        pcts = [
+            float(x) for x in re.findall(r'class="prob-bar-pct">(\d+\.\d+)%', r.text)
+        ]
         assert len(pcts) == 2, f"Expected exactly 2 prob-bar-pct values, got: {pcts}"
         total = pcts[0] + pcts[1]
-        assert abs(total - 100.0) < 0.2, f"Win probabilities sum to {total}, expected ~100"
+        assert abs(total - 100.0) < 0.2, (
+            f"Win probabilities sum to {total}, expected ~100"
+        )
 
     def test_past_meetings_correct(self, client):
         """Two shared Lead events seeded above — page must report 2 past meetings."""
@@ -303,6 +334,7 @@ class TestHeadToHeadResult:
 # Tests — error handling
 # ---------------------------------------------------------------------------
 
+
 class TestHeadToHeadErrors:
     def test_404_for_nonexistent_athlete_a(self, client):
         tc, _, janja_id, _ = client
@@ -334,6 +366,7 @@ class TestHeadToHeadErrors:
 # ---------------------------------------------------------------------------
 # Tests — predictions landing page card is now active
 # ---------------------------------------------------------------------------
+
 
 class TestPredictionsCardEnabled:
     def test_predictions_page_links_to_head_to_head(self, client):

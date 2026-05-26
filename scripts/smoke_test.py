@@ -13,6 +13,7 @@ Usage:
 
 Exit code 0 = all tests passed, 1 = one or more failures.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,10 +40,10 @@ TIMEOUT = 30  # seconds for HTTP requests (event-detail pages can be slow on fir
 SERVER_STARTUP_TIMEOUT = 20  # seconds to wait for the server to start
 
 # Test fixtures (athlete/event IDs from the real DB)
-LEAD_ATHLETE_A = 120   # Jakob SCHUBERT — Lead rating ✓
-LEAD_ATHLETE_B = 232   # Adam ONDRA     — Lead rating ✓  (both Male, Lead rated)
-POPULAR_ATHLETE = 61   # Janja GARNBRET — most events + Lead rating
-FIRST_EVENT_ID = 93    # IFSC Worldcup Chamonix 2012 — has rounds + RatingHistory
+LEAD_ATHLETE_A = 120  # Jakob SCHUBERT — Lead rating ✓
+LEAD_ATHLETE_B = 232  # Adam ONDRA     — Lead rating ✓  (both Male, Lead rated)
+POPULAR_ATHLETE = 61  # Janja GARNBRET — most events + Lead rating
+FIRST_EVENT_ID = 93  # IFSC Worldcup Chamonix 2012 — has rounds + RatingHistory
 BREAKDOWN_ATHLETE = 79  # athlete with contributing_pairs in event 93
 BREAKDOWN_EVENT = 93
 
@@ -132,10 +133,13 @@ def start_server(port: int) -> subprocess.Popen | None:
 
     cmd = [
         sys.executable,
-        "-m", "uvicorn",
+        "-m",
+        "uvicorn",
         "climbing_elo.api.app:app",
-        "--port", str(port),
-        "--log-level", "warning",
+        "--port",
+        str(port),
+        "--log-level",
+        "warning",
     ]
     proc = subprocess.Popen(
         cmd,
@@ -182,8 +186,7 @@ _browser_surface: str | None = None
 def cmux_available() -> bool:
     try:
         result = subprocess.run(
-            ["cmux", "browser", "status"],
-            capture_output=True, text=True, timeout=5
+            ["cmux", "browser", "status"], capture_output=True, text=True, timeout=5
         )
         return result.returncode == 0 and "enabled" in result.stdout
     except Exception:  # noqa: BLE001
@@ -201,7 +204,9 @@ def _get_or_open_browser_surface(base_url: str) -> str | None:
     try:
         result = subprocess.run(
             ["cmux", "browser", "open", base_url],
-            capture_output=True, text=True, timeout=15
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if result.returncode != 0:
             return None
@@ -222,7 +227,9 @@ def cmux_navigate(url: str, surface: str | None) -> bool:
     try:
         result = subprocess.run(
             ["cmux", "browser", surface, "goto", url],
-            capture_output=True, text=True, timeout=15
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         return result.returncode == 0
     except Exception:  # noqa: BLE001
@@ -237,7 +244,9 @@ def cmux_screenshot(path: Path, surface: str | None) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
             ["cmux", "browser", surface, "screenshot", "--out", str(path)],
-            capture_output=True, text=True, timeout=15
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         return result.returncode == 0
     except Exception:  # noqa: BLE001
@@ -275,7 +284,9 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
     print("\n── Route smoke tests ──────────────────────────────────────────")
 
     def ss(url: str, label: str) -> None:
-        navigate_and_screenshot(url, label, take_screenshots=take_screenshots, surface=surface)
+        navigate_and_screenshot(
+            url, label, take_screenshots=take_screenshots, surface=surface
+        )
 
     # 1. Leaderboard /
     assert_route(
@@ -309,7 +320,7 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
     assert_route(
         "GET /head-to-head/{a}/{b} — result page",
         h2h_path,
-        must_contain=["SCHUBERT", "ONDRA", "%"],   # win probability shown as percentage
+        must_contain=["SCHUBERT", "ONDRA", "%"],  # win probability shown as percentage
         base_url=base_url,
     )
     ss(base_url + h2h_path, "head_to_head_result")
@@ -330,7 +341,10 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
         must_contain=["win", "podium"],
         base_url=base_url,
     )
-    ss(base_url + f"/projections/{FIRST_EVENT_ID}", f"projections_event_{FIRST_EVENT_ID}")
+    ss(
+        base_url + f"/projections/{FIRST_EVENT_ID}",
+        f"projections_event_{FIRST_EVENT_ID}",
+    )
 
     # 7. Events list
     assert_route(
@@ -363,7 +377,10 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
     assert_route(
         f"GET /breakdown/{BREAKDOWN_ATHLETE}/{BREAKDOWN_EVENT} — pairwise pairs",
         f"/breakdown/{BREAKDOWN_ATHLETE}/{BREAKDOWN_EVENT}",
-        must_contain=["Delta", "Expected"],   # column headers as rendered in the template
+        must_contain=[
+            "Delta",
+            "Expected",
+        ],  # column headers as rendered in the template
         base_url=base_url,
     )
     ss(
@@ -439,14 +456,19 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
     )
     ss(base_url + "/v2/api", "v2_api")
 
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Smoke test for the climbing-elo dashboard")
-    parser.add_argument("--port", type=int, default=PORT, help=f"Port to bind (default {PORT})")
+    parser = argparse.ArgumentParser(
+        description="Smoke test for the climbing-elo dashboard"
+    )
+    parser.add_argument(
+        "--port", type=int, default=PORT, help=f"Port to bind (default {PORT})"
+    )
     parser.add_argument(
         "--base-url",
         default=None,
@@ -465,7 +487,7 @@ def main() -> int:
     proc: subprocess.Popen | None = None
     server_managed = args.base_url is None  # we own the server lifecycle
 
-    print(f"Climbing-ELO Dashboard Smoke Test")
+    print("Climbing-ELO Dashboard Smoke Test")
     print(f"Base URL : {base_url}")
     print(f"Date     : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -473,19 +495,23 @@ def main() -> int:
     if take_screenshots:
         using_cmux = cmux_available()
         if using_cmux:
-            print(f"cmux browser : enabled (opening surface…)")
+            print("cmux browser : enabled (opening surface…)")
         else:
-            print(f"cmux browser : unavailable — screenshots disabled")
+            print("cmux browser : unavailable — screenshots disabled")
             take_screenshots = False
     else:
-        print(f"cmux browser : disabled (--no-screenshots)")
+        print("cmux browser : disabled (--no-screenshots)")
 
     try:
         # ── Start server ───────────────────────────────────────────────────
         if server_managed:
             if _port_open(args.port):
-                print(f"\n⚠  Port {args.port} already in use — cannot start test server.")
-                print("   Use --base-url http://localhost:<port> to test an existing server.")
+                print(
+                    f"\n⚠  Port {args.port} already in use — cannot start test server."
+                )
+                print(
+                    "   Use --base-url http://localhost:<port> to test an existing server."
+                )
                 return 1
 
             print(f"\nStarting server on port {args.port}…")
@@ -507,9 +533,11 @@ def main() -> int:
             browser_surface = _get_or_open_browser_surface(base_url)
             if browser_surface:
                 print(f"  Browser surface: {browser_surface}")
-                time.sleep(1.0)  # let the first page fully load before we start navigating
+                time.sleep(
+                    1.0
+                )  # let the first page fully load before we start navigating
             else:
-                print(f"  Could not open browser surface — screenshots disabled")
+                print("  Could not open browser surface — screenshots disabled")
                 take_screenshots = False
 
         # ── Run tests ──────────────────────────────────────────────────────

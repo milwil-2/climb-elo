@@ -12,6 +12,7 @@ Fallback: if fewer than ``min_events_for_threshold`` events have finished (early
 in the season), we return the top ``cap`` athletes by current μ for the
 discipline (filtered by gender and requiring >= 3 career events).
 """
+
 from __future__ import annotations
 
 from sqlalchemy import distinct, func, select
@@ -25,7 +26,6 @@ from climbing_elo.models import (
     Rating,
     Result,
     Round,
-    RoundType,
 )
 
 
@@ -72,21 +72,6 @@ def likely_competitors(
     #         discipline + season.  "Finished" means the event has at
     #         least one Round with Results stored (i.e. backfill has run).
     # ------------------------------------------------------------------
-    # We use a subquery that finds event_ids that have ≥1 result row via
-    # Round, which is a safe proxy for "backfill has processed this event".
-    events_with_results_subq = (
-        select(distinct(Event.id))
-        .join(Round, Round.event_id == Event.id)
-        .join(Result, Result.round_id == Round.id)
-        .where(
-            Event.discipline == discipline,
-            Event.season == season,
-            Event.tier == EventTier.WORLD_CUP,
-            Round.gender == gender,
-        )
-        .scalar_subquery()
-    )
-
     total_events: int = session.execute(
         select(func.count()).select_from(
             select(distinct(Event.id))
@@ -155,6 +140,7 @@ def likely_competitors(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _top_by_mu(
     session,

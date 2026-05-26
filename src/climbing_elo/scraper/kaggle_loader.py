@@ -18,12 +18,13 @@ Schema C (gabrielenglert/ifsc-climbing-competition-data):
 
 The loader normalizes all schemas into our Athlete, Event, Round, Result models.
 """
+
 from __future__ import annotations
 
 import csv
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -51,9 +52,6 @@ class LoadReport:
     results_created: int = 0
     rows_skipped: int = 0
     errors: list[str] = field(default_factory=list)
-
-
-from dataclasses import field  # noqa: E402 (needed for LoadReport)
 
 
 def _detect_columns(headers: list[str]) -> dict[str, str]:
@@ -110,7 +108,11 @@ def _classify_event_tier(event_name: str) -> EventTier:
         return EventTier.OLYMPICS
     if "world championship" in name_lower or "wch" in name_lower:
         return EventTier.WORLD_CHAMPIONSHIP
-    if "continental" in name_lower or "european championship" in name_lower or "asian championship" in name_lower:
+    if (
+        "continental" in name_lower
+        or "european championship" in name_lower
+        or "asian championship" in name_lower
+    ):
         return EventTier.CONTINENTAL
     return EventTier.WORLD_CUP
 
@@ -293,14 +295,20 @@ def load_csv(session: Session, csv_path: Path) -> LoadReport:
                 raw_score, score_normalized = _normalize_lead_score(score_raw)
 
                 tier = _classify_event_tier(event_name)
-                event = _get_or_create_event(session, event_name, year, tier, event_cache)
-                if event.id not in {e.id for e in event_cache.values() if e.season < year}:
+                event = _get_or_create_event(
+                    session, event_name, year, tier, event_cache
+                )
+                if event.id not in {
+                    e.id for e in event_cache.values() if e.season < year
+                }:
                     report.events_created += 1
 
                 athlete = _get_or_create_athlete(
                     session, athlete_name, gender, country, athlete_cache
                 )
-                rnd = _get_or_create_round(session, event, round_type, gender, round_cache)
+                rnd = _get_or_create_round(
+                    session, event, round_type, gender, round_cache
+                )
 
                 existing_result = session.execute(
                     select(Result).where(
@@ -332,11 +340,12 @@ def load_csv(session: Session, csv_path: Path) -> LoadReport:
 
         session.commit()
 
-    rnd_count = len(round_cache)
     for rnd_obj in round_cache.values():
-        rnd_obj.athlete_count = session.execute(
-            select(Result).where(Result.round_id == rnd_obj.id)
-        ).all().__len__()
+        rnd_obj.athlete_count = (
+            session.execute(select(Result).where(Result.round_id == rnd_obj.id))
+            .all()
+            .__len__()
+        )
     session.commit()
 
     report.athletes_created = len(athlete_cache)

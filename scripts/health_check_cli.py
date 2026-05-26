@@ -15,6 +15,7 @@ Security notes:
   - Alerts are rate-limited: a sentinel file ($TMPDIR/health_check_last_alert) prevents
     more than one alert per hour even if checks fail every 30 min.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -69,6 +70,7 @@ _ALLOWED_WEBHOOK_HOSTS = ("discord.com", "discordapp.com")
 def _is_allowed_webhook_url(url: str) -> bool:
     """Restrict webhook target to Discord hosts to prevent SSRF."""
     from urllib.parse import urlparse
+
     try:
         parsed = urlparse(url)
     except ValueError:
@@ -76,8 +78,12 @@ def _is_allowed_webhook_url(url: str) -> bool:
     if parsed.scheme != "https":
         return False
     host = (parsed.hostname or "").lower()
-    return host == "discord.com" or host.endswith(".discord.com") \
-        or host == "discordapp.com" or host.endswith(".discordapp.com")
+    return (
+        host == "discord.com"
+        or host.endswith(".discord.com")
+        or host == "discordapp.com"
+        or host.endswith(".discordapp.com")
+    )
 
 
 def _post_discord_alert(webhook_url: str, timestamp: str) -> None:
@@ -102,7 +108,11 @@ def _post_discord_alert(webhook_url: str, timestamp: str) -> None:
                 "color": 0xFF0000,
                 "fields": [
                     {"name": "Timestamp (UTC)", "value": timestamp, "inline": True},
-                    {"name": "Endpoint", "value": "ifsc.results.info/api/v1/", "inline": True},
+                    {
+                        "name": "Endpoint",
+                        "value": "ifsc.results.info/api/v1/",
+                        "inline": True,
+                    },
                 ],
                 "footer": {"text": "climbing-elo health monitor"},
             }
@@ -119,7 +129,9 @@ def _post_discord_alert(webhook_url: str, timestamp: str) -> None:
             resp.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         # Print error without including the URL
-        print(f"[health_check] Warning: Discord alert POST failed: {exc}", file=sys.stderr)
+        print(
+            f"[health_check] Warning: Discord alert POST failed: {exc}", file=sys.stderr
+        )
 
 
 # ---------------------------------------------------------------------------

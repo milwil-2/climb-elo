@@ -18,6 +18,7 @@ Security:
   - rank values are type-validated before DB insert (int guard).
   - All DB writes via SQLAlchemy ORM (no raw SQL).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -90,14 +91,21 @@ def _parse_round_type(name: str) -> RoundType:
     return RoundType.QUALIFICATION
 
 
-async def _fetch_results(client: httpx.AsyncClient, event_id: int, dcat_id: int) -> Optional[dict]:
+async def _fetch_results(
+    client: httpx.AsyncClient, event_id: int, dcat_id: int
+) -> Optional[dict]:
     """Async fetch of IFSC result payload; returns None on any error (don't leak to clients)."""
     url = f"{IFSC_BASE}/api/v1/events/{event_id}/result/{dcat_id}"
     try:
         resp = await client.get(url, headers=IFSC_HEADERS, timeout=15)
         if resp.status_code == 200:
             return resp.json()
-        log.warning("IFSC API returned HTTP %d for event %d dcat %d", resp.status_code, event_id, dcat_id)
+        log.warning(
+            "IFSC API returned HTTP %d for event %d dcat %d",
+            resp.status_code,
+            event_id,
+            dcat_id,
+        )
         return None
     except Exception as exc:
         log.error("IFSC fetch failed for event %d dcat %d: %s", event_id, dcat_id, exc)
@@ -211,7 +219,11 @@ class LivePoller:
                 try:
                     await self._poll_once(client, session_factory)
                 except Exception as exc:
-                    log.error("Unexpected error in poll loop for event %d: %s", self.event_id, exc)
+                    log.error(
+                        "Unexpected error in poll loop for event %d: %s",
+                        self.event_id,
+                        exc,
+                    )
 
                 # If stop was requested during poll, exit immediately
                 if stop_event.is_set():
@@ -254,7 +266,10 @@ class LivePoller:
         try:
             event_db_id = self._resolve_event_db_id(session)
             if event_db_id is None:
-                log.warning("Cannot resolve DB event for IFSC event_id=%d; skipping poll", self.event_id)
+                log.warning(
+                    "Cannot resolve DB event for IFSC event_id=%d; skipping poll",
+                    self.event_id,
+                )
                 return
 
             existing_keys = _current_db_keys(session, event_db_id)
@@ -265,7 +280,9 @@ class LivePoller:
                 lastname = str(athlete_entry.get("lastname", ""))
                 country = str(athlete_entry.get("country", ""))
 
-                athlete = _get_or_create_athlete(session, firstname, lastname, country, gender)
+                athlete = _get_or_create_athlete(
+                    session, firstname, lastname, country, gender
+                )
 
                 for rnd_data in athlete_entry.get("rounds", []):
                     round_name = rnd_data.get("round_name", "Unknown")
@@ -275,8 +292,12 @@ class LivePoller:
                     try:
                         rank_int = int(rank) if rank is not None else None
                     except (TypeError, ValueError):
-                        log.warning("Non-integer rank %r for athlete %s in event %d; skipping",
-                                    rank, athlete.id, self.event_id)
+                        log.warning(
+                            "Non-integer rank %r for athlete %s in event %d; skipping",
+                            rank,
+                            athlete.id,
+                            self.event_id,
+                        )
                         continue
 
                     score_raw = str(rnd_data.get("score") or "").strip()
@@ -311,18 +332,24 @@ class LivePoller:
                     existing_keys.add(key)
 
                     athlete_name = f"{firstname} {lastname}".strip()
-                    new_results.append({
-                        "type": "new_result",
-                        "athlete_id": athlete.id,
-                        "name": athlete_name,
-                        "rank": rank_int,
-                        "score": score_raw or None,
-                        "round_type": round_type.value,
-                    })
+                    new_results.append(
+                        {
+                            "type": "new_result",
+                            "athlete_id": athlete.id,
+                            "name": athlete_name,
+                            "rank": rank_int,
+                            "score": score_raw or None,
+                            "round_type": round_type.value,
+                        }
+                    )
 
             if new_results:
                 session.commit()
-                log.info("Inserted %d new results for event %d", len(new_results), self.event_id)
+                log.info(
+                    "Inserted %d new results for event %d",
+                    len(new_results),
+                    self.event_id,
+                )
                 for payload in new_results:
                     await event_bus.publish(event_db_id, payload)
             else:
@@ -338,6 +365,7 @@ class LivePoller:
 # ---------------------------------------------------------------------------
 # Module-level poller registry (for SSE router + CLI)
 # ---------------------------------------------------------------------------
+
 
 def is_polling(event_id: int) -> bool:
     """Return True if a poller task is alive for event_id."""
@@ -361,7 +389,9 @@ async def start_polling(
 
     fd = _acquire_file_lock(event_id)
     if fd is None:
-        log.warning("File lock held for event %d — another process is polling", event_id)
+        log.warning(
+            "File lock held for event %d — another process is polling", event_id
+        )
         return False
 
     stop_ev = asyncio.Event()
@@ -385,7 +415,12 @@ async def start_polling(
 
     task = asyncio.get_event_loop().create_task(_run_and_cleanup())
     _running_tasks[event_id] = task
-    log.info("Started poller for event %d (dcat %d, interval %ds)", event_id, dcat_id, interval_seconds)
+    log.info(
+        "Started poller for event %d (dcat %d, interval %ds)",
+        event_id,
+        dcat_id,
+        interval_seconds,
+    )
     return True
 
 

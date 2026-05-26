@@ -1,4 +1,5 @@
 """Pydantic response schemas for the v1 REST API."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -6,12 +7,11 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from climbing_elo.models import Discipline, Gender
-
 
 # ---------------------------------------------------------------------------
 # Shared / primitive schemas
 # ---------------------------------------------------------------------------
+
 
 class DisciplineInfo(BaseModel):
     code: str
@@ -22,6 +22,7 @@ class DisciplineInfo(BaseModel):
 # ---------------------------------------------------------------------------
 # Leaderboard
 # ---------------------------------------------------------------------------
+
 
 class LeaderboardEntry(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -50,6 +51,7 @@ class LeaderboardResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Athlete
 # ---------------------------------------------------------------------------
+
 
 class AthleteRating(BaseModel):
     discipline: str
@@ -84,6 +86,7 @@ class AthleteDetail(BaseModel):
 # Athlete rating history (for charts)
 # ---------------------------------------------------------------------------
 
+
 class HistoryPoint(BaseModel):
     event_id: int
     event_name: str
@@ -106,6 +109,7 @@ class AthleteHistoryResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------------
+
 
 class EventSummary(BaseModel):
     id: int
@@ -160,6 +164,7 @@ class EventDetail(BaseModel):
 # Combined (Boulder+Lead) ratings
 # ---------------------------------------------------------------------------
 
+
 class CombinedLeaderboardEntry(LeaderboardEntry):
     """Leaderboard entry for the BOULDER_LEAD combined discipline.
 
@@ -203,6 +208,7 @@ class AthleteCombined(BaseModel):
 # Projections
 # ---------------------------------------------------------------------------
 
+
 class ProjectionRequest(BaseModel):
     """Request body for POST /api/v1/projections."""
 
@@ -243,6 +249,7 @@ class ProjectionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Upcoming predictions
 # ---------------------------------------------------------------------------
+
 
 class PredictedAthlete(BaseModel):
     """One athlete in a predicted top-3."""

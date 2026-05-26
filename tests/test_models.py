@@ -1,4 +1,5 @@
 """Tests for SQLAlchemy models."""
+
 from datetime import date
 
 from sqlalchemy import select
@@ -63,16 +64,20 @@ def test_round_result_relationship(db_session, sample_event, eight_athletes):
     db_session.flush()
 
     for i, athlete in enumerate(eight_athletes):
-        db_session.add(Result(
-            round_id=rnd.id,
-            athlete_id=athlete.id,
-            rank=i + 1,
-        ))
+        db_session.add(
+            Result(
+                round_id=rnd.id,
+                athlete_id=athlete.id,
+                rank=i + 1,
+            )
+        )
     db_session.flush()
 
-    results = db_session.execute(
-        select(Result).where(Result.round_id == rnd.id)
-    ).scalars().all()
+    results = (
+        db_session.execute(select(Result).where(Result.round_id == rnd.id))
+        .scalars()
+        .all()
+    )
     assert len(results) == 8
 
 
