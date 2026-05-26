@@ -1,0 +1,30 @@
+{
+  "discipline": "lead",
+  "fetched_at": "2026-05-26",
+  "gender": "F",
+  "ranking": [
+    {"rank": 1, "name": "Erin McNeice", "country": "GBR", "rating": 4503.0},
+    {"rank": 2, "name": "Chaehyun Seo", "country": "KOR", "rating": 4463.0},
+    {"rank": 3, "name": "Laura Rogora", "country": "ITA", "rating": 3900.0},
+    {"rank": 4, "name": "Annie Sanders", "country": "USA", "rating": 3040.0},
+    {"rank": 5, "name": "Rosa Rekar", "country": "SLO", "rating": 2520.0},
+    {"rank": 6, "name": "Heloise Doumont", "country": "BEL", "rating": 2048.0},
+    {"rank": 7, "name": "Janja Garnbret", "country": "SLO", "rating": 2000.0},
+    {"rank": 8, "name": "Chaeyoung Kim", "country": "KOR", "rating": 1730.0},
+    {"rank": 9, "name": "Mia Krampl", "country": "SLO", "rating": 1523.0},
+    {"rank": 10, "name": "Manon Hily", "country": "FRA", "rating": 1495.0},
+    {"rank": 11, "name": "Lucka Rakovec", "country": "SLO", "rating": 1445.0},
+    {"rank": 12, "name": "Oceania Mackenzie", "country": "AUS", "rating": 1445.0},
+    {"rank": 13, "name": "Brooke Raboutou", "country": "USA", "rating": 1330.0},
+    {"rank": 14, "name": "Camille Pouget", "country": "FRA", "rating": 1295.0},
+    {"rank": 15, "name": "Mattea Potzi", "country": "AUT", "rating": 1220.0},
+    {"rank": 16, "name": "Natsuki Tanii", "country": "JPN", "rating": 1135.0},
+    {"rank": 17, "name": "Mei Kotake", "country": "JPN", "rating": 1019.0},
+    {"rank": 18, "name": "Geila Macia Martin", "country": "ESP", "rating": 953.0},
+    {"rank": 19, "name": "Helene Janicot", "country": "FRA", "rating": 930.0},
+    {"rank": 20, "name": "Flora Oblasser", "country": "AUT", "rating": 842.5}
+  ],
+  "season": 2025,
+  "source": "ifsc_official",
+  "source_url": "https://en.wikipedia.org/wiki/Lead_climbing_at_the_2025_IFSC_Climbing_World_Cup"
+}

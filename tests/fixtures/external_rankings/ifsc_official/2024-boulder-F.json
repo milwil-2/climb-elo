@@ -1,0 +1,30 @@
+{
+  "discipline": "boulder",
+  "fetched_at": "2026-05-26",
+  "gender": "F",
+  "ranking": [
+    {"rank": 1, "name": "Natalia Grossman", "country": "USA", "rating": 2610.0},
+    {"rank": 2, "name": "Oceania Mackenzie", "country": "AUS", "rating": 2405.0},
+    {"rank": 3, "name": "Mao Nakamura", "country": "JPN", "rating": 2262.5},
+    {"rank": 4, "name": "Annie Sanders", "country": "USA", "rating": 2105.0},
+    {"rank": 5, "name": "Janja Garnbret", "country": "SLO", "rating": 2000.0},
+    {"rank": 6, "name": "Zelia Avezou", "country": "FRA", "rating": 1960.0},
+    {"rank": 7, "name": "Naile Meignan", "country": "FRA", "rating": 1875.0},
+    {"rank": 8, "name": "Anon Matsufuji", "country": "JPN", "rating": 1848.0},
+    {"rank": 9, "name": "Erin McNeice", "country": "GBR", "rating": 1572.5},
+    {"rank": 10, "name": "Oriane Bertone", "country": "FRA", "rating": 1260.0},
+    {"rank": 11, "name": "Jessica Pilz", "country": "AUT", "rating": 1240.0},
+    {"rank": 12, "name": "Melody Sekikawa", "country": "JPN", "rating": 1195.0},
+    {"rank": 13, "name": "Jennifer Eucharia Buckley", "country": "SLO", "rating": 1185.0},
+    {"rank": 14, "name": "Anna Maria Apel", "country": "GER", "rating": 1185.0},
+    {"rank": 15, "name": "Agathe Calliet", "country": "FRA", "rating": 1185.0},
+    {"rank": 16, "name": "Katja Debevec", "country": "SLO", "rating": 1025.0},
+    {"rank": 17, "name": "Luo Zhilu", "country": "CHN", "rating": 970.0},
+    {"rank": 18, "name": "Madison Richardson", "country": "CAN", "rating": 948.16},
+    {"rank": 19, "name": "Camilla Moroni", "country": "ITA", "rating": 948.16},
+    {"rank": 20, "name": "Chaehyun Seo", "country": "KOR", "rating": 922.0}
+  ],
+  "season": 2024,
+  "source": "ifsc_official",
+  "source_url": "https://en.wikipedia.org/wiki/Bouldering_at_the_2024_IFSC_Climbing_World_Cup"
+}

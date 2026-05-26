@@ -1,0 +1,30 @@
+{
+  "discipline": "boulder",
+  "fetched_at": "2026-05-26",
+  "gender": "M",
+  "ranking": [
+    {"rank": 1, "name": "Sorato Anraku", "country": "JPN", "rating": 5300.0},
+    {"rank": 2, "name": "Mejdi Schalck", "country": "FRA", "rating": 4145.0},
+    {"rank": 3, "name": "Sohta Amagasa", "country": "JPN", "rating": 3240.0},
+    {"rank": 4, "name": "Dohyun Lee", "country": "KOR", "rating": 3105.0},
+    {"rank": 5, "name": "Hannes Van Duysen", "country": "BEL", "rating": 2355.0},
+    {"rank": 6, "name": "Paul Jenft", "country": "FRA", "rating": 1965.0},
+    {"rank": 7, "name": "Tomoa Narasaki", "country": "JPN", "rating": 1941.0},
+    {"rank": 8, "name": "Anze Peharc", "country": "SLO", "rating": 1925.0},
+    {"rank": 9, "name": "Meichi Narasaki", "country": "JPN", "rating": 1875.0},
+    {"rank": 10, "name": "Pan Yufei", "country": "CHN", "rating": 1764.0},
+    {"rank": 11, "name": "Colin Duffy", "country": "USA", "rating": 1504.0},
+    {"rank": 12, "name": "Toby Roberts", "country": "GBR", "rating": 1402.0},
+    {"rank": 13, "name": "Dayan Akhtar", "country": "GBR", "rating": 1384.0},
+    {"rank": 14, "name": "Yuji Fujiwaki", "country": "JPN", "rating": 1155.0},
+    {"rank": 15, "name": "Jan-Luca Posch", "country": "AUT", "rating": 1028.0},
+    {"rank": 16, "name": "Jack MacDougall", "country": "GBR", "rating": 991.0},
+    {"rank": 17, "name": "Maximillian Milne", "country": "GBR", "rating": 950.0},
+    {"rank": 18, "name": "Oren Prihed", "country": "ISR", "rating": 906.0},
+    {"rank": 19, "name": "Rei Sugimoto", "country": "JPN", "rating": 870.0},
+    {"rank": 20, "name": "Elias Arriagada Kruger", "country": "GER", "rating": 768.0}
+  ],
+  "season": 2025,
+  "source": "ifsc_official",
+  "source_url": "https://en.wikipedia.org/wiki/Bouldering_at_the_2025_IFSC_Climbing_World_Cup"
+}

@@ -1,0 +1,30 @@
+{
+  "discipline": "lead",
+  "fetched_at": "2026-05-26",
+  "gender": "M",
+  "ranking": [
+    {"rank": 1, "name": "Alberto Gines Lopez", "country": "ESP", "rating": 4485.0},
+    {"rank": 2, "name": "Sorato Anraku", "country": "JPN", "rating": 4145.0},
+    {"rank": 3, "name": "Satone Yoshida", "country": "JPN", "rating": 4130.0},
+    {"rank": 4, "name": "Neo Suzuki", "country": "JPN", "rating": 3315.0},
+    {"rank": 5, "name": "Dohyun Lee", "country": "KOR", "rating": 2950.0},
+    {"rank": 6, "name": "Yannick Flohe", "country": "GER", "rating": 2485.0},
+    {"rank": 7, "name": "Filip Schenk", "country": "ITA", "rating": 2245.0},
+    {"rank": 8, "name": "Toby Roberts", "country": "GBR", "rating": 2240.0},
+    {"rank": 9, "name": "Max Bertone", "country": "FRA", "rating": 2195.0},
+    {"rank": 10, "name": "Shion Omata", "country": "JPN", "rating": 1866.0},
+    {"rank": 11, "name": "Luka Potocar", "country": "SLO", "rating": 1784.5},
+    {"rank": 12, "name": "Jesse Grupper", "country": "USA", "rating": 1648.0},
+    {"rank": 13, "name": "Jonas Utelli", "country": "SUI", "rating": 1570.0},
+    {"rank": 14, "name": "Giovanni Placci", "country": "ITA", "rating": 1535.0},
+    {"rank": 15, "name": "Colin Duffy", "country": "USA", "rating": 1203.0},
+    {"rank": 16, "name": "Putra Tri Ramadani", "country": "INA", "rating": 1140.0},
+    {"rank": 17, "name": "Hannes Van Duysen", "country": "BEL", "rating": 960.0},
+    {"rank": 18, "name": "Sam Avezou", "country": "FRA", "rating": 930.0},
+    {"rank": 19, "name": "Hyunseung Noh", "country": "KOR", "rating": 926.0},
+    {"rank": 20, "name": "Jakub Konecny", "country": "CZE", "rating": 878.0}
+  ],
+  "season": 2025,
+  "source": "ifsc_official",
+  "source_url": "https://en.wikipedia.org/wiki/Lead_climbing_at_the_2025_IFSC_Climbing_World_Cup"
+}
