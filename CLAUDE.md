@@ -29,36 +29,38 @@ uv run python scripts/health_check_cli.py --webhook "$DISCORD_WEBHOOK_URL"  # al
 
 **How to run:**
 ```bash
-# Against the dev server (starts its own server on :8080 — port must be free):
-uv run python scripts/smoke_test.py
-
-# Against an already-running server (no server management):
-uv run python scripts/smoke_test.py --base-url http://localhost:8080
-
-# Skip cmux browser screenshots:
-uv run python scripts/smoke_test.py --base-url http://localhost:8080 --no-screenshots
+uv run python scripts/smoke_test.py                                  # starts its own server on :8080
+uv run python scripts/smoke_test.py --base-url http://localhost:8080  # against an already-running server
+uv run python scripts/smoke_test.py --no-screenshots                 # skip cmux browser screenshots
 ```
 
 **When to run:** before deploys, after large refactors, after any template or route changes.
 
-**What it covers (11 checks):**
-- `GET /` — leaderboard with all 4 discipline tabs
-- `GET /predictions` — hub with "Custom Projection" and "Head-to-Head" cards
-- `GET /head-to-head` — athlete selection form
-- `GET /head-to-head/120/232?discipline=lead` — Schubert vs Ondra result page (win probability %)
-- `GET /projections/new` — manual projection form
-- `GET /projections/93` — Monte Carlo projection for event 93 (real data)
-- `GET /events` — paginated event list
-- `GET /events/93` — event detail with Qualification and Final rounds
-- `GET /athletes/61` — Janja Garnbret profile (Chart.js canvas + Recent Events + Place column)
-- `GET /breakdown/79/93` — pairwise contributing-pairs table
-- `GET /athletes/999999` — 404 for non-existent athlete
+**What it covers (11 checks):** GET `/`, `/predictions`, `/head-to-head`, `/head-to-head/{a}/{b}?discipline=lead`, `/projections/new`, `/projections/{event_id}`, `/events`, `/events/{event_id}`, `/athletes/{id}`, `/breakdown/{a}/{e}`, and a 404 for non-existent athlete. **Does not cover** POST routes, REST API (`/api/v1/*`), live SSE streaming, or visual regressions beyond "key strings present".
 
-**What it does not cover:** POST routes, authenticated endpoints, live SSE streaming, REST API (`/api/v1/*`), or visual regressions beyond "key strings present".
+**Screenshots:** when `cmux browser` is available and enabled, PNGs are saved to `/tmp/climbing_elo_smoke/YYYY-MM-DD/`. The `screenshots/` directory is gitignored.
 
-**Screenshots:** when `cmux browser` is available and enabled, the script takes a PNG screenshot of each route after navigation and saves them to `/tmp/climbing_elo_smoke/YYYY-MM-DD/`. The `screenshots/` directory is gitignored.
+**Exit codes:** 0 = all checks passed, 1 = one or more failures.
 
-**Exit codes:** 0 = all checks passed, 1 = one or more failures (also 1 if port is already in use when the script tries to start its own server).
+## Rate Limiting (Issue #34)
+
+Application-level per-IP rate limiting is implemented via **slowapi** (in-memory backend) as a belt-and-suspenders fallback before the reverse-proxy deployment (Issue #29) lands.
+
+| Endpoint | Limit |
+|---|---|
+| `POST /api/v1/projections` | 10 req/min |
+| `GET /api/v1/predictions/upcoming` | 60 req/min |
+| All other `GET /api/v1/*` | 120 req/min (default) |
+| HTML routes (`/`, `/athletes/*`, etc.) | 120 req/min (default) |
+| `GET /live/{event_id}/stream` (SSE) | 100-connection cap; no per-request limit |
+
+Exceeded limits return HTTP 429 with `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers.
+
+**Key files**: `src/climbing_elo/api/limiter.py` (shared `Limiter` instance), `src/climbing_elo/api/app.py` (wires `SlowAPIMiddleware` + exception handler), `src/climbing_elo/api/v1_routes.py` (`@limiter.limit()` decorators on the two stricter endpoints).
+
+**Security note**: `get_remote_address` reads `request.client.host`. Behind a reverse proxy this returns the proxy IP, not the real client. Production deployments should either use `X-Forwarded-For` with a trusted-proxy-validated custom key func, OR rely on the reverse-proxy's own rate limiting (preferred — Issue #29). The in-memory backend is per-worker; multi-worker deploys get per-worker limits (acceptable for Issue #29 single-worker target).
+
+**Superseded by**: the reverse-proxy rate limiter once Issue #29 lands.
 
 ## Monitoring
 

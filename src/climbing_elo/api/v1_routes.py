@@ -6,8 +6,10 @@ import json
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
 from sqlalchemy import func, select
+
+from climbing_elo.api.limiter import limiter
 
 from climbing_elo.cache import predictions_cache
 from climbing_elo.database import get_session_factory
@@ -624,7 +626,8 @@ def _make_projection_cache_key(discipline: Discipline, athlete_ids: list[int]) -
     response_model=ProjectionResponse,
     summary="Compute podium probability projections",
 )
-async def projections(body: ProjectionRequest) -> ProjectionResponse:
+@limiter.limit("10/minute")
+async def projections(request: Request, response: Response, body: ProjectionRequest) -> ProjectionResponse:
     """
     Run Monte Carlo podium-probability projections for a custom set of athletes.
 
@@ -636,9 +639,8 @@ async def projections(body: ProjectionRequest) -> ProjectionResponse:
     fingerprint (discipline + sorted athlete IDs). Repeated identical requests
     are served from cache at negligible cost.
 
-    **Known limits**: no explicit per-client rate limiting; the 64-athlete cap
-    and 1-hour cache mitigate abuse. Consider adding a rate limiter if this
-    endpoint is exposed to untrusted traffic.
+    **Rate limit**: 10 requests/min per IP (stricter than the 120/min default
+    because each uncached call runs 10k Monte Carlo simulations).
     """
     disc = _resolve_discipline(body.discipline)
 
@@ -717,7 +719,10 @@ async def projections(body: ProjectionRequest) -> ProjectionResponse:
     response_model=UpcomingPredictionsResponse,
     summary="List upcoming events with predicted top-3",
 )
+@limiter.limit("60/minute")
 async def predictions_upcoming(
+    request: Request,
+    response: Response,
     discipline: Optional[str] = Query(
         None,
         description="Filter by discipline: lead, boulder, speed. Omit for all.",
