@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Deployment
+
+Production lives at **https://climb-elo.vercel.app**, served from Vercel with **Supabase Postgres** (project ref `micecpgpuispvdfqdtmm`) as the backing store.
+
+- **Hosting**: Vercel, `@vercel/python` runtime. The project auto-deploys on every push to `main` (no separate CD workflow — Vercel watches the repo). Preview deployments are created automatically for PRs.
+- **Entry point**: `api/index.py` — thin shim that prepends `src/` to `sys.path` and calls `climbing_elo.api.app.create_app()`. On startup failure it returns a plain-text 500 with the traceback (so a crashed boot is visible at the root URL instead of an opaque Vercel error).
+- **Vercel config**: `vercel.json` declares `api/index.py` as a `@vercel/python` build and routes all paths (`/(.*)`) to it.
+- **Production deps**: a hand-written `requirements.txt` lives at the repo root for the Vercel build (it coexists with `uv.lock`, which is the source of truth for local dev + CI). Drift between the two is a known risk tracked in **#72**.
+- **Required env vars** (set in Vercel project settings):
+  - `DATABASE_URL` — Supabase **transaction pooler** (port 6543, IPv4). See "Connection strings" below.
+- **Local override**: when `DATABASE_URL` is unset, the app falls back to a local SQLite file (`climbing_elo.db`) — handy for offline dev.
+
 ## Commands
 
 ```bash
@@ -44,7 +56,7 @@ uv run python scripts/smoke_test.py --no-screenshots                 # skip cmux
 
 ## Rate Limiting (Issue #34)
 
-Application-level per-IP rate limiting is implemented via **slowapi** (in-memory backend) as a belt-and-suspenders fallback before the reverse-proxy deployment (Issue #29) lands.
+Application-level per-IP rate limiting is implemented via **slowapi** (in-memory backend). This is the production reality — Vercel's Python runtime does not put a reverse proxy with rate-limiting in front of the function, so slowapi is the only per-IP throttle in the request path.
 
 | Endpoint | Limit |
 |---|---|
@@ -58,18 +70,21 @@ Exceeded limits return HTTP 429 with `Retry-After`, `X-RateLimit-Limit`, `X-Rate
 
 **Key files**: `src/climbing_elo/api/limiter.py` (shared `Limiter` instance), `src/climbing_elo/api/app.py` (wires `SlowAPIMiddleware` + exception handler), `src/climbing_elo/api/v1_routes.py` (`@limiter.limit()` decorators on the two stricter endpoints).
 
-**Security note**: `get_remote_address` reads `request.client.host`. Behind a reverse proxy this returns the proxy IP, not the real client. Production deployments should either use `X-Forwarded-For` with a trusted-proxy-validated custom key func, OR rely on the reverse-proxy's own rate limiting (preferred — Issue #29). The in-memory backend is per-worker; multi-worker deploys get per-worker limits (acceptable for Issue #29 single-worker target).
+**Security note**: `get_remote_address` reads `request.client.host`. On Vercel, requests reach the function through Vercel's edge network, so `request.client.host` is an edge-node IP rather than the real client. To rate-limit by true client IP we would need to key off `X-Forwarded-For` (Vercel sets this; the leftmost untrusted hop is the client) with a custom key func — currently we accept the per-edge-IP limits. The in-memory backend is per-instance; Vercel may run multiple cold-start instances concurrently, so the per-instance limits are looser than the documented numbers under load. Acceptable for current traffic.
 
-**Superseded by**: the reverse-proxy rate limiter once Issue #29 lands.
+**Superseded by**: nothing — Vercel does not offer a built-in per-route rate limiter for serverless Python functions, so this is the production rate-limit. Future hardening would mean moving to a shared-state backend (e.g. Upstash Redis via the Vercel Marketplace) or switching to Vercel WAF rate-limit rules.
 
 ## Monitoring
 
-The IFSC API health check runs **every 30 minutes** via `.github/workflows/health-check.yml`.
+`.github/workflows/health-check.yml` runs **every 30 minutes** and contains two independent jobs that fail / alert separately:
 
-- Pings `ifsc.results.info/api/v1/` via `health_check()` in `scraper/ifsc_api.py`.
+1. **`ifsc-health-check`** — pings the upstream `ifsc.results.info/api/v1/` via `health_check()` in `scraper/ifsc_api.py`. On 3+ consecutive failures it opens / comments on an issue labeled `health-check-alert`.
+2. **`prod-health-check`** (added in #70) — probes our own deployment at `https://climb-elo.vercel.app/` (expects HTTP 200 + the string "Leaderboard") and `https://climb-elo.vercel.app/api/v1/disciplines` (expects HTTP 200 + JSON). On 3+ consecutive failures it opens / comments on an issue labeled `prod-health-alert`.
+
+Shared behaviour:
+
 - Exits 0 (healthy) or 1 (unhealthy) — GitHub Actions emails the maintainer on failure by default.
-- If `DISCORD_WEBHOOK_URL` is set as a GitHub Actions secret, a Discord embed alert is also posted (rate-limited to max 1 per hour to suppress flapping).
-- On **3+ consecutive failures**, a GitHub issue is automatically opened (or commented on if one already exists) with label `health-check-alert`.
+- If `DISCORD_WEBHOOK_URL` is set as a GitHub Actions secret, the IFSC check also posts a Discord embed alert (rate-limited to max 1/hour to suppress flapping). The prod-health check uses the same webhook.
 - The workflow can also be triggered manually via `workflow_dispatch`.
 
 ## Architecture
@@ -84,11 +99,27 @@ All competition data is fetched from `ifsc.results.info` — the legacy IFSC res
 
 **If the legacy API is ever deprecated:** See [Issue #30](https://github.com/milwil-2/climb-elo/issues/30) for the migration investigation notes. A scraper targeting `worldclimbing.com`'s internal Next.js data endpoints would need to be reverse-engineered at that point.
 
-**Scrape** (`scraper/ifsc_api.py`) fetches Lead, Boulder, or Speed results from `ifsc.results.info` (no auth — just a Referer header) and writes Athlete/Event/Round/Result rows to SQLite. The API structure is: `/api/v1/` → seasons → `season_leagues/{id}` → events + d_cat IDs → `events/{id}/result/{d_cat_id}` → full rankings. Only `league_id=1` (World Cup) is scraped. Discipline categories are identified by matching the d_cat discipline field.
+**Scrape** (`scraper/ifsc_api.py`) fetches Lead, Boulder, or Speed results from `ifsc.results.info` (no auth — just a Referer header) and writes Athlete/Event/Round/Result rows through SQLAlchemy. The destination is whichever DB `DATABASE_URL` points at: local SQLite (`climbing_elo.db`) when running on a laptop, Supabase Postgres in production / GitHub Actions. The API structure is: `/api/v1/` → seasons → `season_leagues/{id}` → events + d_cat IDs → `events/{id}/result/{d_cat_id}` → full rankings. Only `league_id=1` (World Cup) is scraped. Discipline categories are identified by matching the d_cat discipline field.
 
 **Backfill** (`engine/backfill.py`) processes all events chronologically, computing ELO updates per round (qualification → semi → final). Each round calls `calculate_round_updates()` from `engine/elo.py`, which decomposes the multi-athlete finishing order into all pairwise contests using Plackett-Luce. The critical normalization is `pair_k = base_k / (n - 1)` — without this, deltas scale with field size. Rating changes across a round sum to zero. Commits are per-event (atomic). The `n_events` counter increments once per event, not per round.
 
-**Serve** (`api/routes.py`) is a FastAPI + Jinja2 dashboard. HTML routes: `/` (leaderboard), `/athletes/{id}` (profile with Chart.js rating-over-time), `/events` and `/events/{id}` (results with pre/post μ), `/breakdown/{athlete_id}/{event_id}` (pairwise contributing-pairs table), `/projections/{event_id}` (Monte Carlo outcome projections), `/projections/new` (manual projection form), `/predictions` (upcoming events hub), `/head-to-head` (athlete selection form), `/head-to-head/{a_id}/{b_id}?discipline=lead` (head-to-head result page with analytic win probability, shared-event count, and dual rating-history chart). The public REST API lives under `/api/v1/` (see below).
+**Serve** (`api/routes.py`) is a FastAPI + Jinja2 dashboard deployed at **https://climb-elo.vercel.app**. The frontend is the monochrome "v2" design served at root — the original v1 frontend was removed in commit `9e96f8e` (templates promoted from `templates_v2/` to `templates/`, leaving a single template tree). HTML routes: `/` (leaderboard), `/athletes/{id}` (profile with Chart.js rating-over-time), `/events` and `/events/{id}` (results with pre/post μ), `/breakdown/{athlete_id}/{event_id}` (pairwise contributing-pairs table), `/projections/{event_id}` (Monte Carlo outcome projections), `/projections/new` (manual projection form), `/predictions` (upcoming events hub), `/head-to-head` (athlete selection form), `/head-to-head/{a_id}/{b_id}?discipline=lead` (head-to-head result page with analytic win probability, shared-event count, and dual rating-history chart). The public REST API lives under `/api/v1/` (see below).
+
+### Connection strings (Supabase)
+
+Supabase exposes three connection URLs for the same Postgres project. We use all three, each in a different context — picking the wrong one will silently break.
+
+| Context | URL pattern | Port | Address family | Why |
+|---|---|---|---|---|
+| Local dev / one-off scripts | `db.<PROJECT>.supabase.co` | 5432 | **IPv6 only** | Direct connection. Fast, session-stateful (transactions, prepared statements, `SET LOCAL`). Works from a developer laptop (most home/office networks expose IPv6) but is unreachable from GitHub Actions runners. |
+| Vercel runtime | `aws-0-<REGION>.pooler.supabase.com` | **6543** | IPv4 | **Transaction** pooler (pgBouncer). Required for serverless: each Vercel function invocation gets a fresh pooled connection. Caveats: no session-state features (`SET`, `LISTEN`, prepared statements outside a single statement), so app code must avoid them. |
+| GitHub Actions (`scrape-supabase.yml`) | `aws-0-<REGION>.pooler.supabase.com` | **5432** | IPv4 | **Session** pooler. Needed because the scrape pipeline uses long-running transactions and bulk inserts that the transaction pooler will reject. Use the "Session pooler" tab in Supabase → Settings → Database. |
+
+Pain points we've already paid for, so don't re-learn them:
+
+- The direct `db.<PROJECT>.supabase.co` URL is **IPv6-only**. GitHub Actions runners are IPv4-only, so any workflow that uses it will fail with a DNS / connect timeout that looks like a Supabase outage. Always use a pooler URL in CI.
+- The transaction pooler (6543) will reject any statement that depends on session state. Symptoms: random `prepared statement "..." does not exist` errors, or features that work locally but 500 in prod.
+- The session pooler (5432) is fine for Actions but is **not** what we want for Vercel — long-lived sessions don't fit the serverless lifecycle and you'll exhaust the pool.
 
 ## Data Model
 
@@ -136,9 +167,14 @@ Interactive docs: `http://localhost:8000/docs` — OpenAPI schema: `/openapi.jso
 
 Source files: `api/v1_routes.py` (endpoints), `api/schemas.py` (Pydantic response models).
 
-## Daily Snapshots
+## Data freshness in production
 
-Daily snapshots of the DB are stored as GitHub Release artifacts on the `db-snapshots` release. The `.github/workflows/snapshot.yml` workflow runs at 03:00 UTC, scrapes recent events, runs backfill + combined ratings, and uploads a gzip-compressed snapshot + SHA-256 sidecar. Retention: 30 daily + 12 monthly (1st of month) + 5 yearly (Jan 1).
+Production data lives in **Supabase Postgres**. Two GitHub Actions workflows keep it (and a local archive) fresh:
+
+- **`.github/workflows/scrape-supabase.yml`** — runs daily at 04:00 UTC against the Supabase session pooler. Scrapes upcoming events + recent finished results, runs the ELO backfill (idempotent via `uq_rating_history_athlete_round`), and refreshes combined Boulder+Lead ratings. Workflow-dispatchable with an optional `historical_backfill` flag for the full 2012→present rescrape. Requires the `DATABASE_URL` repo secret (session pooler URL, port 5432).
+- **`.github/workflows/snapshot.yml`** — runs daily at 03:00 UTC and uploads a gzip-compressed SQLite snapshot + SHA-256 sidecar to the `db-snapshots` GitHub Release. **Archival only now** that Supabase is the production DB; kept as a recovery / forensic artifact and so local dev (`DATABASE_URL` unset) has a sensible starting point. Retention: 30 daily + 12 monthly (1st of month) + 5 yearly (Jan 1).
+
+Local snapshot helpers:
 
 ```bash
 uv run python scripts/snapshot_db.py                          # create local snapshot
@@ -147,10 +183,6 @@ uv run python scripts/restore_snapshot.py --date 2026-06-01   # restore specific
 ```
 
 `snapshots/` is gitignored. Restore requires `gh` CLI authenticated.
-
-## Monitoring
-
-`.github/workflows/health-check.yml` runs `scripts/health_check_cli.py` every 30 min against `ifsc.results.info/api/v1/`. On 3+ consecutive failures it auto-creates (or comments on) an issue labeled `health-check-alert`. Set the `DISCORD_WEBHOOK_URL` repo secret for optional Discord pings (rate-limited to 1/hour). Webhook target is allowlisted to Discord hosts only.
 
 ## Caching
 
@@ -241,6 +273,6 @@ Two GitHub Projects partition open work for the repo:
 
 The repo runs in `selected_actions` mode (security lockdown — see `docs/SECURITY_LOCKDOWN.md`). Current allowlist: GitHub-owned actions + verified-creator actions + the explicit patterns `astral-sh/setup-uv@*` and `peter-evans/create-issue-from-file@*`. New third-party actions must be added to this allowlist via `gh api -X PUT repos/milwil-2/climb-elo/actions/permissions/selected-actions ...` before they will run.
 
-## Future migration target: Supabase / Postgres
+## Supabase MCP server
 
-Issue #16 tracks moving from SQLite to managed Postgres (Supabase). `.mcp.json` is already wired to the hosted Supabase MCP server (`https://mcp.supabase.com/mcp?project_ref=micecpgpuispvdfqdtmm`, read-only) for schema introspection during the migration. The actual data migration / DB-layer rewrite hasn't been done yet.
+`.mcp.json` is wired to the hosted Supabase MCP server (`https://mcp.supabase.com/mcp?project_ref=micecpgpuispvdfqdtmm`, read-only) for schema introspection and ad-hoc queries against the production DB from Claude Code.
