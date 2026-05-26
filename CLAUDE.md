@@ -23,6 +23,43 @@ uv run python scripts/health_check_cli.py --quiet     # no output (for cron)
 uv run python scripts/health_check_cli.py --webhook "$DISCORD_WEBHOOK_URL"  # alert on failure
 ```
 
+## Smoke Test
+
+`scripts/smoke_test.py` is a re-runnable end-to-end smoke test for the dashboard HTML routes.
+
+**How to run:**
+```bash
+# Against the dev server (starts its own server on :8080 — port must be free):
+uv run python scripts/smoke_test.py
+
+# Against an already-running server (no server management):
+uv run python scripts/smoke_test.py --base-url http://localhost:8080
+
+# Skip cmux browser screenshots:
+uv run python scripts/smoke_test.py --base-url http://localhost:8080 --no-screenshots
+```
+
+**When to run:** before deploys, after large refactors, after any template or route changes.
+
+**What it covers (11 checks):**
+- `GET /` — leaderboard with all 4 discipline tabs
+- `GET /predictions` — hub with "Custom Projection" and "Head-to-Head" cards
+- `GET /head-to-head` — athlete selection form
+- `GET /head-to-head/120/232?discipline=lead` — Schubert vs Ondra result page (win probability %)
+- `GET /projections/new` — manual projection form
+- `GET /projections/93` — Monte Carlo projection for event 93 (real data)
+- `GET /events` — paginated event list
+- `GET /events/93` — event detail with Qualification and Final rounds
+- `GET /athletes/61` — Janja Garnbret profile (Chart.js canvas + Recent Events + Place column)
+- `GET /breakdown/79/93` — pairwise contributing-pairs table
+- `GET /athletes/999999` — 404 for non-existent athlete
+
+**What it does not cover:** POST routes, authenticated endpoints, live SSE streaming, REST API (`/api/v1/*`), or visual regressions beyond "key strings present".
+
+**Screenshots:** when `cmux browser` is available and enabled, the script takes a PNG screenshot of each route after navigation and saves them to `/tmp/climbing_elo_smoke/YYYY-MM-DD/`. The `screenshots/` directory is gitignored.
+
+**Exit codes:** 0 = all checks passed, 1 = one or more failures (also 1 if port is already in use when the script tries to start its own server).
+
 ## Monitoring
 
 The IFSC API health check runs **every 30 minutes** via `.github/workflows/health-check.yml`.

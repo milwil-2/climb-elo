@@ -244,15 +244,23 @@ async def event_detail(request: Request, event_id: int):
                 ).all()
             )
 
+            # Batch-fetch RatingHistory for all athletes in this round in ONE query
+            # instead of N+1. Without this, a 50-athlete qualification round caused
+            # the page to hang (caught by smoke_test.py).
+            athlete_ids_in_round = [ath.id for _, ath in results]
+            rh_by_athlete: dict[int, RatingHistory] = {}
+            if athlete_ids_in_round:
+                for rh in session.execute(
+                    select(RatingHistory).where(
+                        RatingHistory.round_id == rnd.id,
+                        RatingHistory.athlete_id.in_(athlete_ids_in_round),
+                    )
+                ).scalars():
+                    rh_by_athlete[rh.athlete_id] = rh
+
             result_rows = []
             for res, athlete in results:
-                rh = session.execute(
-                    select(RatingHistory).where(
-                        RatingHistory.athlete_id == athlete.id,
-                        RatingHistory.round_id == rnd.id,
-                    )
-                ).scalar_one_or_none()
-
+                rh = rh_by_athlete.get(athlete.id)
                 delta = (rh.mu_after - rh.mu_before) if rh else None
                 result_rows.append({
                     "athlete_id": athlete.id,
