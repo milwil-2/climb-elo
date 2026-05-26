@@ -43,6 +43,7 @@
     <thead>
         <tr>
             <th>Event</th>
+            <th>Place</th>
             <th>Season</th>
             <th>Before</th>
             <th>After</th>
@@ -54,6 +55,25 @@
         {% for e in recent_events %}
         <tr>
             <td><a href="/events/{{ e.event_id }}">{{ e.event_name }}</a></td>
+            <td>
+                {%- if e.place is none -%}
+                    <span>—</span>
+                {%- else -%}
+                    {%- set p = e.place -%}
+                    {%- if p in (11, 12, 13) -%}
+                        {%- set suffix = 'th' -%}
+                    {%- elif p % 10 == 1 -%}
+                        {%- set suffix = 'st' -%}
+                    {%- elif p % 10 == 2 -%}
+                        {%- set suffix = 'nd' -%}
+                    {%- elif p % 10 == 3 -%}
+                        {%- set suffix = 'rd' -%}
+                    {%- else -%}
+                        {%- set suffix = 'th' -%}
+                    {%- endif -%}
+                    <span{% if p <= 3 %} class="positive"{% endif %}>{{ p }}{{ suffix }}</span>
+                {%- endif -%}
+            </td>
             <td>{{ e.season }}</td>
             <td>{{ e.mu_before }}</td>
             <td>{{ e.mu_after }}</td>
