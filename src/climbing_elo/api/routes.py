@@ -112,6 +112,21 @@ async def athlete_profile(request: Request, athlete_id: int):
 
         for rh, event in reversed(history[-20:]):
             delta = rh.mu_after - rh.mu_before
+
+            # Best (lowest) rank achieved by the athlete across all rounds in this event.
+            # Exclude DNS (did not start) entries; include DNF so we still show a rank
+            # if the athlete at least started.
+            place_row = session.execute(
+                select(func.min(Result.rank))
+                .join(Round, Result.round_id == Round.id)
+                .where(
+                    Round.event_id == event.id,
+                    Result.athlete_id == athlete_id,
+                    Result.dns.is_(False),
+                    Result.rank.is_not(None),
+                )
+            ).scalar_one_or_none()
+
             recent_events.append({
                 "event_id": event.id,
                 "event_name": event.name,
@@ -120,6 +135,7 @@ async def athlete_profile(request: Request, athlete_id: int):
                 "mu_after": round(rh.mu_after, 1),
                 "delta": round(delta, 1),
                 "delta_class": "positive" if delta > 0 else "negative" if delta < 0 else "",
+                "place": place_row,
             })
 
     return templates.TemplateResponse(request, "athlete.html", {
