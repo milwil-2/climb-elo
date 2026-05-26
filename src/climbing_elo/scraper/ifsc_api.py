@@ -433,6 +433,182 @@ def scrape_season(
     return report
 
 
+@dataclass
+class UpcomingScrapeReport:
+    events_stored: int = 0
+    events_skipped: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+#: Statuses that indicate an event has not yet completed (upcoming / in-progress).
+UPCOMING_STATUSES = frozenset({"scheduled", "registration", "live"})
+
+#: Max events stored per `scrape_upcoming_events` call to bound Monte Carlo work on page load.
+MAX_UPCOMING_EVENTS = 50
+
+
+def scrape_upcoming_events(
+    client: httpx.Client,
+    session: Session,
+    discipline: str = "lead",
+    seasons_ahead: int = 2,
+) -> UpcomingScrapeReport:
+    """Discover and store upcoming (not-yet-finished) IFSC events.
+
+    Iterates the current year and the next ``seasons_ahead`` years looking for
+    d_cat entries whose status is one of ``UPCOMING_STATUSES``.  For each such
+    event an :class:`~climbing_elo.models.Event` row is created (idempotent —
+    already-stored events are skipped).  We do **not** attempt to store athlete
+    registrations; the predictions route falls back to the manual form when no
+    results are available.
+
+    Args:
+        client:        Active :class:`httpx.Client` to reuse.
+        session:       SQLAlchemy session (caller owns commit / rollback).
+        discipline:    ``"lead"``, ``"boulder"``, or ``"speed"`` (case-insensitive).
+        seasons_ahead: How many future seasons (beyond current year) to check.
+
+    Returns:
+        :class:`UpcomingScrapeReport` with counts and any error strings.
+    """
+    from datetime import date as _date
+
+    report = UpcomingScrapeReport()
+    disc_lower = discipline.lower()
+
+    if disc_lower not in ("lead", "boulder", "speed"):
+        raise ValueError(
+            f"Unsupported discipline {discipline!r}; expected one of: lead, boulder, speed"
+        )
+
+    if disc_lower == "boulder":
+        db_discipline = Discipline.BOULDER
+    elif disc_lower == "speed":
+        db_discipline = Discipline.SPEED
+    else:
+        db_discipline = Discipline.LEAD
+
+    current_year = _date.today().year
+    target_years = set(range(current_year, current_year + seasons_ahead + 1))
+
+    seasons = get_seasons(client)
+    if not seasons:
+        report.errors.append("Failed to fetch seasons index")
+        return report
+
+    for season_info in seasons:
+        year_str = season_info.get("name", "")
+        try:
+            year = int(year_str)
+        except ValueError:
+            continue
+
+        if year not in target_years:
+            continue
+
+        wc_league = None
+        for lg in season_info.get("leagues", []):
+            if lg.get("league_id") == 1:
+                wc_league = lg
+                break
+
+        if not wc_league:
+            log.info("No WC league for season %s, skipping", year_str)
+            continue
+
+        log.info("Checking upcoming %s events for season %s...", discipline, year_str)
+        time.sleep(REQUEST_DELAY)
+
+        league_data = _api_get(client, wc_league["url"])
+        if not league_data:
+            report.errors.append(f"Failed to fetch league {wc_league['url']}")
+            continue
+
+        league_name = wc_league.get("name", "")
+        d_cats = league_data.get("d_cats", [])
+
+        # Build target d_cat id set for the discipline (same logic as scrape_season)
+        if disc_lower == "boulder":
+            target_dcat_ids = {
+                dc["id"]
+                for dc in d_cats
+                if "boulder" in dc.get("discipline", "").lower()
+                and "lead" not in dc.get("discipline", "").lower()
+            }
+        elif disc_lower == "lead":
+            target_dcat_ids = {
+                dc["id"]
+                for dc in d_cats
+                if "lead" in dc.get("discipline", "").lower()
+                and "boulder" not in dc.get("discipline", "").lower()
+            }
+        else:  # speed
+            target_dcat_ids = {
+                dc["id"]
+                for dc in d_cats
+                if "speed" in dc.get("discipline", "").lower()
+            }
+
+        if not target_dcat_ids:
+            log.info("No %s d_cats in season %s", discipline, year_str)
+            continue
+
+        events = league_data.get("events", [])
+        for ev in events:
+            if report.events_stored >= MAX_UPCOMING_EVENTS:
+                log.warning("Reached MAX_UPCOMING_EVENTS=%d; stopping", MAX_UPCOMING_EVENTS)
+                return report
+
+            event_name = ev.get("event", "Unknown")
+
+            # Check whether any discipline d_cat for this event is upcoming
+            has_upcoming_dcat = any(
+                dc.get("id") in target_dcat_ids
+                and dc.get("status") in UPCOMING_STATUSES
+                for dc in ev.get("d_cats", [])
+            )
+            if not has_upcoming_dcat:
+                continue
+
+            start_date_str = ev.get("local_start_date", f"{year_str}-01-01")
+            try:
+                event_date = _date.fromisoformat(start_date_str)
+            except ValueError:
+                event_date = _date(year, 1, 1)
+
+            tier = _classify_tier(event_name, league_name)
+
+            # Idempotent: skip if row already present
+            existing = session.execute(
+                select(Event).where(
+                    Event.name == event_name,
+                    Event.season == year,
+                    Event.discipline == db_discipline,
+                )
+            ).scalar_one_or_none()
+
+            if existing:
+                log.debug("Upcoming event already stored: %s (%s)", event_name, year_str)
+                report.events_skipped += 1
+                continue
+
+            db_event = Event(
+                name=event_name,
+                tier=tier,
+                country=None,
+                season=year,
+                start_date=event_date,
+                discipline=db_discipline,
+            )
+            session.add(db_event)
+            session.flush()
+            report.events_stored += 1
+            log.info("Stored upcoming event: %s (%s) [%s]", event_name, year_str, discipline)
+
+    session.commit()
+    return report
+
+
 def scrape_all_seasons(
     session: Session,
     min_year: int = 2006,
