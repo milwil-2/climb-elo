@@ -25,6 +25,7 @@ from climbing_elo.engine.projections import (
     compute_partial_event_probabilities,
     compute_podium_probabilities,
 )
+from climbing_elo.live.livestream import youtube_embed_url
 from climbing_elo.models import (
     Athlete,
     Discipline,
@@ -1369,6 +1370,10 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
 
         ticker = _ticker_context(session)
 
+        # Issue #23: capture livestream_url inside the session so detached-
+        # instance access can't bite us if a refresh happens above.
+        raw_livestream_url = event.livestream_url
+
     initial_athletes = {
         row["athlete_id"]: {
             "name": row["name"],
@@ -1378,6 +1383,11 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
         }
         for row in leaderboard_rows
     }
+
+    # Issue #23: optional YouTube live-stream embed. Defense-in-depth:
+    # only youtube.com / youtu.be URLs survive validation; anything else
+    # collapses to None and the template renders no iframe.
+    embed_url = youtube_embed_url(raw_livestream_url)
 
     ctx = {
         "event": {
@@ -1397,6 +1407,8 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
         "pre_event": pre_event,
         "from_likely_roster": from_likely_roster,
         "stream_url": f"/live/{event_id}/stream",
+        "livestream_embed_url": embed_url,
+        "livestream_watch_url": raw_livestream_url if embed_url else None,
         "initial_athletes": initial_athletes,
         **ticker,
         **_nav_context("live"),

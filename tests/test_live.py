@@ -1030,3 +1030,239 @@ class TestLiveProjectionsJSON:
         rows = resp.json()["rows"]
         # Falls back to M — should have projection rows
         assert len(rows) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #23 — YouTube livestream parser + /live/{event_id} embed rendering
+# ---------------------------------------------------------------------------
+
+
+class TestParseYouTubeVideoId:
+    """Unit tests for the URL parser/validator used by the live page."""
+
+    def test_watch_url(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert (
+            parse_youtube_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+            == "dQw4w9WgXcQ"
+        )
+
+    def test_short_url(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert parse_youtube_video_id("https://youtu.be/dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+
+    def test_live_path(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert (
+            parse_youtube_video_id("https://www.youtube.com/live/abcdEFGHijk")
+            == "abcdEFGHijk"
+        )
+
+    def test_embed_path(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert (
+            parse_youtube_video_id("https://www.youtube.com/embed/abcdEFGHijk")
+            == "abcdEFGHijk"
+        )
+
+    def test_extra_query_params_ignored(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert (
+            parse_youtube_video_id(
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ&feature=youtu.be"
+            )
+            == "dQw4w9WgXcQ"
+        )
+
+    def test_none_input(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert parse_youtube_video_id(None) is None
+
+    def test_empty_string(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert parse_youtube_video_id("") is None
+
+    def test_javascript_scheme_rejected(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert parse_youtube_video_id("javascript:alert(1)") is None
+
+    def test_data_uri_rejected(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert (
+            parse_youtube_video_id("data:text/html,<script>alert(1)</script>") is None
+        )
+
+    def test_non_youtube_host_rejected(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert parse_youtube_video_id("https://evil.com/embed/dQw4w9WgXcQ") is None
+
+    def test_youtube_lookalike_rejected(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        # Host attacker controls — must NOT match the youtube.com allowlist.
+        assert (
+            parse_youtube_video_id("https://youtube.com.evil.com/watch?v=dQw4w9WgXcQ")
+            is None
+        )
+
+    def test_malformed_video_id_rejected(self):
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        # 10 chars: too short
+        assert parse_youtube_video_id("https://youtu.be/short_id1") is None
+        # Bad chars
+        assert parse_youtube_video_id("https://youtu.be/!@#$%^&*()_") is None
+
+    def test_embed_url_helper_returns_https_and_no_autoplay(self):
+        from climbing_elo.live.livestream import youtube_embed_url
+
+        emb = youtube_embed_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        assert emb is not None
+        assert emb.startswith("https://www.youtube.com/embed/dQw4w9WgXcQ")
+        assert "autoplay" not in emb.lower()
+
+    def test_embed_url_helper_rejects_bad_input(self):
+        from climbing_elo.live.livestream import youtube_embed_url
+
+        assert youtube_embed_url("javascript:alert(1)") is None
+        assert youtube_embed_url("https://evil.com/embed/abcdEFGHijk") is None
+        assert youtube_embed_url(None) is None
+
+
+# --- Live HTML route: livestream rendering ----------------------------------
+
+
+@pytest.fixture(scope="module")
+def livestream_db_path(tmp_path_factory):
+    return tmp_path_factory.mktemp("livestream") / "livestream_test.db"
+
+
+@pytest.fixture(scope="module")
+def livestream_client(livestream_db_path):
+    """Seed three events (no URL / valid URL / malicious URL) and return a client."""
+    from climbing_elo.api.app import create_app
+
+    eng = create_engine(f"sqlite:///{livestream_db_path}")
+    Base.metadata.create_all(eng)
+    factory = sessionmaker(bind=eng)
+
+    sess = factory()
+
+    def _seed_event(name: str, livestream_url):
+        ev = Event(
+            name=name,
+            tier=EventTier.WORLD_CUP,
+            season=2026,
+            start_date=date(2026, 9, 1),
+            discipline=Discipline.LEAD,
+            livestream_url=livestream_url,
+        )
+        sess.add(ev)
+        sess.flush()
+        ath = Athlete(name=f"{name} Climber", gender=Gender.M, nationality="AUT")
+        sess.add(ath)
+        sess.flush()
+        sess.add(
+            Rating(
+                athlete_id=ath.id,
+                discipline=Discipline.LEAD,
+                mu=1700.0,
+                sigma=100.0,
+                n_events=5,
+                provisional=False,
+            )
+        )
+        sess.flush()
+        rnd = Round(
+            event_id=ev.id,
+            round_type=RoundType.FINAL,
+            gender=Gender.M,
+            athlete_count=1,
+        )
+        sess.add(rnd)
+        sess.flush()
+        sess.add(Result(round_id=rnd.id, athlete_id=ath.id, rank=1, raw_score="TOP"))
+        return ev.id
+
+    no_url_id = _seed_event("No Stream Cup", None)
+    yt_id = _seed_event(
+        "YouTube Stream Cup", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    )
+    bad_id = _seed_event("Evil Stream Cup", "javascript:alert(1)")
+    bad2_id = _seed_event("Wrong Host Stream Cup", "https://evil.com/embed/dQw4w9WgXcQ")
+    sess.commit()
+    sess.close()
+
+    original_get_engine = _db_module.get_engine
+
+    def _patched_get_engine(db_path=None):
+        from sqlalchemy import create_engine as _ce
+
+        return _ce(f"sqlite:///{livestream_db_path}")
+
+    _db_module.get_engine = _patched_get_engine
+    try:
+        app = create_app()
+        client = TestClient(app, raise_server_exceptions=True)
+        yield (
+            client,
+            {
+                "no_url": no_url_id,
+                "yt": yt_id,
+                "bad": bad_id,
+                "bad_host": bad2_id,
+            },
+        )
+    finally:
+        _db_module.get_engine = original_get_engine
+
+
+class TestLiveLivestreamEmbed:
+    def test_no_url_no_iframe(self, livestream_client):
+        """Event without livestream_url: page renders, no iframe markup."""
+        client, ids = livestream_client
+        resp = client.get(f"/live/{ids['no_url']}")
+        assert resp.status_code == 200
+        assert "youtube.com/embed/" not in resp.text
+        assert "<iframe" not in resp.text.lower()
+        # Page still functional
+        assert "leaderboard-table" in resp.text
+
+    def test_valid_youtube_url_renders_iframe(self, livestream_client):
+        """Valid YouTube URL produces an embed iframe pointing at the embed host."""
+        client, ids = livestream_client
+        resp = client.get(f"/live/{ids['yt']}")
+        assert resp.status_code == 200
+        assert "<iframe" in resp.text
+        assert "https://www.youtube.com/embed/dQw4w9WgXcQ" in resp.text
+        # No autoplay; sandbox present
+        assert "autoplay=1" not in resp.text
+        assert "sandbox=" in resp.text
+        # Attribution surfaced
+        assert "IFSC" in resp.text and "YouTube" in resp.text
+
+    def test_javascript_url_rejected(self, livestream_client):
+        """Malicious javascript: URL must not produce an iframe."""
+        client, ids = livestream_client
+        resp = client.get(f"/live/{ids['bad']}")
+        assert resp.status_code == 200
+        assert "<iframe" not in resp.text.lower()
+        assert "javascript:" not in resp.text.lower()
+
+    def test_non_allowlisted_host_rejected(self, livestream_client):
+        """A non-YouTube host (even a real HTTPS URL) must not produce an iframe."""
+        client, ids = livestream_client
+        resp = client.get(f"/live/{ids['bad_host']}")
+        assert resp.status_code == 200
+        assert "<iframe" not in resp.text.lower()
+        assert "evil.com" not in resp.text

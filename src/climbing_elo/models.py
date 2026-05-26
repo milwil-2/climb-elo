@@ -86,6 +86,10 @@ class Event(Base):
     discipline: Mapped[Discipline] = mapped_column(
         Enum(Discipline, values_callable=_enum_values), nullable=False
     )
+    # Optional YouTube live-stream URL (youtube.com or youtu.be). Populated
+    # manually per upcoming event until an automated source is found.
+    # Issue #23.
+    livestream_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     rounds: Mapped[list[Round]] = relationship(
         back_populates="event", cascade="all, delete-orphan"
