@@ -8,7 +8,8 @@ from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 
-from climbing_elo.cache import predictions_cache
+from climbing_elo.cache import likely_roster_cache, predictions_cache
+from climbing_elo.engine.likely_roster import likely_competitors
 from climbing_elo.database import get_session_factory
 from climbing_elo.engine.projections import (
     AthleteProjectionInput,
@@ -890,6 +891,10 @@ async def predictions(request: Request):
 
                 has_athletes = result_count > 0
 
+                # Flag set to True when we use the likely-competitor fallback
+                # so the template can surface a disclaimer.
+                from_likely_roster = False
+
                 predictions_data: dict | None = None
                 if has_athletes:
                     # Run projections for each gender that has data.
@@ -991,6 +996,96 @@ async def predictions(request: Request):
 
                     predictions_data = {"genders": gender_predictions}
 
+                else:
+                    # No registered athletes yet — fall back to likely-competitor
+                    # roster derived from season attendance.
+                    gender_predictions_fallback: list[dict] = []
+                    for gender_enum in [Gender.M, Gender.F]:
+                        # Check cache first.
+                        _roster_cache_key = (
+                            f"roster:{disc_enum.value}:{ev.season}:{gender_enum.value}"
+                        )
+                        athlete_ids = likely_roster_cache.get(_roster_cache_key)
+                        if athlete_ids is None:
+                            athlete_ids = likely_competitors(
+                                session,
+                                disc_enum,
+                                ev.season,
+                                gender_enum,
+                            )
+                            likely_roster_cache.set(_roster_cache_key, athlete_ids)
+
+                        if not athlete_ids:
+                            continue
+
+                        # Cap and build projection inputs.
+                        proj_inputs_fallback: list[AthleteProjectionInput] = []
+                        for aid in athlete_ids[:_MAX_ATHLETES_PER_PROJECTION_CARD]:
+                            athlete = session.get(Athlete, aid)
+                            if not athlete:
+                                continue
+                            rating = session.execute(
+                                select(Rating).where(
+                                    Rating.athlete_id == aid,
+                                    Rating.discipline == disc_enum,
+                                )
+                            ).scalar_one_or_none()
+                            if rating is None:
+                                from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+                                mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
+                            else:
+                                mu, sigma = rating.mu, rating.sigma
+                            proj_inputs_fallback.append(AthleteProjectionInput(
+                                athlete_id=aid,
+                                mu=mu,
+                                sigma=sigma,
+                                name=athlete.name,
+                            ))
+
+                        if len(proj_inputs_fallback) < 2:
+                            continue
+
+                        _athlete_fingerprint_fb = ":".join(
+                            f"{a.athlete_id},{a.mu:.2f},{a.sigma:.2f}"
+                            for a in sorted(proj_inputs_fallback, key=lambda a: a.athlete_id)
+                        )
+                        _cache_key_fb = (
+                            f"projections:likely:{ev.id}"
+                            f":disc:{disc_enum.value}"
+                            f":gender:{gender_enum.value}"
+                            f":athletes:{_athlete_fingerprint_fb}"
+                        )
+                        probs_fb = predictions_cache.get(_cache_key_fb)
+                        if probs_fb is None:
+                            probs_fb = compute_podium_probabilities(
+                                proj_inputs_fallback, n_simulations=10_000
+                            )
+                            predictions_cache.set(_cache_key_fb, probs_fb)
+
+                        ranked_fb = sorted(
+                            proj_inputs_fallback,
+                            key=lambda a: probs_fb[a.athlete_id]["expected_rank"],
+                        )
+                        top3_fb = [
+                            {
+                                "athlete_id": a.athlete_id,
+                                "name": a.name,
+                                "win": f"{probs_fb[a.athlete_id]['win'] * 100:.1f}%",
+                                "podium": f"{probs_fb[a.athlete_id]['podium'] * 100:.1f}%",
+                                "expected_rank": probs_fb[a.athlete_id]["expected_rank"],
+                            }
+                            for a in ranked_fb[:3]
+                        ]
+                        gender_predictions_fallback.append({
+                            "gender": gender_enum.value,
+                            "top3": top3_fb,
+                            "total_athletes": len(proj_inputs_fallback),
+                        })
+
+                    if gender_predictions_fallback:
+                        predictions_data = {"genders": gender_predictions_fallback}
+                        from_likely_roster = True
+
                 disc_events.append({
                     "id": ev.id,
                     "name": ev.name,
@@ -999,6 +1094,7 @@ async def predictions(request: Request):
                     "date": str(ev.start_date),
                     "has_athletes": has_athletes,
                     "predictions": predictions_data,
+                    "from_likely_roster": from_likely_roster,
                 })
 
             grouped.append({

@@ -336,7 +336,8 @@
                 <div class="event-meta">{{ ev.date }}</div>
             </div>
 
-            {% if ev.has_athletes and ev.predictions %}
+            {% if ev.predictions %}
+            {% if ev.from_likely_roster %}<div class="hub-note" style="font-size: 0.75rem; color: #808890; margin-top: 0.5rem;">Predicted roster based on season attendance</div>{% endif %}
             <div class="predictions-block">
                 {% for gp in ev.predictions.genders %}
                 <div class="gender-label">{{ gp.gender }} — {{ gp.total_athletes }} athlete{{ 's' if gp.total_athletes != 1 else '' }}</div>
