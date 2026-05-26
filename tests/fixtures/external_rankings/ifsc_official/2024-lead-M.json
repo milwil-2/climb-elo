@@ -1,0 +1,30 @@
+{
+  "discipline": "lead",
+  "fetched_at": "2026-05-26",
+  "gender": "M",
+  "ranking": [
+    {"rank": 1, "name": "Toby Roberts", "country": "GBR", "rating": 3380.0},
+    {"rank": 2, "name": "Shion Omata", "country": "JPN", "rating": 2915.0},
+    {"rank": 3, "name": "Sorato Anraku", "country": "JPN", "rating": 2845.0},
+    {"rank": 4, "name": "Zento Murashita", "country": "JPN", "rating": 2665.0},
+    {"rank": 5, "name": "Sam Avezou", "country": "FRA", "rating": 2330.0},
+    {"rank": 6, "name": "Taisei Homma", "country": "JPN", "rating": 2140.0},
+    {"rank": 7, "name": "Satone Yoshida", "country": "JPN", "rating": 2080.0},
+    {"rank": 8, "name": "Sascha Lehmann", "country": "SUI", "rating": 2040.0},
+    {"rank": 9, "name": "Shuta Tanaka", "country": "JPN", "rating": 1960.0},
+    {"rank": 10, "name": "Colin Duffy", "country": "USA", "rating": 1765.0},
+    {"rank": 11, "name": "Ao Yurikusa", "country": "JPN", "rating": 1730.0},
+    {"rank": 12, "name": "Max Bertone", "country": "FRA", "rating": 1690.0},
+    {"rank": 13, "name": "Dohyun Lee", "country": "KOR", "rating": 1440.0},
+    {"rank": 14, "name": "Yuta Imaizumi", "country": "JPN", "rating": 1420.0},
+    {"rank": 15, "name": "Kibeom Kwon", "country": "KOR", "rating": 1345.0},
+    {"rank": 16, "name": "Yoshiyuki Ogata", "country": "JPN", "rating": 1303.0},
+    {"rank": 17, "name": "Filip Schenk", "country": "ITA", "rating": 1095.0},
+    {"rank": 18, "name": "Stefano Ghisolfi", "country": "ITA", "rating": 1090.0},
+    {"rank": 19, "name": "Jonas Utelli", "country": "SUI", "rating": 1090.0},
+    {"rank": 20, "name": "Jakob Schubert", "country": "AUT", "rating": 1090.0}
+  ],
+  "season": 2024,
+  "source": "ifsc_official",
+  "source_url": "https://en.wikipedia.org/wiki/Lead_climbing_at_the_2024_IFSC_Climbing_World_Cup"
+}

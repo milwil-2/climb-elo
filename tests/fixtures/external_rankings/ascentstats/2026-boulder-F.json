@@ -1,0 +1,20 @@
+{
+  "discipline": "boulder",
+  "fetched_at": "2026-05-26",
+  "gender": "F",
+  "ranking": [
+    {"rank": 1, "name": "Janja Garnbret", "country": "SLO", "rating": 9.7165},
+    {"rank": 2, "name": "Annie Sanders", "country": "USA", "rating": 7.5581},
+    {"rank": 3, "name": "Erin McNeice", "country": "GBR", "rating": 7.0585},
+    {"rank": 4, "name": "Oceania Mackenzie", "country": "AUS", "rating": 6.9315},
+    {"rank": 5, "name": "Oriane Bertone", "country": "FRA", "rating": 6.3512},
+    {"rank": 6, "name": "Melody Sekikawa", "country": "JPN", "rating": 6.0116},
+    {"rank": 7, "name": "Zelia Avezou", "country": "FRA", "rating": 5.9076},
+    {"rank": 8, "name": "Brooke Raboutou", "country": "USA", "rating": 5.5998},
+    {"rank": 9, "name": "Jennifer Eucharia Buckley", "country": "SLO", "rating": 5.5513},
+    {"rank": 10, "name": "Jakoba Rauter", "country": "AUT", "rating": 5.5308}
+  ],
+  "season": 2026,
+  "source": "ascentstats",
+  "source_url": "https://ascentstats.com/ranking-pages/ranking-2026-women.html"
+}

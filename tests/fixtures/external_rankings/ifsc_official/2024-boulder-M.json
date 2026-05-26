@@ -1,0 +1,30 @@
+{
+  "discipline": "boulder",
+  "fetched_at": "2026-05-26",
+  "gender": "M",
+  "ranking": [
+    {"rank": 1, "name": "Sorato Anraku", "country": "JPN", "rating": 3365.0},
+    {"rank": 2, "name": "Meichi Narasaki", "country": "JPN", "rating": 2860.0},
+    {"rank": 3, "name": "Tomoa Narasaki", "country": "JPN", "rating": 2690.0},
+    {"rank": 4, "name": "Sohta Amagasa", "country": "JPN", "rating": 2416.0},
+    {"rank": 5, "name": "Toby Roberts", "country": "GBR", "rating": 2365.0},
+    {"rank": 6, "name": "Dohyun Lee", "country": "KOR", "rating": 2280.0},
+    {"rank": 7, "name": "Maximillian Milne", "country": "GBR", "rating": 1571.66},
+    {"rank": 8, "name": "Ritsu Kayotani", "country": "JPN", "rating": 1375.0},
+    {"rank": 9, "name": "Jongwon Chon", "country": "KOR", "rating": 1331.5},
+    {"rank": 10, "name": "Manuel Cornu", "country": "FRA", "rating": 1323.5},
+    {"rank": 11, "name": "Jakob Schubert", "country": "AUT", "rating": 1242.5},
+    {"rank": 12, "name": "Yuji Fujiwaki", "country": "JPN", "rating": 1215.0},
+    {"rank": 13, "name": "Dayan Akhtar", "country": "GBR", "rating": 1184.0},
+    {"rank": 14, "name": "Anze Peharc", "country": "SLO", "rating": 1121.66},
+    {"rank": 15, "name": "Sam Avezou", "country": "FRA", "rating": 1110.0},
+    {"rank": 16, "name": "Colin Duffy", "country": "USA", "rating": 975.0},
+    {"rank": 17, "name": "Jan-Luca Posch", "country": "AUT", "rating": 942.16},
+    {"rank": 18, "name": "Thomas Lemagner", "country": "FRA", "rating": 865.0},
+    {"rank": 19, "name": "Adam Shahar", "country": "USA", "rating": 786.5},
+    {"rank": 20, "name": "Mejdi Schalck", "country": "FRA", "rating": 785.0}
+  ],
+  "season": 2024,
+  "source": "ifsc_official",
+  "source_url": "https://en.wikipedia.org/wiki/Bouldering_at_the_2024_IFSC_Climbing_World_Cup"
+}
