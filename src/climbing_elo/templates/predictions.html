@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+{% block title %}Predictions — Climbing ELO{% endblock %}
+
+{% block head %}
+<style>
+    /* Predictions-specific overrides */
+    .disc-section {
+        margin-bottom: 3rem;
+    }
+    .disc-header {
+        display: flex;
+        align-items: baseline;
+        gap: 1rem;
+        margin-bottom: 0.5rem;
+    }
+    .disc-title {
+        font-size: 1.3rem;
+        font-weight: 700;
+        color: #fff;
+    }
+    .disc-count {
+        font-size: 0.8rem;
+        color: #606880;
+    }
+    .events-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 1.25rem;
+        margin-top: 1rem;
+    }
+    .event-card {
+        background: #1a1d28;
+        border: 1px solid #2a2d3a;
+        border-radius: 10px;
+        padding: 1.25rem 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+    }
+    .event-card-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.5rem;
+    }
+    .event-name {
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: #e0e0e0;
+        line-height: 1.3;
+    }
+    .event-meta {
+        font-size: 0.78rem;
+        color: #606880;
+        white-space: nowrap;
+    }
+    .tier-badge {
+        display: inline-block;
+        padding: 0.1rem 0.45rem;
+        border-radius: 3px;
+        font-size: 0.7rem;
+        font-weight: 600;
+        background: #252840;
+        color: #7c8aff;
+        white-space: nowrap;
+        margin-top: 0.2rem;
+    }
+    .predictions-block {
+        margin-top: 0.5rem;
+    }
+    .gender-label {
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: #808890;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 0.35rem;
+        margin-top: 0.6rem;
+    }
+    .podium-row {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+        padding: 0.3rem 0;
+        border-bottom: 1px solid #1e2130;
+    }
+    .podium-row:last-child {
+        border-bottom: none;
+    }
+    .podium-rank {
+        font-size: 1rem;
+        font-weight: 800;
+        width: 1.4rem;
+        flex-shrink: 0;
+        text-align: center;
+    }
+    .podium-rank.rank-1 { color: #ffd700; }
+    .podium-rank.rank-2 { color: #c0c0c0; }
+    .podium-rank.rank-3 { color: #cd7f32; }
+    .podium-name {
+        flex: 1;
+        font-size: 0.85rem;
+        color: #d0d0e0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .podium-prob {
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: #7c8aff;
+        white-space: nowrap;
+    }
+    .podium-label {
+        font-size: 0.7rem;
+        color: #505870;
+        white-space: nowrap;
+    }
+    .no-athletes-msg {
+        font-size: 0.82rem;
+        color: #606880;
+        margin-top: 0.4rem;
+    }
+    .no-athletes-msg a {
+        color: #7c8aff;
+        text-decoration: none;
+    }
+    .no-athletes-msg a:hover {
+        text-decoration: underline;
+    }
+    .empty-state {
+        text-align: center;
+        padding: 4rem 2rem;
+        color: #505870;
+    }
+    .empty-state h2 {
+        font-size: 1.1rem;
+        color: #7c8aff;
+        margin-bottom: 0.75rem;
+    }
+    .empty-state p {
+        font-size: 0.9rem;
+        margin-bottom: 1rem;
+    }
+    .btn-primary {
+        display: inline-block;
+        padding: 0.55rem 1.2rem;
+        background: #7c8aff;
+        color: #0f1117;
+        border-radius: 6px;
+        font-weight: 700;
+        font-size: 0.85rem;
+        text-decoration: none;
+    }
+    .btn-primary:hover {
+        background: #9aa8ff;
+    }
+    .page-header {
+        display: flex;
+        align-items: baseline;
+        gap: 1rem;
+        margin-bottom: 2rem;
+    }
+    .page-header h1 {
+        margin: 0;
+    }
+    .page-subtitle {
+        font-size: 0.85rem;
+        color: #606880;
+    }
+    .disc-empty {
+        color: #505870;
+        font-size: 0.85rem;
+        padding: 0.75rem 0;
+    }
+    .projections-link {
+        font-size: 0.78rem;
+        margin-top: 0.75rem;
+        padding-top: 0.6rem;
+        border-top: 1px solid #2a2d3a;
+    }
+    .projections-link a {
+        color: #7c8aff;
+        text-decoration: none;
+    }
+    .projections-link a:hover {
+        text-decoration: underline;
+    }
+    .athletes-count {
+        font-size: 0.72rem;
+        color: #505870;
+        margin-top: 0.2rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Predictions</h1>
+    <span class="page-subtitle">Monte Carlo ELO-based outcome forecasts for upcoming events</span>
+</div>
+
+{% set any_events = grouped | selectattr("has_data") | list %}
+
+{% if not any_events %}
+<div class="empty-state">
+    <h2>No upcoming events found</h2>
+    <p>
+        Run <code>uv run python scripts/scrape_upcoming.py --all-disciplines</code>
+        to populate upcoming events, or build a custom projection below.
+    </p>
+    <a href="/projections/new" class="btn-primary">Manual Projection</a>
+</div>
+{% else %}
+{% for disc in grouped %}
+<section class="disc-section">
+    <div class="disc-header">
+        <span class="disc-title">{{ disc.label }}</span>
+        <span class="disc-count">
+            {% if disc.events %}{{ disc.events | length }} upcoming event{{ 's' if disc.events | length != 1 else '' }}{% else %}no upcoming events{% endif %}
+        </span>
+    </div>
+
+    {% if not disc.events %}
+    <p class="disc-empty">No upcoming {{ disc.label }} events in the database.</p>
+    {% else %}
+    <div class="events-grid">
+        {% for ev in disc.events %}
+        <div class="event-card">
+            <div class="event-card-header">
+                <div>
+                    <div class="event-name">{{ ev.name }}</div>
+                    <span class="tier-badge">{{ ev.tier }}</span>
+                </div>
+                <div class="event-meta">{{ ev.date }}</div>
+            </div>
+
+            {% if ev.has_athletes and ev.predictions %}
+            <div class="predictions-block">
+                {% for gp in ev.predictions.genders %}
+                <div class="gender-label">{{ gp.gender }} — {{ gp.total_athletes }} athlete{{ 's' if gp.total_athletes != 1 else '' }}</div>
+                {% for athlete in gp.top3 %}
+                <div class="podium-row">
+                    <span class="podium-rank rank-{{ loop.index }}">{{ loop.index }}</span>
+                    <span class="podium-name">
+                        <a href="/athletes/{{ athlete.athlete_id }}" style="color:inherit;text-decoration:none">{{ athlete.name }}</a>
+                    </span>
+                    <span class="podium-prob">{{ athlete.win }}</span>
+                    <span class="podium-label">win</span>
+                </div>
+                {% endfor %}
+                {% endfor %}
+            </div>
+            <div class="projections-link">
+                <a href="/projections/{{ ev.id }}">Full projection &rarr;</a>
+            </div>
+            {% else %}
+            <div class="no-athletes-msg">
+                No registered athletes yet.
+                <a href="/projections/new">Select athletes manually &rarr;</a>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</section>
+{% endfor %}
+
+<div style="margin-top:3rem;padding-top:1.5rem;border-top:1px solid #2a2d3a;text-align:center;">
+    <p style="color:#606880;font-size:0.85rem;margin-bottom:0.75rem">
+        Want to project a custom field or an event not listed here?
+    </p>
+    <a href="/projections/new" class="btn-primary">Manual Projection</a>
+</div>
+{% endif %}
+{% endblock %}
