@@ -131,6 +131,44 @@ The IFSC API publishes a registered-athletes list only ~7-14 days before an even
 - **DNS exclusion**: a DNS result does not count as participation.
 - When the fallback is used, the prediction card shows a "Predicted roster based on season attendance" disclaimer and the `from_likely_roster` flag is `True` in the template context.
 
+## Live Events
+
+Live event support allows real-time score ingestion and streaming to browser clients during active competitions.
+
+### Architecture
+
+- **Poller** (`live/poller.py`): `LivePoller(event_id, dcat_id, interval_seconds=15)` is an async task that polls `/api/v1/events/{event_id}/result/{dcat_id}` on the IFSC API. It diffs the API response against the DB using `(athlete_id, round_type, rank, raw_score)` tuples, inserts new `Result` rows, and publishes payloads to the `EventBus`. Stops automatically when the event status returns `"finished"`.
+- **EventBus** (`live/bus.py`): in-process pub/sub. One `asyncio.Queue` per subscriber per `event_id`. Poller writes; SSE handlers read.
+- **SSE endpoint** (`api/sse.py`): `GET /live/{event_id}/stream` returns `text/event-stream`. Each new result emits `data: {"type":"new_result",...}\n\n`. Heartbeat every 30 s. Auto-closes after 4 h. Cap: 100 concurrent connections per event (429 if exceeded). 404 if event not in DB.
+
+### Poller Mutex
+
+A file lock at `/tmp/climbing_elo_poller_<event_id>.lock` prevents duplicate pollers across processes (e.g. two uvicorn workers or a manual CLI run). The lock is released on graceful shutdown.
+
+### ELO Updates
+
+Mid-event ELO updates are intentionally deferred. The poller only inserts `Result` rows. Run `scripts/run_backfill.py` after the event finishes (status = `"finished"`) to compute ratings.
+
+### Starting / Stopping Pollers
+
+```bash
+# Manual (one event, blocks until Ctrl+C or event finishes):
+uv run python scripts/live_poll.py --event-id 1234 --dcat-id 567
+
+# With custom poll interval:
+uv run python scripts/live_poll.py --event-id 1234 --dcat-id 567 --interval 30
+
+# Programmatic (inside async code, e.g. a startup hook):
+from climbing_elo.live import start_polling, stop_polling, is_polling
+await start_polling(event_id=1234, dcat_id=567)
+stop_polling(event_id=1234)
+```
+
+SSE stream (browser / curl):
+```bash
+curl -N http://localhost:8000/live/1234/stream
+```
+
 ## Testing
 
-Tests use an in-memory SQLite database (`conftest.py:db_session`). Fixtures `sample_event` and `eight_athletes` provide pre-built test data. `test_elo.py` validates pairwise math (zero-sum invariant across all 3 disciplines). `test_backfill.py` runs a 3-event integration test and checks reproducibility. `test_api.py` covers all v1 REST endpoints. `test_projections.py` covers Monte Carlo invariants. `test_combined.py` covers the Boulder+Lead aggregate. `test_scraper_upcoming.py` covers upcoming-event filter logic. `test_snapshot.py` covers snapshot/restore round-trips. `test_health_check.py` covers CLI exit codes + Discord rate-limiting. `test_cache.py` covers TTLCache thread-safety + expiry. `test_likely_roster.py` covers the likely-competitor fallback logic (empty season, early season, mid-season threshold, boundary, gender separation, tier filtering, cap, DNS exclusion).
+Tests use an in-memory SQLite database (`conftest.py:db_session`). Fixtures `sample_event` and `eight_athletes` provide pre-built test data. `test_elo.py` validates pairwise math (zero-sum invariant across all 3 disciplines). `test_backfill.py` runs a 3-event integration test and checks reproducibility. `test_api.py` covers all v1 REST endpoints. `test_projections.py` covers Monte Carlo invariants. `test_combined.py` covers the Boulder+Lead aggregate. `test_scraper_upcoming.py` covers upcoming-event filter logic. `test_snapshot.py` covers snapshot/restore round-trips. `test_health_check.py` covers CLI exit codes + Discord rate-limiting. `test_cache.py` covers TTLCache thread-safety + expiry. `test_likely_roster.py` covers the likely-competitor fallback logic. `test_live.py` covers the live poller + SSE (new result detection, dedup, finished-status auto-stop, EventBus pub/sub, file lock mutex, SSE 404/200/429).
