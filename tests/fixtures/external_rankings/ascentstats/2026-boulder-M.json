@@ -1,0 +1,20 @@
+{
+  "discipline": "boulder",
+  "fetched_at": "2026-05-26",
+  "gender": "M",
+  "ranking": [
+    {"rank": 1, "name": "Sorato Anraku", "country": "JPN", "rating": 9.3306},
+    {"rank": 2, "name": "Mejdi Schalck", "country": "FRA", "rating": 7.6401},
+    {"rank": 3, "name": "Dohyun Lee", "country": "KOR", "rating": 6.9984},
+    {"rank": 4, "name": "Sohta Amagasa", "country": "JPN", "rating": 6.4135},
+    {"rank": 5, "name": "Tomoa Narasaki", "country": "JPN", "rating": 6.2386},
+    {"rank": 6, "name": "Hannes Van Duysen", "country": "BEL", "rating": 6.1804},
+    {"rank": 7, "name": "Max Bertone", "country": "FRA", "rating": 6.0212},
+    {"rank": 8, "name": "Rei Kawamata", "country": "JPN", "rating": 5.9266},
+    {"rank": 9, "name": "Paul Jenft", "country": "FRA", "rating": 5.567},
+    {"rank": 10, "name": "Sam Avezou", "country": "FRA", "rating": 5.2837}
+  ],
+  "season": 2026,
+  "source": "ascentstats",
+  "source_url": "https://ascentstats.com/ranking-pages/ranking-2026-men.html"
+}

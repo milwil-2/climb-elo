@@ -21,6 +21,10 @@ data/*.csv
 data/*.json
 *.sqlite
 *.sqlite3
+# External-ranking cache (Issue #44). Recorded snapshots live in
+# tests/fixtures/external_rankings/ and DO ship in-repo; the writable
+# cache populated by scripts/refresh_external_rankings.py is local-only.
+data/external_rankings/
 
 # Environment
 .env

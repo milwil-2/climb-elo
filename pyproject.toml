@@ -27,6 +27,14 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests marked `@pytest.mark.network` reach out to live external sites
+# (Wikipedia for the IFSC ranking surface, ascentstats.com). They are
+# skipped by default so CI never depends on third-party uptime. Run them
+# locally with `uv run pytest -m network` when validating a scraper change.
+markers = [
+    "network: live external-network tests (skipped by default; run with -m network).",
+]
+addopts = "-m 'not network'"
 
 [dependency-groups]
 dev = [

@@ -1,0 +1,20 @@
+{
+  "discipline": "boulder",
+  "fetched_at": "2026-05-26",
+  "gender": "M",
+  "ranking": [
+    {"rank": 1, "name": "Sorato Anraku", "country": "JPN", "rating": 8.8659},
+    {"rank": 2, "name": "Dohyun Lee", "country": "KOR", "rating": 7.5801},
+    {"rank": 3, "name": "Mejdi Schalck", "country": "FRA", "rating": 6.5153},
+    {"rank": 4, "name": "Meichi Narasaki", "country": "JPN", "rating": 6.0383},
+    {"rank": 5, "name": "Pan Yufei", "country": "CHN", "rating": 5.7012},
+    {"rank": 6, "name": "Sohta Amagasa", "country": "JPN", "rating": 5.6943},
+    {"rank": 7, "name": "Yuji Fujiwaki", "country": "JPN", "rating": 5.6509},
+    {"rank": 8, "name": "Tomoa Narasaki", "country": "JPN", "rating": 5.3751},
+    {"rank": 9, "name": "Toby Roberts", "country": "GBR", "rating": 5.3194},
+    {"rank": 10, "name": "Hannes Van Duysen", "country": "BEL", "rating": 5.2871}
+  ],
+  "season": 2025,
+  "source": "ascentstats",
+  "source_url": "https://ascentstats.com/ranking-pages/ranking-2025-men.html"
+}

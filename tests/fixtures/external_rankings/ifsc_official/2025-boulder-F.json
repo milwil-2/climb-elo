@@ -1,0 +1,30 @@
+{
+  "discipline": "boulder",
+  "fetched_at": "2026-05-26",
+  "gender": "F",
+  "ranking": [
+    {"rank": 1, "name": "Oriane Bertone", "country": "FRA", "rating": 4375.0},
+    {"rank": 2, "name": "Mao Nakamura", "country": "JPN", "rating": 3480.0},
+    {"rank": 3, "name": "Annie Sanders", "country": "USA", "rating": 3290.0},
+    {"rank": 4, "name": "Melody Sekikawa", "country": "JPN", "rating": 2880.0},
+    {"rank": 5, "name": "Anon Matsufuji", "country": "JPN", "rating": 2670.0},
+    {"rank": 6, "name": "Erin McNeice", "country": "GBR", "rating": 2512.0},
+    {"rank": 7, "name": "Miho Nonaka", "country": "JPN", "rating": 2370.0},
+    {"rank": 8, "name": "Camilla Moroni", "country": "ITA", "rating": 2213.0},
+    {"rank": 9, "name": "Agathe Calliet", "country": "FRA", "rating": 2116.0},
+    {"rank": 10, "name": "Zelia Avezou", "country": "FRA", "rating": 2035.0},
+    {"rank": 11, "name": "Oceania Mackenzie", "country": "AUS", "rating": 1670.0},
+    {"rank": 12, "name": "Naile Meignan", "country": "FRA", "rating": 1545.0},
+    {"rank": 13, "name": "Kyra Condie", "country": "USA", "rating": 1375.0},
+    {"rank": 14, "name": "Emma Edwards", "country": "GBR", "rating": 1375.0},
+    {"rank": 15, "name": "Giorgia Tesio", "country": "ITA", "rating": 1147.0},
+    {"rank": 16, "name": "Jennifer Eucharia Buckley", "country": "SLO", "rating": 1069.0},
+    {"rank": 17, "name": "Futaba Ito", "country": "JPN", "rating": 1055.0},
+    {"rank": 18, "name": "Janja Garnbret", "country": "SLO", "rating": 1000.0},
+    {"rank": 19, "name": "Cloe Coscoy", "country": "USA", "rating": 938.0},
+    {"rank": 20, "name": "Chaehyun Seo", "country": "KOR", "rating": 904.0}
+  ],
+  "season": 2025,
+  "source": "ifsc_official",
+  "source_url": "https://en.wikipedia.org/wiki/Bouldering_at_the_2025_IFSC_Climbing_World_Cup"
+}

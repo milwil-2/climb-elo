@@ -20,12 +20,20 @@ Variants
     Lower historical rank → higher predicted μ.
 
 ``ifsc_official``
-    Use the official IFSC season-end ranking as the prediction. Marked as
-    a TODO stub here — implementing the scrape against
-    ``components.ifsc-climbing.org/rankings/`` is a meaningful sub-project
-    (auth, pagination, caching). The stub returns no-prediction (default
-    μ/σ for everyone) so the harness still runs end-to-end. Flagged
-    explicitly so the report shows "this baseline isn't real yet".
+    Use the official IFSC season-end World Cup ranking as the prediction.
+    Rankings are sourced via :mod:`climbing_elo.scraper.external_rankings`
+    (see that module for why we consume Wikipedia tables rather than the
+    IFSC widget host). Athletes that appear in the most recent season-end
+    ranking before the training cutoff get a rank-derived μ (lower rank ⇒
+    higher μ); unranked athletes default to ``DEFAULT_MU``.
+
+``ascentstats``
+    Use the AscentStats community Bayesian dynamic Bradley-Terry rating
+    as the prediction. Boulder only — the upstream source only publishes
+    boulder ratings. Same rank-based μ translation as ``ifsc_official``
+    for cross-source comparability. Tracked in the research doc under R5
+    (external validation) and added alongside #44 to give us a second
+    "system we're trying to beat" beyond the official ranking.
 
 ``stripped_elo``
     Current engine but with each piece of machinery turned off:
@@ -65,11 +73,19 @@ from climbing_elo.engine.evaluation import (
     register_variant,
 )
 from climbing_elo.models import (
+    Athlete,
     Discipline,
     Event,
     Result,
     Round,
     RoundType,
+)
+from climbing_elo.scraper.external_rankings import (
+    DisciplineKey,
+    RankedAthlete,
+    Source,
+    load_snapshot,
+    normalize_name,
 )
 
 log = logging.getLogger(__name__)
@@ -254,57 +270,248 @@ class PersistenceEngine:
 
 
 # ---------------------------------------------------------------------------
-# IFSCOfficialEngine
+# Shared rank-based engine (drives IFSCOfficial and AscentStats)
 # ---------------------------------------------------------------------------
 
 
-class IFSCOfficialEngine:
-    """Use the official IFSC season-end ranking as the prediction.
+# Map the SQLAlchemy enum to the string keys our snapshot files use. Speed
+# is intentionally absent from AscentStats (boulder-only source); the
+# engines filter that out below.
+_DISCIPLINE_KEY: dict[Discipline, DisciplineKey] = {
+    Discipline.BOULDER: "boulder",
+    Discipline.LEAD: "lead",
+    Discipline.SPEED: "speed",
+}
 
-    NOT YET IMPLEMENTED — see issue #38.
 
-    Implementing this properly requires scraping
-    ``components.ifsc-climbing.org/rankings/`` (or extending
-    :mod:`climbing_elo.scraper.ifsc_api` with a rankings endpoint), caching
-    the results locally, and mapping IFSC rank to predicted μ. That's a
-    meaningful sub-project (auth handshake, pagination, cache invalidation)
-    and we deliberately defer it.
+class _RankSnapshotEngine:
+    """Common machinery for snapshot-fed baselines.
 
-    The stub returns ``DEFAULT_MU/DEFAULT_SIGMA`` for every athlete so the
-    harness still produces a complete report — the report will show this
-    baseline as equivalent to "no information", which is the truthful
-    outcome until the scrape lands.
+    Both :class:`IFSCOfficialEngine` and :class:`AscentStatsEngine` consume
+    a per-season-end ranking and translate athlete rank → predicted μ. The
+    only differences between the two engines are:
 
-    TODO(#38-followup): scrape and cache IFSC season-end rankings, populate
-    a per-discipline season-end snapshot keyed on (athlete_id, season,
-    discipline), then translate rank → μ via the same formula as
-    :class:`PersistenceEngine`.
+      - ``_SOURCE`` (which snapshot directory to read)
+      - which disciplines are supported
+
+    Subclasses set those two attrs and inherit ``predict()``.
+
+    Snapshot selection
+    ------------------
+
+    The harness asks for predictions at a moment in time but does not pass
+    the training cutoff to the engine. We work around this by snapshotting
+    the *most recent season for which a fixture exists*. In production,
+    operators refresh fixtures yearly; for the in-CI test corpus this is
+    deterministic.
+
+    Athlete-id resolution
+    ---------------------
+
+    Snapshots are name-keyed; the DB is id-keyed. On first call we build a
+    per-engine ``normalize_name(name) → athlete_id`` index spanning *all*
+    athletes (genders combined, since rankings are gender-bucketed and we
+    have no gender filter on the predict surface). If two athletes share a
+    normalized name (rare — handled by the override table) the first one
+    wins.
     """
+
+    _SOURCE: Source = "ifsc_official"
+    _SUPPORTED_DISCIPLINES: tuple[Discipline, ...] = (
+        Discipline.BOULDER,
+        Discipline.LEAD,
+        Discipline.SPEED,
+    )
+
+    # Same shape as PersistenceEngine — keeps the three rank-based baselines
+    # directly comparable. A 15th-place athlete maps to default μ, top
+    # finishers shift up, deep finishers shift down.
+    MU_PER_RANK_STEP = 12.0
+    MEDIAN_RANK = 15.0
+
+    #: Seasons to try when looking up the most recent snapshot. We descend
+    #: from the current calendar year so newer fixtures are preferred.
+    _SEASON_PROBE_WINDOW = 6
 
     def __init__(self, session: Session):
         self._session = session
-        log.warning(
-            "ifsc_official is a stub — scraping IFSC rankings is deferred "
-            "per issue #38 (see docstring TODO)."
-        )
+        # discipline → {athlete_id: (rank, n_events_proxy)}
+        self._cache: dict[Discipline, dict[int, tuple[int, int]]] = {}
+        self._name_index: dict[str, int] | None = None
 
-    def name(self) -> str:
-        return "ifsc_official"
+    def name(self) -> str:  # pragma: no cover — overridden by subclasses
+        raise NotImplementedError
+
+    # ---------------- internal helpers ----------------
+
+    def _build_name_index(self) -> dict[str, int]:
+        """Cache normalised-name → athlete_id for the current session.
+
+        Iterates :class:`Athlete` once. ~5k rows in production, ~10 ms.
+        """
+        index: dict[str, int] = {}
+        for row in self._session.execute(select(Athlete.id, Athlete.name)).all():
+            key = normalize_name(row.name)
+            # Don't clobber — first match wins. The override table in the
+            # scraper handles the known ambiguous cases.
+            index.setdefault(key, row.id)
+        return index
+
+    def _latest_snapshot(
+        self,
+        discipline: Discipline,
+    ) -> list[RankedAthlete]:
+        """Return the most recent non-empty snapshot for both genders combined.
+
+        Walks years descending from the current calendar year. For each
+        candidate year we concatenate the M and F rankings — the harness
+        does not give us a gender filter, and athletes only ever appear in
+        one gender's ranking, so this is safe.
+        """
+        discipline_key = _DISCIPLINE_KEY.get(discipline)
+        if discipline_key is None:
+            return []
+
+        from datetime import date as _date
+
+        current_year = _date.today().year
+        for season in range(current_year, current_year - self._SEASON_PROBE_WINDOW, -1):
+            combined: list[RankedAthlete] = []
+            for gender in ("M", "F"):
+                combined.extend(
+                    load_snapshot(self._SOURCE, season, discipline_key, gender)  # type: ignore[arg-type]
+                )
+            if combined:
+                return combined
+        return []
+
+    def _build_cache(self, discipline: Discipline) -> dict[int, tuple[int, int]]:
+        if discipline not in self._SUPPORTED_DISCIPLINES:
+            return {}
+        if self._name_index is None:
+            self._name_index = self._build_name_index()
+
+        snapshot = self._latest_snapshot(discipline)
+        if not snapshot:
+            log.info(
+                "No %s snapshot available for discipline=%s — engine will "
+                "return default μ for all athletes.",
+                self._SOURCE,
+                discipline.value,
+            )
+            return {}
+
+        cache: dict[int, tuple[int, int]] = {}
+        unmatched = 0
+        for entry in snapshot:
+            key = normalize_name(entry.name)
+            athlete_id = self._name_index.get(key)
+            if athlete_id is None:
+                unmatched += 1
+                continue
+            # Earlier (better) rank wins if the name is duplicated across
+            # genders or appears twice in a concatenated snapshot.
+            existing = cache.get(athlete_id)
+            if existing is None or entry.rank < existing[0]:
+                # We expose the rank as the n_events_proxy for harness
+                # tenure-stratification so cold-start athletes (no
+                # ranking) are visibly distinct from veterans (top-N).
+                cache[athlete_id] = (entry.rank, max(1, 31 - entry.rank))
+        if unmatched:
+            log.info(
+                "%s: %d ranked athletes not matched to DB (likely names "
+                "absent from our scraped corpus).",
+                self._SOURCE,
+                unmatched,
+            )
+        return cache
+
+    # ---------------- public RatingEngine surface ----------------
 
     def predict(
         self,
         athletes_in_round: Iterable[int],
         discipline: Discipline,
     ) -> dict[int, RatingForecast]:
-        return {
-            aid: RatingForecast(
-                athlete_id=aid,
-                mu=DEFAULT_MU,
-                sigma=DEFAULT_SIGMA,
-                n_events=0,
-            )
-            for aid in athletes_in_round
-        }
+        if discipline not in self._cache:
+            self._cache[discipline] = self._build_cache(discipline)
+        snap = self._cache[discipline]
+
+        out: dict[int, RatingForecast] = {}
+        for aid in athletes_in_round:
+            if aid in snap:
+                rank, n_events = snap[aid]
+                mu = DEFAULT_MU + self.MU_PER_RANK_STEP * (self.MEDIAN_RANK - rank)
+                out[aid] = RatingForecast(
+                    athlete_id=aid,
+                    mu=mu,
+                    sigma=DEFAULT_SIGMA,
+                    n_events=n_events,
+                )
+            else:
+                out[aid] = RatingForecast(
+                    athlete_id=aid,
+                    mu=DEFAULT_MU,
+                    sigma=DEFAULT_SIGMA,
+                    n_events=0,
+                )
+        return out
+
+
+# ---------------------------------------------------------------------------
+# IFSCOfficialEngine
+# ---------------------------------------------------------------------------
+
+
+class IFSCOfficialEngine(_RankSnapshotEngine):
+    """Predict using the official IFSC season-end World Cup ranking.
+
+    Implementation notes
+    --------------------
+
+    Snapshots are sourced from ``tests/fixtures/external_rankings/ifsc_official/``
+    (recorded) and ``data/external_rankings/ifsc_official/`` (live, gitignored).
+    See :mod:`climbing_elo.scraper.external_rankings` for the scrape path
+    and the rationale for using Wikipedia summary tables rather than the
+    IFSC's own rankings widget.
+
+    Engine state is built lazily per-discipline on first ``predict()`` call,
+    then cached for the lifetime of the engine instance (the harness
+    creates one engine per backtest split).
+    """
+
+    _SOURCE: Source = "ifsc_official"
+    _SUPPORTED_DISCIPLINES = (Discipline.BOULDER, Discipline.LEAD, Discipline.SPEED)
+
+    def name(self) -> str:
+        return "ifsc_official"
+
+
+# ---------------------------------------------------------------------------
+# AscentStatsEngine
+# ---------------------------------------------------------------------------
+
+
+class AscentStatsEngine(_RankSnapshotEngine):
+    """Predict using AscentStats' Bayesian Bradley-Terry rating (Boulder only).
+
+    AscentStats publishes annual top-N boulder rankings on
+    ``ascentstats.com``. We scrape and cache them via
+    :mod:`climbing_elo.scraper.external_rankings`.
+
+    For Lead/Speed we return defaults — AscentStats does not publish those
+    disciplines. The engine still produces a complete forecast (default μ
+    for everyone), so the harness can run the full Lead/Speed pipeline
+    against this variant; the resulting report will simply show
+    "ascentstats" sitting at the default-prediction floor for those
+    disciplines, which is the truthful outcome.
+    """
+
+    _SOURCE: Source = "ascentstats"
+    _SUPPORTED_DISCIPLINES = (Discipline.BOULDER,)
+
+    def name(self) -> str:
+        return "ascentstats"
 
 
 # ---------------------------------------------------------------------------
@@ -499,4 +706,5 @@ class StrippedEloEngine:
 register_variant("random", RandomEngine)
 register_variant("persistence", PersistenceEngine)
 register_variant("ifsc_official", IFSCOfficialEngine)
+register_variant("ascentstats", AscentStatsEngine)
 register_variant("stripped_elo", StrippedEloEngine)
