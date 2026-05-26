@@ -5,7 +5,7 @@ from datetime import date
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Form, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import func, select
 
 from climbing_elo.cache import likely_roster_cache, predictions_cache
@@ -1312,6 +1312,159 @@ async def live_event_view(request: Request, event_id: int, gender: str = "M"):
             },
         },
     )
+
+
+@router.get("/live/{event_id}/projections.json")
+async def live_projections_json(event_id: int, gender: str = "M"):
+    """Return current projection data for a live event as JSON.
+
+    This lightweight endpoint is called by the SSE consumer in the live page
+    whenever new results arrive.  It avoids re-fetching the entire HTML page
+    (~50-100 KB) by returning only the projection rows (~1-5 KB).
+
+    Response shape::
+
+        {
+          "rows": [
+            {
+              "athlete_id": 61,
+              "name": "Janja Garnbret",
+              "mu": 2891.4,
+              "win": "84.2",
+              "podium": "97.6",
+              "expected_rank": 1.18,
+              "is_completed": false,
+              "proj_rank": 1
+            },
+            ...
+          ]
+        }
+    """
+    with _get_session() as session:
+        event = session.get(Event, event_id)
+        if not event:
+            return JSONResponse({"error": "Event not found"}, status_code=404)
+
+        try:
+            gender_enum = Gender(gender.upper())
+        except ValueError:
+            gender_enum = Gender.M
+
+        available_gender_enums = sorted({rnd.gender for rnd in event.rounds})
+        if available_gender_enums and gender_enum not in available_gender_enums:
+            gender_enum = available_gender_enums[0]
+
+        _rt_order = {
+            RoundType.FINAL: 0,
+            RoundType.SEMI: 1,
+            RoundType.QUALIFICATION: 2,
+        }
+        sorted_rounds = sorted(
+            [r for r in event.rounds if r.gender == gender_enum],
+            key=lambda r: _rt_order.get(r.round_type, 99),
+        )
+
+        athlete_best: dict[int, dict] = {}
+        for rnd in sorted_rounds:
+            results = list(
+                session.execute(
+                    select(Result, Athlete)
+                    .join(Athlete, Result.athlete_id == Athlete.id)
+                    .where(Result.round_id == rnd.id, Result.dns.is_(False))
+                    .order_by(Result.rank.asc())
+                ).all()
+            )
+            for res, athlete in results:
+                if athlete.id not in athlete_best:
+                    athlete_best[athlete.id] = {
+                        "athlete_id": athlete.id,
+                        "name": athlete.name,
+                        "rank": res.rank,
+                    }
+
+        leaderboard_rows = sorted(
+            athlete_best.values(),
+            key=lambda r: r["rank"] if r["rank"] is not None else 9999,
+        )
+
+        pre_event = len(leaderboard_rows) == 0
+        proj_athlete_ids: list[int] = []
+
+        if pre_event:
+            _roster_cache_key = (
+                f"roster:{event.discipline.value}:{event.season}:{gender_enum.value}"
+            )
+            cached_roster = likely_roster_cache.get(_roster_cache_key)
+            if cached_roster is None:
+                cached_roster = likely_competitors(
+                    session, event.discipline, event.season, gender_enum
+                )
+                likely_roster_cache.set(_roster_cache_key, cached_roster)
+            proj_athlete_ids = list(cached_roster[:_MAX_ATHLETES_PER_PROJECTION_CARD])
+
+        completed: list[tuple[AthleteProjectionInput, int]] = []
+        remaining: list[AthleteProjectionInput] = []
+
+        if pre_event and proj_athlete_ids:
+            for inp in _build_proj_inputs_batched(
+                session, proj_athlete_ids, event.discipline
+            ):
+                remaining.append(inp)
+        else:
+            for row in leaderboard_rows:
+                aid = row["athlete_id"]
+                rating = session.execute(
+                    select(Rating).where(
+                        Rating.athlete_id == aid,
+                        Rating.discipline == event.discipline,
+                    )
+                ).scalar_one_or_none()
+                if rating is None:
+                    from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+
+                    mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
+                else:
+                    mu, sigma = rating.mu, rating.sigma
+                athlete_obj = session.get(Athlete, aid)
+                inp = AthleteProjectionInput(
+                    athlete_id=aid,
+                    mu=mu,
+                    sigma=sigma,
+                    name=athlete_obj.name if athlete_obj else str(aid),
+                )
+                if row["rank"] is not None:
+                    completed.append((inp, row["rank"]))
+                else:
+                    remaining.append(inp)
+
+        projection_rows: list[dict] = []
+        if completed or remaining:
+            probs = compute_partial_event_probabilities(
+                completed_athletes=completed,
+                remaining_athletes=remaining,
+                n_simulations=10_000,
+            )
+            completed_ids = {inp.athlete_id for inp, _ in completed}
+            all_inputs = [inp for inp, _ in completed] + remaining
+            for inp in sorted(
+                all_inputs, key=lambda a: probs[a.athlete_id]["expected_rank"]
+            ):
+                p = probs[inp.athlete_id]
+                projection_rows.append(
+                    {
+                        "athlete_id": inp.athlete_id,
+                        "name": inp.name,
+                        "mu": round(inp.mu, 1),
+                        "win": f"{p['win'] * 100:.1f}",
+                        "podium": f"{p['podium'] * 100:.1f}",
+                        "expected_rank": round(p["expected_rank"], 2),
+                        "is_completed": inp.athlete_id in completed_ids,
+                    }
+                )
+            for i, row in enumerate(projection_rows):
+                row["proj_rank"] = i + 1
+
+    return JSONResponse({"rows": projection_rows})
 
 
 @router.get("/predictions", response_class=HTMLResponse)

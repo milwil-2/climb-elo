@@ -424,23 +424,93 @@
     }, PROJECTION_THROTTLE_MS);
   }
 
+  // Extract event_id from the current path (/v2/live/{id}?gender=...).
+  var _pathParts = window.location.pathname.replace(/\/$/, "").split("/");
+  var LIVE_EVENT_ID = parseInt(_pathParts[_pathParts.length - 1], 10) || 0;
+
+  function buildProjRow(row) {
+    // Build a <tr> for one projection row from a JSON projection object.
+    // Uses createElement/textContent throughout — no innerHTML — for XSS safety.
+    var tr = document.createElement("tr");
+    tr.id = "proj-row-" + row.athlete_id;
+
+    // Rank cell
+    var tdRank = document.createElement("td");
+    tdRank.className = "rk-cell";
+    var pill = document.createElement("span");
+    pill.className = "rk-pill" + (row.proj_rank <= 3 ? " top" : "");
+    pill.textContent = row.proj_rank;
+    tdRank.appendChild(pill);
+
+    // Name cell
+    var tdName = document.createElement("td");
+    tdName.className = "proj-name";
+    var link = document.createElement("a");
+    link.href = "/v2/athletes/" + row.athlete_id;
+    link.textContent = row.name;
+    tdName.appendChild(link);
+    if (row.is_completed) {
+      var locked = document.createElement("span");
+      locked.className = "locked";
+      locked.textContent = "Finished";
+      tdName.appendChild(locked);
+    }
+
+    // Win cell
+    var tdWin = document.createElement("td");
+    var winWrap = document.createElement("div");
+    winWrap.className = "prob-bar-wrap";
+    var winBar = document.createElement("div");
+    winBar.className = "prob-bar";
+    var winRaw = parseFloat(row.win) / 100;
+    winBar.style.width = Math.min(Math.round(winRaw * 100), 100) + "px";
+    var winText = document.createElement("span");
+    winText.className = "prob-text";
+    winText.textContent = row.win + "%";
+    winWrap.appendChild(winBar);
+    winWrap.appendChild(winText);
+    tdWin.appendChild(winWrap);
+
+    // Podium cell
+    var tdPodium = document.createElement("td");
+    var podWrap = document.createElement("div");
+    podWrap.className = "prob-bar-wrap";
+    var podBar = document.createElement("div");
+    podBar.className = "prob-bar";
+    var podRaw = parseFloat(row.podium) / 100;
+    podBar.style.width = Math.min(Math.round(podRaw * 100), 100) + "px";
+    podBar.style.opacity = "0.55";
+    var podText = document.createElement("span");
+    podText.className = "prob-text";
+    podText.textContent = row.podium + "%";
+    podWrap.appendChild(podBar);
+    podWrap.appendChild(podText);
+    tdPodium.appendChild(podWrap);
+
+    tr.appendChild(tdRank);
+    tr.appendChild(tdName);
+    tr.appendChild(tdWin);
+    tr.appendChild(tdPodium);
+    return tr;
+  }
+
   function doProjectionRefresh() {
-    var url = window.location.pathname + window.location.search;
-    fetch(url, { headers: { "Accept": "text/html" } })
+    // Fetch projection data as JSON from the lightweight endpoint,
+    // then rebuild the projections table via createElement (no innerHTML).
+    var params = new URLSearchParams(window.location.search);
+    var genderParam = params.get("gender") || "M";
+    var url = "/v2/live/" + LIVE_EVENT_ID + "/projections.json?gender=" + encodeURIComponent(genderParam);
+    fetch(url, { headers: { "Accept": "application/json" } })
       .then(function(resp) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
-        return resp.text();
+        return resp.json();
       })
-      .then(function(html) {
-        var parser = new DOMParser();
-        var doc = parser.parseFromString(html, "text/html");
-        var newBody = doc.getElementById("projections-body");
-        var newTable = doc.getElementById("projections-table");
-        if (newBody && projBody) {
-          projBody.innerHTML = newBody.innerHTML;
+      .then(function(data) {
+        var rows = data.rows || [];
+        if (rows.length > 0 && projBody) {
+          while (projBody.firstChild) { projBody.removeChild(projBody.firstChild); }
+          rows.forEach(function(row) { projBody.appendChild(buildProjRow(row)); });
           showProjTable();
-        } else if (newTable && projTable) {
-          projTable.innerHTML = newTable.innerHTML;
         }
         showProjUpdating(false);
       })

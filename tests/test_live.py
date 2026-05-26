@@ -844,8 +844,13 @@ class TestLivePreEvent:
         """The page must contain an explicit 'hasn't started' message (Problem A)."""
         client, event_id = pre_event_client
         resp = client.get(f"/live/{event_id}")
-        assert "hasn" in resp.text.lower() or "pre" in resp.text.lower() or (
-            "started" in resp.text.lower() or "results will appear" in resp.text.lower()
+        assert (
+            "hasn" in resp.text.lower()
+            or "pre" in resp.text.lower()
+            or (
+                "started" in resp.text.lower()
+                or "results will appear" in resp.text.lower()
+            )
         )
 
     def test_projections_body_present(self, pre_event_client):
@@ -853,3 +858,211 @@ class TestLivePreEvent:
         client, event_id = pre_event_client
         resp = client.get(f"/live/{event_id}")
         assert "projections-body" in resp.text or "proj-empty" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# GET /live/{event_id}/projections.json — JSON projection endpoint (Issue #65)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def proj_json_db_path(tmp_path_factory):
+    return tmp_path_factory.mktemp("proj_json") / "proj_json_test.db"
+
+
+@pytest.fixture(scope="module")
+def proj_json_client(proj_json_db_path):
+    """Isolated TestClient + event_id for JSON projection endpoint tests.
+
+    Uses its own DB path so it is not affected by the module-scope engine
+    patches in live_html_client / pre_event_client.
+    """
+    from climbing_elo.api.app import create_app
+
+    eng = create_engine(f"sqlite:///{proj_json_db_path}")
+    Base.metadata.create_all(eng)
+    factory = sessionmaker(bind=eng)
+
+    sess = factory()
+    ev = Event(
+        name="Proj JSON Test Cup",
+        tier=EventTier.WORLD_CUP,
+        season=2026,
+        start_date=date(2026, 8, 1),
+        discipline=Discipline.LEAD,
+    )
+    sess.add(ev)
+    sess.flush()
+    saved_event_id = ev.id
+
+    a1 = Athlete(name="JSON Athlete One", gender=Gender.M, nationality="AUT")
+    a2 = Athlete(name="JSON Athlete Two", gender=Gender.M, nationality="CZE")
+    sess.add_all([a1, a2])
+    sess.flush()
+
+    sess.add(
+        Rating(
+            athlete_id=a1.id,
+            discipline=Discipline.LEAD,
+            mu=1700.0,
+            sigma=100.0,
+            n_events=5,
+            provisional=False,
+        )
+    )
+    sess.add(
+        Rating(
+            athlete_id=a2.id,
+            discipline=Discipline.LEAD,
+            mu=1650.0,
+            sigma=110.0,
+            n_events=4,
+            provisional=False,
+        )
+    )
+    sess.flush()
+
+    rnd = Round(
+        event_id=ev.id, round_type=RoundType.FINAL, gender=Gender.M, athlete_count=2
+    )
+    sess.add(rnd)
+    sess.flush()
+
+    sess.add(Result(round_id=rnd.id, athlete_id=a1.id, rank=1, raw_score="TOP"))
+    sess.add(Result(round_id=rnd.id, athlete_id=a2.id, rank=2, raw_score="34+"))
+    sess.commit()
+    sess.close()
+
+    original_get_engine = _db_module.get_engine
+
+    def _patched_get_engine(db_path=None):
+        from sqlalchemy import create_engine as _ce
+
+        return _ce(f"sqlite:///{proj_json_db_path}")
+
+    _db_module.get_engine = _patched_get_engine
+    try:
+        app = create_app()
+        client = TestClient(app, raise_server_exceptions=True)
+        yield client, saved_event_id
+    finally:
+        _db_module.get_engine = original_get_engine
+
+
+class TestLiveProjectionsJSON:
+    """Tests for GET /live/{event_id}/projections.json endpoint (Issue #65).
+
+    Verifies that the endpoint returns a stable JSON shape, is reachable via
+    both / (routes.py) and /v2/ (routes_v2.py) surfaces, and handles edge
+    cases (unknown event, invalid gender, gender fallback).
+    """
+
+    def test_200_and_json_content_type(self, proj_json_client):
+        """Endpoint returns 200 with application/json content-type."""
+        client, event_id = proj_json_client
+        resp = client.get(f"/live/{event_id}/projections.json?gender=M")
+        assert resp.status_code == 200
+        assert "application/json" in resp.headers.get("content-type", "")
+
+    def test_response_has_rows_key(self, proj_json_client):
+        """JSON response must have a top-level 'rows' list."""
+        client, event_id = proj_json_client
+        resp = client.get(f"/live/{event_id}/projections.json?gender=M")
+        data = resp.json()
+        assert "rows" in data
+        assert isinstance(data["rows"], list)
+
+    def test_rows_have_required_fields(self, proj_json_client):
+        """Each row must contain the fields required by the JS DOM builder."""
+        client, event_id = proj_json_client
+        resp = client.get(f"/live/{event_id}/projections.json?gender=M")
+        rows = resp.json()["rows"]
+        assert len(rows) >= 1, "Expected at least one projection row"
+        required_fields = {
+            "athlete_id",
+            "name",
+            "mu",
+            "win",
+            "podium",
+            "expected_rank",
+            "is_completed",
+            "proj_rank",
+        }
+        for row in rows:
+            missing = required_fields - set(row.keys())
+            assert not missing, f"Row missing fields: {missing}"
+
+    def test_proj_rank_is_sequential(self, proj_json_client):
+        """proj_rank values must start at 1 and be consecutive."""
+        client, event_id = proj_json_client
+        resp = client.get(f"/live/{event_id}/projections.json?gender=M")
+        rows = resp.json()["rows"]
+        ranks = [r["proj_rank"] for r in rows]
+        assert ranks == list(range(1, len(rows) + 1))
+
+    def test_win_and_podium_are_numeric_strings(self, proj_json_client):
+        """win and podium must be numeric string representations (e.g. '84.2')."""
+        client, event_id = proj_json_client
+        resp = client.get(f"/live/{event_id}/projections.json?gender=M")
+        rows = resp.json()["rows"]
+        for row in rows:
+            float(row["win"])  # must not raise
+            float(row["podium"])
+
+    def test_404_for_unknown_event(self, proj_json_client):
+        """Unknown event_id must return 404."""
+        client, _ = proj_json_client
+        resp = client.get("/live/999999999/projections.json?gender=M")
+        assert resp.status_code == 404
+
+    def test_invalid_gender_falls_back(self, proj_json_client):
+        """An unrecognised gender value should not crash — falls back gracefully."""
+        client, event_id = proj_json_client
+        resp = client.get(f"/live/{event_id}/projections.json?gender=X")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "rows" in data
+
+    def test_gender_not_in_event_falls_back(self, proj_json_client):
+        """?gender=F on a men-only event should return 200 with rows (falls back to M)."""
+        client, event_id = proj_json_client
+        resp = client.get(f"/live/{event_id}/projections.json?gender=F")
+        assert resp.status_code == 200
+        rows = resp.json()["rows"]
+        # Falls back to M — should have projection rows
+        assert len(rows) >= 1
+
+    def test_v2_endpoint_200_and_json(self, proj_json_client):
+        """The /v2/ surface JSON endpoint must also return 200 with rows."""
+        client, event_id = proj_json_client
+        resp = client.get(f"/v2/live/{event_id}/projections.json?gender=M")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "rows" in data
+        assert isinstance(data["rows"], list)
+
+    def test_v2_endpoint_rows_have_required_fields(self, proj_json_client):
+        """The /v2/ endpoint rows must have the same shape as the / endpoint."""
+        client, event_id = proj_json_client
+        resp = client.get(f"/v2/live/{event_id}/projections.json?gender=M")
+        rows = resp.json()["rows"]
+        assert len(rows) >= 1
+        required_fields = {
+            "athlete_id",
+            "name",
+            "mu",
+            "win",
+            "podium",
+            "expected_rank",
+            "is_completed",
+            "proj_rank",
+        }
+        for row in rows:
+            missing = required_fields - set(row.keys())
+            assert not missing, f"v2 row missing fields: {missing}"
+
+    def test_v2_endpoint_404_for_unknown_event(self, proj_json_client):
+        """The /v2/ endpoint returns 404 for unknown event."""
+        client, _ = proj_json_client
+        resp = client.get("/v2/live/999999999/projections.json?gender=M")
+        assert resp.status_code == 404
