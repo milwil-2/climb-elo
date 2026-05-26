@@ -9,18 +9,21 @@ from __future__ import annotations
 import json
 import math
 from datetime import date
+from typing import Optional
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, select
 
+from climbing_elo.cache import likely_roster_cache, predictions_cache
 from climbing_elo.database import get_session_factory
 from climbing_elo.engine.elo import expected_score as _expected_score
+from climbing_elo.engine.likely_roster import likely_competitors
 from climbing_elo.engine.projections import (
     AthleteProjectionInput,
+    compute_partial_event_probabilities,
     compute_podium_probabilities,
 )
-from climbing_elo.cache import predictions_cache
 from climbing_elo.models import (
     Athlete,
     Discipline,
@@ -30,6 +33,7 @@ from climbing_elo.models import (
     RatingHistory,
     Result,
     Round,
+    RoundType,
 )
 
 router = APIRouter(prefix="/v2")
@@ -877,3 +881,671 @@ async def v2_api_page(request: Request):
         **_nav_context("api"),
     }
     return t.TemplateResponse(request, "api.html", ctx)
+
+
+# ---------------------------------------------------------------------------
+# GET /v2/events  — event list (newest first, optional discipline + season filter)
+# ---------------------------------------------------------------------------
+
+_DISC_LABEL_KEY_TO_ENUM = {
+    "lead": Discipline.LEAD,
+    "boulder": Discipline.BOULDER,
+    "speed": Discipline.SPEED,
+}
+
+
+@router.get("/events", response_class=HTMLResponse)
+async def v2_events(
+    request: Request,
+    discipline: str = Query(default="lead"),
+    season: Optional[int] = Query(default=None),
+):
+    t = _templates(request)
+
+    disc_key = discipline.lower()
+    disc_enum = _DISC_LABEL_KEY_TO_ENUM.get(disc_key, Discipline.LEAD)
+
+    with _session() as session:
+        # All seasons available for this discipline (for the dropdown)
+        all_seasons = list(
+            session.execute(
+                select(Event.season)
+                .where(Event.discipline == disc_enum)
+                .distinct()
+                .order_by(Event.season.desc())
+            ).scalars()
+        )
+
+        stmt = select(Event).where(Event.discipline == disc_enum)
+        if season is not None:
+            stmt = stmt.where(Event.season == season)
+        stmt = stmt.order_by(Event.start_date.desc()).limit(500)
+
+        events = list(session.execute(stmt).scalars())
+        event_rows = [
+            {
+                "id": e.id,
+                "name": e.name,
+                "season": e.season,
+                "tier": e.tier.value.replace("_", " ").title(),
+                "date": str(e.start_date),
+            }
+            for e in events
+        ]
+
+        ticker = _ticker_context(session)
+
+    ctx = {
+        "events": event_rows,
+        "all_seasons": all_seasons,
+        "selected_season": season,
+        "discipline_key": disc_key,
+        "discipline_label": _DISC_LABEL.get(disc_enum, "Lead"),
+        **ticker,
+        **_nav_context("events"),
+    }
+    return t.TemplateResponse(request, "events.html", ctx)
+
+
+# ---------------------------------------------------------------------------
+# GET /v2/events/{event_id}  — event detail (round-by-round results, pre/post μ)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/events/{event_id}", response_class=HTMLResponse)
+async def v2_event_detail(request: Request, event_id: int):
+    t = _templates(request)
+
+    with _session() as session:
+        event = session.get(Event, event_id)
+        if not event:
+            return HTMLResponse("Event not found", status_code=404)
+
+        rounds_data = []
+        for rnd in sorted(event.rounds, key=lambda r: r.round_type.value):
+            results = list(
+                session.execute(
+                    select(Result, Athlete)
+                    .join(Athlete, Result.athlete_id == Athlete.id)
+                    .where(Result.round_id == rnd.id)
+                    .order_by(Result.rank.asc())
+                ).all()
+            )
+
+            # Batch-fetch RatingHistory for all athletes in this round in ONE
+            # query instead of N+1. Without this, a 50-athlete qualification
+            # round caused the page to hang (per the original / fix).
+            athlete_ids_in_round = [ath.id for _, ath in results]
+            rh_by_athlete: dict[int, RatingHistory] = {}
+            if athlete_ids_in_round:
+                for rh in session.execute(
+                    select(RatingHistory).where(
+                        RatingHistory.round_id == rnd.id,
+                        RatingHistory.athlete_id.in_(athlete_ids_in_round),
+                    )
+                ).scalars():
+                    rh_by_athlete[rh.athlete_id] = rh
+
+            result_rows = []
+            for res, athlete in results:
+                rh = rh_by_athlete.get(athlete.id)
+                delta = (rh.mu_after - rh.mu_before) if rh else None
+                result_rows.append(
+                    {
+                        "athlete_id": athlete.id,
+                        "name": athlete.name,
+                        "nationality": athlete.nationality or "—",
+                        "rank": res.rank,
+                        "raw_score": res.raw_score or "—",
+                        "mu_before": round(rh.mu_before, 1) if rh else None,
+                        "mu_after": round(rh.mu_after, 1) if rh else None,
+                        "delta": round(delta, 1) if delta is not None else None,
+                    }
+                )
+
+            rounds_data.append(
+                {
+                    "round_type": rnd.round_type.value.title(),
+                    "gender": rnd.gender.value,
+                    "gender_label": "Men" if rnd.gender.value == "M" else "Women",
+                    "results": result_rows,
+                }
+            )
+
+        disc_label = _DISC_LABEL.get(event.discipline, event.discipline.value)
+        ticker = _ticker_context(session)
+
+    ctx = {
+        "event": {
+            "id": event.id,
+            "name": event.name,
+            "season": event.season,
+            "tier": event.tier.value.replace("_", " ").title(),
+            "date": str(event.start_date),
+            "discipline_label": disc_label,
+        },
+        "rounds": rounds_data,
+        **ticker,
+        **_nav_context("events"),
+    }
+    return t.TemplateResponse(request, "event_detail.html", ctx)
+
+
+# ---------------------------------------------------------------------------
+# GET /v2/breakdown/{athlete_id}/{event_id}  — pairwise contributing-pairs
+# ---------------------------------------------------------------------------
+
+
+@router.get("/breakdown/{athlete_id}/{event_id}", response_class=HTMLResponse)
+async def v2_breakdown(request: Request, athlete_id: int, event_id: int):
+    t = _templates(request)
+
+    with _session() as session:
+        athlete = session.get(Athlete, athlete_id)
+        event = session.get(Event, event_id)
+        if not athlete or not event:
+            return HTMLResponse("Not found", status_code=404)
+
+        histories = list(
+            session.execute(
+                select(RatingHistory, Round)
+                .join(Round, RatingHistory.round_id == Round.id)
+                .where(
+                    RatingHistory.athlete_id == athlete_id,
+                    RatingHistory.event_id == event_id,
+                )
+                .order_by(Round.round_type)
+            ).all()
+        )
+
+        rounds_breakdown = []
+        for rh, rnd in histories:
+            pairs = rh.contributing_pairs or []
+
+            # Batch-fetch opponent athletes in a single IN query.
+            opponent_ids = list({p["opponent_id"] for p in pairs})
+            opponents: dict[int, Athlete] = {}
+            if opponent_ids:
+                for opp in session.execute(
+                    select(Athlete).where(Athlete.id.in_(opponent_ids))
+                ).scalars():
+                    opponents[opp.id] = opp
+
+            resolved_pairs = []
+            for p in pairs:
+                opp = opponents.get(p["opponent_id"])
+                resolved_pairs.append(
+                    {
+                        "opponent_id": p["opponent_id"],
+                        "opponent_name": opp.name if opp else f"ID {p['opponent_id']}",
+                        "result": p["result"],
+                        "expected": p["expected"],
+                        "actual": p["actual"],
+                        "delta": p["delta"],
+                        "margin_multiplier": p["margin_multiplier"],
+                    }
+                )
+
+            rounds_breakdown.append(
+                {
+                    "round_type": rnd.round_type.value.title(),
+                    "mu_before": round(rh.mu_before, 1),
+                    "mu_after": round(rh.mu_after, 1),
+                    "delta": round(rh.mu_after - rh.mu_before, 1),
+                    "pairs": resolved_pairs,
+                }
+            )
+
+        ticker = _ticker_context(session)
+
+    ctx = {
+        "athlete": {"id": athlete.id, "name": athlete.name},
+        "event": {
+            "id": event.id,
+            "name": event.name,
+            "season": event.season,
+        },
+        "rounds": rounds_breakdown,
+        **ticker,
+        **_nav_context("events"),
+    }
+    return t.TemplateResponse(request, "breakdown.html", ctx)
+
+
+# ---------------------------------------------------------------------------
+# GET /v2/live/{event_id}  — live event view with SSE consumer
+# ---------------------------------------------------------------------------
+
+
+@router.get("/live/{event_id}", response_class=HTMLResponse)
+async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
+    t = _templates(request)
+
+    with _session() as session:
+        event = session.get(Event, event_id)
+        if not event:
+            return HTMLResponse("Event not found", status_code=404)
+
+        try:
+            gender_enum = Gender(gender.upper())
+        except ValueError:
+            gender_enum = Gender.M
+
+        available_genders = sorted({rnd.gender.value for rnd in event.rounds})
+
+        # Build current leaderboard: prefer the highest round result per athlete.
+        _rt_order = {
+            RoundType.FINAL: 0,
+            RoundType.SEMI: 1,
+            RoundType.QUALIFICATION: 2,
+        }
+        sorted_rounds = sorted(
+            [r for r in event.rounds if r.gender == gender_enum],
+            key=lambda r: _rt_order.get(r.round_type, 99),
+        )
+
+        athlete_best: dict[int, dict] = {}
+        for rnd in sorted_rounds:
+            results = list(
+                session.execute(
+                    select(Result, Athlete)
+                    .join(Athlete, Result.athlete_id == Athlete.id)
+                    .where(Result.round_id == rnd.id, Result.dns.is_(False))
+                    .order_by(Result.rank.asc())
+                ).all()
+            )
+            for res, athlete in results:
+                if athlete.id not in athlete_best:
+                    athlete_best[athlete.id] = {
+                        "athlete_id": athlete.id,
+                        "name": athlete.name,
+                        "rank": res.rank,
+                        "score": res.raw_score or "—",
+                        "round_type": rnd.round_type.value,
+                    }
+
+        leaderboard_rows = sorted(
+            athlete_best.values(),
+            key=lambda r: r["rank"] if r["rank"] is not None else 9999,
+        )
+
+        # Build projection inputs from leaderboard. Athletes with a finished
+        # rank are "completed"; the rest are "remaining". (For pre-event/all-
+        # finished events, all rows go into "completed"; we use
+        # compute_partial_event_probabilities either way for correctness.)
+        completed: list[tuple[AthleteProjectionInput, int]] = []
+        remaining: list[AthleteProjectionInput] = []
+
+        for row in leaderboard_rows:
+            aid = row["athlete_id"]
+            rating = session.execute(
+                select(Rating).where(
+                    Rating.athlete_id == aid,
+                    Rating.discipline == event.discipline,
+                )
+            ).scalar_one_or_none()
+            if rating is None:
+                from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+
+                mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
+            else:
+                mu, sigma = rating.mu, rating.sigma
+            athlete_obj = session.get(Athlete, aid)
+            inp = AthleteProjectionInput(
+                athlete_id=aid,
+                mu=mu,
+                sigma=sigma,
+                name=athlete_obj.name if athlete_obj else str(aid),
+            )
+            if row["rank"] is not None:
+                completed.append((inp, row["rank"]))
+            else:
+                remaining.append(inp)
+
+        projection_rows: list[dict] = []
+        if completed or remaining:
+            probs = compute_partial_event_probabilities(
+                completed_athletes=completed,
+                remaining_athletes=remaining,
+                n_simulations=10_000,
+            )
+            all_inputs = [inp for inp, _ in completed] + remaining
+            completed_ids = {inp.athlete_id for inp, _ in completed}
+            for inp in sorted(
+                all_inputs, key=lambda a: probs[a.athlete_id]["expected_rank"]
+            ):
+                p = probs[inp.athlete_id]
+                projection_rows.append(
+                    {
+                        "athlete_id": inp.athlete_id,
+                        "name": inp.name,
+                        "mu": round(inp.mu, 1),
+                        "win": f"{p['win'] * 100:.1f}",
+                        "podium": f"{p['podium'] * 100:.1f}",
+                        "expected_rank": p["expected_rank"],
+                        "win_raw": p["win"],
+                        "podium_raw": p["podium"],
+                        "is_completed": inp.athlete_id in completed_ids,
+                    }
+                )
+            for i, row in enumerate(projection_rows):
+                row["proj_rank"] = i + 1
+
+        ticker = _ticker_context(session)
+
+    initial_athletes = {
+        row["athlete_id"]: {
+            "name": row["name"],
+            "rank": row["rank"],
+            "score": row["score"],
+            "round_type": row["round_type"],
+        }
+        for row in leaderboard_rows
+    }
+
+    ctx = {
+        "event": {
+            "id": event.id,
+            "name": event.name,
+            "season": event.season,
+            "tier": event.tier.value.replace("_", " ").title(),
+            "discipline_label": _DISC_LABEL.get(
+                event.discipline, event.discipline.value
+            ),
+        },
+        "gender": gender_enum.value,
+        "gender_label": "Men" if gender_enum.value == "M" else "Women",
+        "available_genders": available_genders,
+        "leaderboard": leaderboard_rows,
+        "projections": projection_rows,
+        # SSE backend is shared between / and /v2 surfaces — point at /live/.
+        "stream_url": f"/live/{event_id}/stream",
+        "initial_athletes": initial_athletes,
+        **ticker,
+        **_nav_context("live"),
+    }
+    return t.TemplateResponse(request, "live.html", ctx)
+
+
+# ---------------------------------------------------------------------------
+# GET /v2/predictions  — upcoming-event predictions hub
+# ---------------------------------------------------------------------------
+
+_V2_PREDICTIONS_DISCIPLINES = [
+    ("lead", "Lead", Discipline.LEAD),
+    ("boulder", "Boulder", Discipline.BOULDER),
+    ("speed", "Speed", Discipline.SPEED),
+]
+_V2_MAX_UPCOMING_PER_DISCIPLINE = 50
+_V2_MAX_ATHLETES_PER_PROJECTION_CARD = 64
+
+
+@router.get("/predictions", response_class=HTMLResponse)
+async def v2_predictions(request: Request):
+    """List upcoming World Cup events with ELO-based outcome predictions.
+
+    Mirrors the original `/predictions` route (`api/routes.py`) but renders
+    the monochrome v2 template. Uses the same caching keys + likely-roster
+    fallback so the two surfaces share a hot cache.
+    """
+    t = _templates(request)
+    today = date.today()
+    grouped: list[dict] = []
+
+    with _session() as session:
+        for disc_key, disc_label, disc_enum in _V2_PREDICTIONS_DISCIPLINES:
+            stmt = (
+                select(Event)
+                .where(
+                    Event.discipline == disc_enum,
+                    Event.start_date >= today,
+                )
+                .order_by(Event.start_date.asc())
+                .limit(_V2_MAX_UPCOMING_PER_DISCIPLINE)
+            )
+            upcoming_events = list(session.execute(stmt).scalars())
+
+            disc_events: list[dict] = []
+            for ev in upcoming_events:
+                result_count = session.execute(
+                    select(func.count(Result.id))
+                    .join(Round, Result.round_id == Round.id)
+                    .where(Round.event_id == ev.id)
+                ).scalar_one()
+
+                has_athletes = result_count > 0
+                from_likely_roster = False
+                predictions_data: dict | None = None
+
+                if has_athletes:
+                    gender_predictions: list[dict] = []
+                    available_genders = sorted({rnd.gender for rnd in ev.rounds})
+
+                    for gender_enum in available_genders:
+                        seen: set[int] = set()
+                        athlete_ids: list[int] = []
+                        for rnd in ev.rounds:
+                            if rnd.gender != gender_enum:
+                                continue
+                            results_q = session.execute(
+                                select(Result).where(
+                                    Result.round_id == rnd.id,
+                                    Result.dns.is_(False),
+                                )
+                            ).scalars()
+                            for res in results_q:
+                                if res.athlete_id not in seen:
+                                    athlete_ids.append(res.athlete_id)
+                                    seen.add(res.athlete_id)
+
+                        if not athlete_ids:
+                            continue
+
+                        proj_inputs: list[AthleteProjectionInput] = []
+                        for aid in athlete_ids:
+                            athlete = session.get(Athlete, aid)
+                            if not athlete:
+                                continue
+                            rating = session.execute(
+                                select(Rating).where(
+                                    Rating.athlete_id == aid,
+                                    Rating.discipline == disc_enum,
+                                )
+                            ).scalar_one_or_none()
+                            if rating is None:
+                                from climbing_elo.engine.elo import (
+                                    DEFAULT_MU,
+                                    DEFAULT_SIGMA,
+                                )
+
+                                mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
+                            else:
+                                mu, sigma = rating.mu, rating.sigma
+                            proj_inputs.append(
+                                AthleteProjectionInput(
+                                    athlete_id=aid,
+                                    mu=mu,
+                                    sigma=sigma,
+                                    name=athlete.name,
+                                )
+                            )
+
+                        if len(proj_inputs) > _V2_MAX_ATHLETES_PER_PROJECTION_CARD:
+                            proj_inputs = sorted(
+                                proj_inputs, key=lambda a: a.mu, reverse=True
+                            )[:_V2_MAX_ATHLETES_PER_PROJECTION_CARD]
+
+                        _fp = ":".join(
+                            f"{a.athlete_id},{a.mu:.2f},{a.sigma:.2f}"
+                            for a in sorted(proj_inputs, key=lambda a: a.athlete_id)
+                        )
+                        _cache_key = (
+                            f"projections:event:{ev.id}"
+                            f":disc:{disc_enum.value}"
+                            f":gender:{gender_enum.value}"
+                            f":athletes:{_fp}"
+                        )
+                        probs = predictions_cache.get(_cache_key)
+                        if probs is None:
+                            probs = compute_podium_probabilities(
+                                proj_inputs, n_simulations=10_000
+                            )
+                            predictions_cache.set(_cache_key, probs)
+
+                        ranked = sorted(
+                            proj_inputs,
+                            key=lambda a: probs[a.athlete_id]["expected_rank"],
+                        )
+                        top3 = [
+                            {
+                                "athlete_id": a.athlete_id,
+                                "name": a.name,
+                                "win": f"{probs[a.athlete_id]['win'] * 100:.1f}",
+                                "podium": f"{probs[a.athlete_id]['podium'] * 100:.1f}",
+                                "expected_rank": probs[a.athlete_id]["expected_rank"],
+                            }
+                            for a in ranked[:3]
+                        ]
+                        gender_predictions.append(
+                            {
+                                "gender": gender_enum.value,
+                                "gender_label": (
+                                    "Men" if gender_enum.value == "M" else "Women"
+                                ),
+                                "top3": top3,
+                                "total_athletes": len(proj_inputs),
+                            }
+                        )
+
+                    predictions_data = {"genders": gender_predictions}
+
+                else:
+                    # Likely-competitor fallback (mirrors original / route).
+                    gender_predictions_fb: list[dict] = []
+                    for gender_enum in [Gender.M, Gender.F]:
+                        _roster_key = (
+                            f"roster:{disc_enum.value}:{ev.season}:{gender_enum.value}"
+                        )
+                        roster_ids = likely_roster_cache.get(_roster_key)
+                        if roster_ids is None:
+                            roster_ids = likely_competitors(
+                                session, disc_enum, ev.season, gender_enum
+                            )
+                            likely_roster_cache.set(_roster_key, roster_ids)
+
+                        if not roster_ids:
+                            continue
+
+                        proj_inputs_fb: list[AthleteProjectionInput] = []
+                        for aid in roster_ids[:_V2_MAX_ATHLETES_PER_PROJECTION_CARD]:
+                            athlete = session.get(Athlete, aid)
+                            if not athlete:
+                                continue
+                            rating = session.execute(
+                                select(Rating).where(
+                                    Rating.athlete_id == aid,
+                                    Rating.discipline == disc_enum,
+                                )
+                            ).scalar_one_or_none()
+                            if rating is None:
+                                from climbing_elo.engine.elo import (
+                                    DEFAULT_MU,
+                                    DEFAULT_SIGMA,
+                                )
+
+                                mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
+                            else:
+                                mu, sigma = rating.mu, rating.sigma
+                            proj_inputs_fb.append(
+                                AthleteProjectionInput(
+                                    athlete_id=aid,
+                                    mu=mu,
+                                    sigma=sigma,
+                                    name=athlete.name,
+                                )
+                            )
+
+                        if len(proj_inputs_fb) < 2:
+                            continue
+
+                        _fp_fb = ":".join(
+                            f"{a.athlete_id},{a.mu:.2f},{a.sigma:.2f}"
+                            for a in sorted(proj_inputs_fb, key=lambda a: a.athlete_id)
+                        )
+                        _cache_key_fb = (
+                            f"projections:likely:{ev.id}"
+                            f":disc:{disc_enum.value}"
+                            f":gender:{gender_enum.value}"
+                            f":athletes:{_fp_fb}"
+                        )
+                        probs_fb = predictions_cache.get(_cache_key_fb)
+                        if probs_fb is None:
+                            probs_fb = compute_podium_probabilities(
+                                proj_inputs_fb, n_simulations=10_000
+                            )
+                            predictions_cache.set(_cache_key_fb, probs_fb)
+
+                        ranked_fb = sorted(
+                            proj_inputs_fb,
+                            key=lambda a: probs_fb[a.athlete_id]["expected_rank"],
+                        )
+                        top3_fb = [
+                            {
+                                "athlete_id": a.athlete_id,
+                                "name": a.name,
+                                "win": f"{probs_fb[a.athlete_id]['win'] * 100:.1f}",
+                                "podium": (
+                                    f"{probs_fb[a.athlete_id]['podium'] * 100:.1f}"
+                                ),
+                                "expected_rank": probs_fb[a.athlete_id][
+                                    "expected_rank"
+                                ],
+                            }
+                            for a in ranked_fb[:3]
+                        ]
+                        gender_predictions_fb.append(
+                            {
+                                "gender": gender_enum.value,
+                                "gender_label": (
+                                    "Men" if gender_enum.value == "M" else "Women"
+                                ),
+                                "top3": top3_fb,
+                                "total_athletes": len(proj_inputs_fb),
+                            }
+                        )
+
+                    if gender_predictions_fb:
+                        predictions_data = {"genders": gender_predictions_fb}
+                        from_likely_roster = True
+
+                disc_events.append(
+                    {
+                        "id": ev.id,
+                        "name": ev.name,
+                        "season": ev.season,
+                        "tier": ev.tier.value.replace("_", " ").title(),
+                        "date": str(ev.start_date),
+                        "has_athletes": has_athletes,
+                        "predictions": predictions_data,
+                        "from_likely_roster": from_likely_roster,
+                    }
+                )
+
+            grouped.append(
+                {
+                    "key": disc_key,
+                    "label": disc_label,
+                    "events": disc_events,
+                    "has_data": len(disc_events) > 0,
+                }
+            )
+
+        ticker = _ticker_context(session)
+
+    ctx = {
+        "grouped": grouped,
+        "today": str(today),
+        **ticker,
+        **_nav_context("predictions"),
+    }
+    return t.TemplateResponse(request, "predictions.html", ctx)
