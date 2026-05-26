@@ -1,4 +1,4 @@
-name: IFSC API Health Check
+name: Health Checks (IFSC API + Vercel prod)
 
 on:
   schedule:
@@ -10,7 +10,10 @@ on:
 permissions: read-all
 
 jobs:
-  health-check:
+  # ---------------------------------------------------------------------------
+  # IFSC upstream API health check (unchanged behavior from original workflow)
+  # ---------------------------------------------------------------------------
+  ifsc-health-check:
     name: Ping ifsc.results.info
     runs-on: ubuntu-latest
     # Need issues:write for the auto-issue-on-failure step.
@@ -58,19 +61,31 @@ jobs:
       # Checks for an existing open issue labeled "health-check-alert":
       #   - If none exists → create a new issue.
       #   - If one exists  → add a comment (avoids duplicate issues).
+      # Note: we count failed *jobs* (not runs) so the IFSC counter is not
+      # polluted by failures of the sibling prod-health-check job.
       # -----------------------------------------------------------------------
-      - name: Check for persistent failure (count recent failed runs)
+      - name: Check for persistent failure (count recent failed IFSC jobs)
         if: failure() && steps.health.outcome == 'failure'
         id: count-failures
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Count how many of the last 3 completed runs of this workflow failed
-          FAILED=$(gh run list \
+          # Look at the 3 most-recent completed runs of this workflow and count
+          # how many had a failing job named "Ping ifsc.results.info".
+          RUN_IDS=$(gh run list \
             --workflow="health-check.yml" \
             --limit=3 \
-            --json conclusion \
-            --jq '[.[] | select(.conclusion == "failure")] | length')
+            --status=completed \
+            --json databaseId \
+            --jq '.[].databaseId')
+          FAILED=0
+          for RID in $RUN_IDS; do
+            JOB_CONCLUSION=$(gh api "repos/${{ github.repository }}/actions/runs/${RID}/jobs" \
+              --jq '.jobs[] | select(.name == "Ping ifsc.results.info") | .conclusion')
+            if [ "$JOB_CONCLUSION" = "failure" ]; then
+              FAILED=$((FAILED + 1))
+            fi
+          done
           echo "recent_failures=${FAILED}" >> "$GITHUB_OUTPUT"
 
       - name: Find existing health-check-alert issue
@@ -128,3 +143,198 @@ jobs:
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           gh issue comment "${{ steps.find-issue.outputs.issue_number }}" \
             --body "Health check still failing as of $(date -u '+%Y-%m-%d %H:%M UTC'). [Run details](${RUN_URL})"
+
+  # ---------------------------------------------------------------------------
+  # Production Vercel deployment health check (Issue #70)
+  # Probes our own deployment at climb-elo.vercel.app.  Runs in parallel with
+  # the IFSC job — a failure of one does not mask the other.
+  # ---------------------------------------------------------------------------
+  prod-health-check:
+    name: Probe climb-elo.vercel.app
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    env:
+      PROD_BASE_URL: https://climb-elo.vercel.app
+
+    steps:
+      - name: Probe landing page (HTML)
+        id: probe-html
+        run: |
+          set -euo pipefail
+          # Fetch landing page and check both HTTP status and a stable content marker.
+          BODY_FILE=$(mktemp)
+          HTTP_CODE=$(curl -sS -o "$BODY_FILE" -w "%{http_code}" \
+            --max-time 30 \
+            "${PROD_BASE_URL}/")
+          echo "Landing page HTTP status: ${HTTP_CODE}"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "FAIL: expected HTTP 200 from ${PROD_BASE_URL}/, got ${HTTP_CODE}"
+            exit 1
+          fi
+          if ! grep -q "Leaderboard" "$BODY_FILE"; then
+            echo "FAIL: landing page body does not contain 'Leaderboard'"
+            echo "--- first 500 chars of response ---"
+            head -c 500 "$BODY_FILE"
+            exit 1
+          fi
+          echo "OK: landing page returned 200 and contains 'Leaderboard'"
+
+      - name: Probe /api/v1/disciplines (JSON)
+        id: probe-api
+        run: |
+          set -euo pipefail
+          # Endpoint returns a JSON array of discipline objects, each with a `code` field.
+          BODY_FILE=$(mktemp)
+          HTTP_CODE=$(curl -sS -o "$BODY_FILE" -w "%{http_code}" \
+            --max-time 30 \
+            -H "Accept: application/json" \
+            "${PROD_BASE_URL}/api/v1/disciplines")
+          echo "API HTTP status: ${HTTP_CODE}"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "FAIL: expected HTTP 200 from /api/v1/disciplines, got ${HTTP_CODE}"
+            head -c 500 "$BODY_FILE"
+            exit 1
+          fi
+          # Validate JSON shape: array, non-empty, first element has a `code` field.
+          if ! jq -e 'type == "array" and length > 0 and (.[0] | has("code"))' "$BODY_FILE" > /dev/null; then
+            echo "FAIL: /api/v1/disciplines did not return a non-empty array of discipline objects"
+            echo "--- first 500 chars of response ---"
+            head -c 500 "$BODY_FILE"
+            exit 1
+          fi
+          echo "OK: /api/v1/disciplines returned $(jq 'length' "$BODY_FILE") discipline(s)"
+
+      # -----------------------------------------------------------------------
+      # Discord alert on failure (separate code-path from IFSC alert).
+      # Rate-limited by Discord-side state only here; the IFSC script uses
+      # a sentinel file that does not persist across runner invocations, so
+      # it effectively fires per-failed-run.  We do the same here.
+      # -----------------------------------------------------------------------
+      - name: Post Discord alert on failure
+        if: failure() && (steps.probe-html.outcome == 'failure' || steps.probe-api.outcome == 'failure')
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+            echo "DISCORD_WEBHOOK_URL not set; skipping Discord alert"
+            exit 0
+          fi
+          # Restrict to Discord hosts as a basic SSRF guard.
+          case "$DISCORD_WEBHOOK_URL" in
+            https://discord.com/*|https://discordapp.com/*|https://*.discord.com/*|https://*.discordapp.com/*)
+              ;;
+            *)
+              echo "Refusing to POST: DISCORD_WEBHOOK_URL is not a Discord host"
+              exit 0
+              ;;
+          esac
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TS=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          PAYLOAD=$(jq -n \
+            --arg ts "$TS" \
+            --arg url "$RUN_URL" \
+            --arg base "${PROD_BASE_URL}" \
+            '{embeds: [{
+              title: "Vercel prod health-check FAILED",
+              description: ("The climb-elo.vercel.app deployment did not respond as expected.\n\nCheck the [GitHub Actions run](" + $url + ") for details."),
+              color: 16711680,
+              fields: [
+                {name: "Timestamp (UTC)", value: $ts, inline: true},
+                {name: "Base URL", value: $base, inline: true}
+              ],
+              footer: {text: "climbing-elo prod health monitor"}
+            }]}')
+          curl -sS -X POST -H "Content-Type: application/json" \
+            --max-time 10 \
+            --data "$PAYLOAD" \
+            "$DISCORD_WEBHOOK_URL" > /dev/null || echo "Discord alert POST failed (non-fatal)"
+
+      # -----------------------------------------------------------------------
+      # Auto-issue on persistent failure of the prod check.  Distinct label
+      # (prod-health-alert) so it never collides with the IFSC alert issue.
+      # -----------------------------------------------------------------------
+      - name: Check for persistent prod failure (count recent failed prod jobs)
+        if: failure() && (steps.probe-html.outcome == 'failure' || steps.probe-api.outcome == 'failure')
+        id: count-prod-failures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_IDS=$(gh run list \
+            --workflow="health-check.yml" \
+            --limit=3 \
+            --status=completed \
+            --json databaseId \
+            --jq '.[].databaseId')
+          FAILED=0
+          for RID in $RUN_IDS; do
+            JOB_CONCLUSION=$(gh api "repos/${{ github.repository }}/actions/runs/${RID}/jobs" \
+              --jq '.jobs[] | select(.name == "Probe climb-elo.vercel.app") | .conclusion')
+            if [ "$JOB_CONCLUSION" = "failure" ]; then
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          echo "recent_failures=${FAILED}" >> "$GITHUB_OUTPUT"
+
+      - name: Find existing prod-health-alert issue
+        if: failure() && (steps.probe-html.outcome == 'failure' || steps.probe-api.outcome == 'failure') && steps.count-prod-failures.outputs.recent_failures >= 2
+        id: find-prod-issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_NUMBER=$(gh issue list \
+            --label "prod-health-alert" \
+            --state open \
+            --json number \
+            --jq '.[0].number // ""')
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Create new prod-health-alert issue
+        if: |
+          failure() &&
+          (steps.probe-html.outcome == 'failure' || steps.probe-api.outcome == 'failure') &&
+          steps.count-prod-failures.outputs.recent_failures >= 2 &&
+          steps.find-prod-issue.outputs.issue_number == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh issue create \
+            --title "Production Vercel health check failing (persistent)" \
+            --body "## climb-elo.vercel.app health check is failing
+
+          The automated production health check has failed on **3 or more consecutive runs**.
+
+          - **Workflow run:** ${RUN_URL}
+          - **Endpoints checked:**
+            - \`GET https://climb-elo.vercel.app/\` (expect HTTP 200 + body contains 'Leaderboard')
+            - \`GET https://climb-elo.vercel.app/api/v1/disciplines\` (expect HTTP 200 + non-empty JSON array with \`code\` field)
+          - **Time (UTC):** $(date -u '+%Y-%m-%d %H:%M:%S')
+
+          ### Possible causes
+          - The Vercel serverless function is crashing (check Vercel dashboard runtime logs).
+          - A recent deploy broke a route or templating.
+          - Vercel platform incident — see https://www.vercel-status.com/.
+
+          ### Next steps
+          1. Open the Vercel dashboard for the \`climb-elo\` project and inspect the latest deployment + runtime logs.
+          2. If a recent commit caused the regression, revert or rollback to the previous deployment.
+          3. Re-run the workflow to confirm recovery.
+          " \
+            --label "prod-health-alert" \
+            --label "bug"
+
+      - name: Comment on existing prod-health-alert issue
+        if: |
+          failure() &&
+          (steps.probe-html.outcome == 'failure' || steps.probe-api.outcome == 'failure') &&
+          steps.count-prod-failures.outputs.recent_failures >= 2 &&
+          steps.find-prod-issue.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh issue comment "${{ steps.find-prod-issue.outputs.issue_number }}" \
+            --body "Prod health check still failing as of $(date -u '+%Y-%m-%d %H:%M UTC'). [Run details](${RUN_URL})"
