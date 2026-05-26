@@ -26,11 +26,14 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
     )
 
-    # Allow all origins — this is a read-only public API
+    # Allow all origins — this is a public API.
+    # POST is allowed for /api/v1/projections (idempotent: same input → same output,
+    # bounded compute, no DB writes). Credentials are NOT allowed (default), so
+    # the wildcard origin is safe.
     application.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
 

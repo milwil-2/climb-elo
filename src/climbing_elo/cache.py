@@ -49,8 +49,9 @@ class TTLCache:
         cache.clear()                 # remove all entries
     """
 
-    def __init__(self, ttl_seconds: int = 3600) -> None:
+    def __init__(self, ttl_seconds: int = 3600, max_entries: int = 2048) -> None:
         self._ttl = ttl_seconds
+        self._max_entries = max_entries
         # Maps key → (expires_at_unix_timestamp, value)
         self._data: dict[str, tuple[float, object]] = {}
         self._lock = RLock()
@@ -73,8 +74,18 @@ class TTLCache:
             return value
 
     def set(self, key: str, value: object) -> None:
-        """Store *value* under *key* with the configured TTL."""
+        """Store *value* under *key* with the configured TTL.
+
+        If the cache is at ``max_entries`` capacity, the oldest-by-insertion
+        entry is evicted (FIFO) to prevent unbounded memory growth from
+        pathological/adversarial key churn.
+        """
         with self._lock:
+            if key not in self._data and len(self._data) >= self._max_entries:
+                # FIFO eviction — pop the first inserted key.
+                # dict preserves insertion order in Python 3.7+.
+                oldest_key = next(iter(self._data))
+                self._data.pop(oldest_key, None)
             self._data[key] = (time.time() + self._ttl, value)
 
     def invalidate(self, key: str) -> None:
