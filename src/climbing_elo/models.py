@@ -59,7 +59,9 @@ class Athlete(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     year_of_birth: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     nationality: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
-    gender: Mapped[Gender] = mapped_column(Enum(Gender, values_callable=_enum_values), nullable=False)
+    gender: Mapped[Gender] = mapped_column(
+        Enum(Gender, values_callable=_enum_values), nullable=False
+    )
 
     results: Mapped[list[Result]] = relationship(back_populates="athlete")
     ratings: Mapped[list[Rating]] = relationship(back_populates="athlete")
@@ -75,11 +77,15 @@ class Event(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
-    tier: Mapped[EventTier] = mapped_column(Enum(EventTier, values_callable=_enum_values), nullable=False)
+    tier: Mapped[EventTier] = mapped_column(
+        Enum(EventTier, values_callable=_enum_values), nullable=False
+    )
     country: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
     season: Mapped[int] = mapped_column(Integer, nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    discipline: Mapped[Discipline] = mapped_column(Enum(Discipline, values_callable=_enum_values), nullable=False)
+    discipline: Mapped[Discipline] = mapped_column(
+        Enum(Discipline, values_callable=_enum_values), nullable=False
+    )
 
     rounds: Mapped[list[Round]] = relationship(
         back_populates="event", cascade="all, delete-orphan"
@@ -92,9 +98,13 @@ class Round(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id"), nullable=False)
-    round_type: Mapped[RoundType] = mapped_column(Enum(RoundType, values_callable=_enum_values), nullable=False)
+    round_type: Mapped[RoundType] = mapped_column(
+        Enum(RoundType, values_callable=_enum_values), nullable=False
+    )
     athlete_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    gender: Mapped[Gender] = mapped_column(Enum(Gender, values_callable=_enum_values), nullable=False)
+    gender: Mapped[Gender] = mapped_column(
+        Enum(Gender, values_callable=_enum_values), nullable=False
+    )
 
     event: Mapped[Event] = relationship(back_populates="rounds")
     results: Mapped[list[Result]] = relationship(
@@ -134,7 +144,9 @@ class Rating(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), nullable=False)
     discipline: Mapped[Discipline] = mapped_column(
-        Enum(Discipline, values_callable=_enum_values), nullable=False, default=Discipline.LEAD
+        Enum(Discipline, values_callable=_enum_values),
+        nullable=False,
+        default=Discipline.LEAD,
     )
     mu: Mapped[float] = mapped_column(Float, nullable=False, default=1500.0)
     sigma: Mapped[float] = mapped_column(Float, nullable=False, default=350.0)

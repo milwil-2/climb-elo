@@ -256,7 +256,6 @@ class TestPredictionsQueryCount:
         implementation uses 1 query per gender block — so ≤ 2 total for athletes
         (one batched join per gender).
         """
-        import climbing_elo.api.routes as _routes
         import climbing_elo.api.v1_routes as _v1
         import climbing_elo.database as _db_mod
 
@@ -311,32 +310,45 @@ class TestPredictionsQueryCount:
         session.flush()
 
         rnd_m = Round(
-            event_id=ev.id, round_type=RoundType.QUALIFICATION,
-            gender=Gender.M, athlete_count=4,
+            event_id=ev.id,
+            round_type=RoundType.QUALIFICATION,
+            gender=Gender.M,
+            athlete_count=4,
         )
         rnd_f = Round(
-            event_id=ev.id, round_type=RoundType.QUALIFICATION,
-            gender=Gender.F, athlete_count=4,
+            event_id=ev.id,
+            round_type=RoundType.QUALIFICATION,
+            gender=Gender.F,
+            athlete_count=4,
         )
         session.add_all([rnd_m, rnd_f])
         session.flush()
 
         for i, ath in enumerate(athletes):
             rnd = rnd_m if ath.gender == Gender.M else rnd_f
-            session.add(Result(round_id=rnd.id, athlete_id=ath.id, rank=i + 1,
-                               raw_score="TOP", dns=False))
+            session.add(
+                Result(
+                    round_id=rnd.id,
+                    athlete_id=ath.id,
+                    rank=i + 1,
+                    raw_score="TOP",
+                    dns=False,
+                )
+            )
 
         # Ratings for all athletes in Lead
         for i, ath in enumerate(athletes):
-            session.add(Rating(
-                athlete_id=ath.id,
-                discipline=Discipline.LEAD,
-                mu=1500.0 + i * 10,
-                sigma=100.0,
-                n_events=5,
-                provisional=False,
-                last_event_at=today,
-            ))
+            session.add(
+                Rating(
+                    athlete_id=ath.id,
+                    discipline=Discipline.LEAD,
+                    mu=1500.0 + i * 10,
+                    sigma=100.0,
+                    n_events=5,
+                    provisional=False,
+                    last_event_at=today,
+                )
+            )
 
         session.commit()
         session.close()
@@ -344,7 +356,6 @@ class TestPredictionsQueryCount:
         # Wire up the test DB
         original_get_engine = _db_mod.get_engine
         original_session = _v1._session
-        original_get_session_factory = None
 
         def patched_get_engine(db_path=None):
             return create_engine(f"sqlite:///{db_file}")
