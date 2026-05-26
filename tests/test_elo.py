@@ -44,8 +44,11 @@ def test_margin_multiplier_no_scores():
 
 
 def test_margin_multiplier_capped():
+    # MARGIN_CAP is tuned to 1.5 (from empirical grid search in tune_kfactors.py).
+    # Any score gap large enough to exceed the cap should return MARGIN_CAP.
+    from climbing_elo.engine import elo as elo_module
     mult = compute_margin_multiplier(40.0, 0.0, max_gap=20.0)
-    assert mult == 2.0
+    assert mult == elo_module.MARGIN_CAP
 
 
 def test_margin_multiplier_partial():

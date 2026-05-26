@@ -85,7 +85,16 @@ def run_backfill(
     session: Session,
     discipline: Discipline = Discipline.LEAD,
     from_date: date | None = None,
+    end_date: date | None = None,
 ) -> BackfillReport:
+    """Run ELO backfill for all events in the given date range.
+
+    Args:
+        session: SQLAlchemy session.
+        discipline: Discipline to process.
+        from_date: If set, only process events on or after this date.
+        end_date: If set, only process events strictly before this date.
+    """
     report = BackfillReport()
 
     stmt = (
@@ -95,6 +104,8 @@ def run_backfill(
     )
     if from_date:
         stmt = stmt.where(Event.start_date >= from_date)
+    if end_date:
+        stmt = stmt.where(Event.start_date < end_date)
 
     events = list(session.execute(stmt).scalars())
     ratings_cache = _load_current_ratings(session, discipline)
