@@ -1,4 +1,5 @@
 """Public REST API v1 endpoints."""
+
 from __future__ import annotations
 
 import hashlib
@@ -6,7 +7,7 @@ import json
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import func, select
 
 from climbing_elo.api.limiter import limiter
@@ -22,7 +23,6 @@ from climbing_elo.models import (
     Athlete,
     Discipline,
     Event,
-    EventTier,
     Gender,
     Rating,
     RatingHistory,
@@ -133,14 +133,35 @@ def _discipline_label(d: Discipline) -> str:
 # GET /api/v1/disciplines
 # ---------------------------------------------------------------------------
 
-@router.get("/disciplines", response_model=list[DisciplineInfo], summary="List supported disciplines")
+
+@router.get(
+    "/disciplines",
+    response_model=list[DisciplineInfo],
+    summary="List supported disciplines",
+)
 async def list_disciplines() -> list[DisciplineInfo]:
     """Return all supported disciplines and their API codes."""
     return [
-        DisciplineInfo(code="lead", name="Lead", description="Lead climbing — athletes attempt a single route, scored by height reached."),
-        DisciplineInfo(code="boulder", name="Boulder", description="Bouldering — short powerful problems, scored by tops and zones."),
-        DisciplineInfo(code="speed", name="Speed", description="Speed climbing — head-to-head race on a standardised 15-m route."),
-        DisciplineInfo(code="boulder_lead", name="Boulder & Lead (Combined)", description="Combined discipline replacing the former 'combined' format."),
+        DisciplineInfo(
+            code="lead",
+            name="Lead",
+            description="Lead climbing — athletes attempt a single route, scored by height reached.",
+        ),
+        DisciplineInfo(
+            code="boulder",
+            name="Boulder",
+            description="Bouldering — short powerful problems, scored by tops and zones.",
+        ),
+        DisciplineInfo(
+            code="speed",
+            name="Speed",
+            description="Speed climbing — head-to-head race on a standardised 15-m route.",
+        ),
+        DisciplineInfo(
+            code="boulder_lead",
+            name="Boulder & Lead (Combined)",
+            description="Combined discipline replacing the former 'combined' format.",
+        ),
     ]
 
 
@@ -148,9 +169,16 @@ async def list_disciplines() -> list[DisciplineInfo]:
 # GET /api/v1/leaderboard
 # ---------------------------------------------------------------------------
 
-@router.get("/leaderboard", response_model=LeaderboardResponse, summary="Get paginated leaderboard")
+
+@router.get(
+    "/leaderboard",
+    response_model=LeaderboardResponse,
+    summary="Get paginated leaderboard",
+)
 async def leaderboard(
-    discipline: str = Query("lead", description="Discipline: lead, boulder, speed, boulder_lead / combined"),
+    discipline: str = Query(
+        "lead", description="Discipline: lead, boulder, speed, boulder_lead / combined"
+    ),
     gender: str = Query("M", description="Gender: M or F"),
     limit: int = Query(50, ge=1, le=100, description="Number of results (1–100)"),
     offset: int = Query(0, ge=0, le=10000, description="Pagination offset (max 10000)"),
@@ -208,7 +236,12 @@ async def leaderboard(
 # GET /api/v1/athletes/{athlete_id}
 # ---------------------------------------------------------------------------
 
-@router.get("/athletes/{athlete_id}", response_model=AthleteDetail, summary="Get athlete details")
+
+@router.get(
+    "/athletes/{athlete_id}",
+    response_model=AthleteDetail,
+    summary="Get athlete details",
+)
 async def athlete_detail(athlete_id: int) -> AthleteDetail:
     """
     Return an athlete's profile, all discipline ratings, and up to 20 most recent events.
@@ -216,11 +249,15 @@ async def athlete_detail(athlete_id: int) -> AthleteDetail:
     with _session() as session:
         athlete = session.get(Athlete, athlete_id)
         if not athlete:
-            raise HTTPException(status_code=404, detail=f"Athlete {athlete_id} not found")
+            raise HTTPException(
+                status_code=404, detail=f"Athlete {athlete_id} not found"
+            )
 
-        ratings_rows = session.execute(
-            select(Rating).where(Rating.athlete_id == athlete_id)
-        ).scalars().all()
+        ratings_rows = (
+            session.execute(select(Rating).where(Rating.athlete_id == athlete_id))
+            .scalars()
+            .all()
+        )
 
         ratings = [
             AthleteRating(
@@ -235,13 +272,15 @@ async def athlete_detail(athlete_id: int) -> AthleteDetail:
         ]
 
         # Recent events across all disciplines — last 20 by date
-        history_rows = list(session.execute(
-            select(RatingHistory, Event)
-            .join(Event, RatingHistory.event_id == Event.id)
-            .where(RatingHistory.athlete_id == athlete_id)
-            .order_by(Event.start_date.desc())
-            .limit(20)
-        ).all())
+        history_rows = list(
+            session.execute(
+                select(RatingHistory, Event)
+                .join(Event, RatingHistory.event_id == Event.id)
+                .where(RatingHistory.athlete_id == athlete_id)
+                .order_by(Event.start_date.desc())
+                .limit(20)
+            ).all()
+        )
 
         # De-duplicate per event (keep last round's history entry)
         seen_events: set[int] = set()
@@ -251,15 +290,17 @@ async def athlete_detail(athlete_id: int) -> AthleteDetail:
                 continue
             seen_events.add(event.id)
             delta = rh.mu_after - rh.mu_before
-            recent_events.append(RecentEvent(
-                event_id=event.id,
-                event_name=event.name,
-                season=event.season,
-                discipline=_discipline_label(event.discipline),
-                mu_before=round(rh.mu_before, 2),
-                mu_after=round(rh.mu_after, 2),
-                delta=round(delta, 2),
-            ))
+            recent_events.append(
+                RecentEvent(
+                    event_id=event.id,
+                    event_name=event.name,
+                    season=event.season,
+                    discipline=_discipline_label(event.discipline),
+                    mu_before=round(rh.mu_before, 2),
+                    mu_after=round(rh.mu_after, 2),
+                    delta=round(delta, 2),
+                )
+            )
 
     return AthleteDetail(
         id=athlete.id,
@@ -276,6 +317,7 @@ async def athlete_detail(athlete_id: int) -> AthleteDetail:
 # GET /api/v1/athletes/{athlete_id}/history
 # ---------------------------------------------------------------------------
 
+
 @router.get(
     "/athletes/{athlete_id}/history",
     response_model=AthleteHistoryResponse,
@@ -283,7 +325,9 @@ async def athlete_detail(athlete_id: int) -> AthleteDetail:
 )
 async def athlete_history(
     athlete_id: int,
-    discipline: str = Query("lead", description="Discipline: lead, boulder, speed, boulder_lead / combined"),
+    discipline: str = Query(
+        "lead", description="Discipline: lead, boulder, speed, boulder_lead / combined"
+    ),
 ) -> AthleteHistoryResponse:
     """
     Return the full rating-over-time history for one athlete and discipline.
@@ -296,19 +340,23 @@ async def athlete_history(
     with _session() as session:
         athlete = session.get(Athlete, athlete_id)
         if not athlete:
-            raise HTTPException(status_code=404, detail=f"Athlete {athlete_id} not found")
+            raise HTTPException(
+                status_code=404, detail=f"Athlete {athlete_id} not found"
+            )
 
         # Fetch all rating-history rows for this athlete × discipline, sorted by date
-        rows = list(session.execute(
-            select(RatingHistory, Event, Round)
-            .join(Event, RatingHistory.event_id == Event.id)
-            .join(Round, RatingHistory.round_id == Round.id)
-            .where(
-                RatingHistory.athlete_id == athlete_id,
-                Event.discipline == disc,
-            )
-            .order_by(Event.start_date.asc(), Round.round_type.asc())
-        ).all())
+        rows = list(
+            session.execute(
+                select(RatingHistory, Event, Round)
+                .join(Event, RatingHistory.event_id == Event.id)
+                .join(Round, RatingHistory.round_id == Round.id)
+                .where(
+                    RatingHistory.athlete_id == athlete_id,
+                    Event.discipline == disc,
+                )
+                .order_by(Event.start_date.asc(), Round.round_type.asc())
+            ).all()
+        )
 
         # Keep only the last round per event so each event appears once
         event_last: dict[int, tuple] = {}
@@ -317,17 +365,19 @@ async def athlete_history(
 
         points: list[HistoryPoint] = []
         for rh, event, _rnd in event_last.values():
-            points.append(HistoryPoint(
-                event_id=event.id,
-                event_name=event.name,
-                event_date=event.start_date,
-                season=event.season,
-                mu_after=round(rh.mu_after, 2),
-                sigma_after=round(rh.sigma_after, 2),
-                mu_before=round(rh.mu_before, 2),
-                sigma_before=round(rh.sigma_before, 2),
-                delta=round(rh.mu_after - rh.mu_before, 2),
-            ))
+            points.append(
+                HistoryPoint(
+                    event_id=event.id,
+                    event_name=event.name,
+                    event_date=event.start_date,
+                    season=event.season,
+                    mu_after=round(rh.mu_after, 2),
+                    sigma_after=round(rh.sigma_after, 2),
+                    mu_before=round(rh.mu_before, 2),
+                    sigma_before=round(rh.sigma_before, 2),
+                    delta=round(rh.mu_after - rh.mu_before, 2),
+                )
+            )
 
     return AthleteHistoryResponse(
         athlete_id=athlete.id,
@@ -341,10 +391,13 @@ async def athlete_history(
 # GET /api/v1/events
 # ---------------------------------------------------------------------------
 
+
 @router.get("/events", response_model=EventsResponse, summary="List events")
 async def list_events(
     discipline: Optional[str] = Query(None, description="Filter by discipline"),
-    season: Optional[int] = Query(None, ge=2000, le=2100, description="Filter by season year"),
+    season: Optional[int] = Query(
+        None, ge=2000, le=2100, description="Filter by season year"
+    ),
     limit: int = Query(50, ge=1, le=100, description="Number of results (1–100)"),
     offset: int = Query(0, ge=0, le=10000, description="Pagination offset (max 10000)"),
 ) -> EventsResponse:
@@ -367,9 +420,13 @@ async def list_events(
             select(func.count()).select_from(base_stmt.subquery())
         ).scalar_one()
 
-        events = session.execute(
-            base_stmt.order_by(Event.start_date.desc()).limit(limit).offset(offset)
-        ).scalars().all()
+        events = (
+            session.execute(
+                base_stmt.order_by(Event.start_date.desc()).limit(limit).offset(offset)
+            )
+            .scalars()
+            .all()
+        )
 
         items = [
             EventSummary(
@@ -391,7 +448,10 @@ async def list_events(
 # GET /api/v1/events/{event_id}
 # ---------------------------------------------------------------------------
 
-@router.get("/events/{event_id}", response_model=EventDetail, summary="Get event details")
+
+@router.get(
+    "/events/{event_id}", response_model=EventDetail, summary="Get event details"
+)
 async def event_detail(event_id: int) -> EventDetail:
     """
     Return full event details including all rounds and per-athlete results with
@@ -426,26 +486,30 @@ async def event_detail(event_id: int) -> EventDetail:
             for res, ath in result_rows_raw:
                 rh = rh_by_athlete.get(ath.id)
                 delta = round(rh.mu_after - rh.mu_before, 2) if rh else None
-                results_out.append(ResultRow(
-                    athlete_id=ath.id,
-                    athlete_name=ath.name,
-                    nationality=ath.nationality,
-                    rank=res.rank,
-                    raw_score=res.raw_score,
-                    dnf=res.dnf,
-                    dns=res.dns,
-                    mu_before=round(rh.mu_before, 2) if rh else None,
-                    mu_after=round(rh.mu_after, 2) if rh else None,
-                    delta=delta,
-                ))
+                results_out.append(
+                    ResultRow(
+                        athlete_id=ath.id,
+                        athlete_name=ath.name,
+                        nationality=ath.nationality,
+                        rank=res.rank,
+                        raw_score=res.raw_score,
+                        dnf=res.dnf,
+                        dns=res.dns,
+                        mu_before=round(rh.mu_before, 2) if rh else None,
+                        mu_after=round(rh.mu_after, 2) if rh else None,
+                        delta=delta,
+                    )
+                )
 
-            rounds_out.append(RoundDetail(
-                id=rnd.id,
-                round_type=rnd.round_type.value,
-                gender=rnd.gender.value,
-                athlete_count=rnd.athlete_count,
-                results=results_out,
-            ))
+            rounds_out.append(
+                RoundDetail(
+                    id=rnd.id,
+                    round_type=rnd.round_type.value,
+                    gender=rnd.gender.value,
+                    athlete_count=rnd.athlete_count,
+                    results=results_out,
+                )
+            )
 
     return EventDetail(
         id=event.id,
@@ -462,6 +526,7 @@ async def event_detail(event_id: int) -> EventDetail:
 # ---------------------------------------------------------------------------
 # GET /api/v1/combined/leaderboard
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "/combined/leaderboard",
@@ -529,7 +594,9 @@ async def combined_leaderboard(
                     last_event_at=combined_rating.last_event_at,
                     mu_boulder=round(boulder_rating.mu, 2) if boulder_rating else 0.0,
                     mu_lead=round(lead_rating.mu, 2) if lead_rating else 0.0,
-                    sigma_boulder=round(boulder_rating.sigma, 2) if boulder_rating else 0.0,
+                    sigma_boulder=round(boulder_rating.sigma, 2)
+                    if boulder_rating
+                    else 0.0,
                     sigma_lead=round(lead_rating.sigma, 2) if lead_rating else 0.0,
                 )
             )
@@ -546,6 +613,7 @@ async def combined_leaderboard(
 # ---------------------------------------------------------------------------
 # GET /api/v1/athletes/{athlete_id}/combined
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "/athletes/{athlete_id}/combined",
@@ -564,7 +632,9 @@ async def athlete_combined(athlete_id: int) -> AthleteCombined:
     with _session() as session:
         athlete = session.get(Athlete, athlete_id)
         if not athlete:
-            raise HTTPException(status_code=404, detail=f"Athlete {athlete_id} not found")
+            raise HTTPException(
+                status_code=404, detail=f"Athlete {athlete_id} not found"
+            )
 
         combined_rating = session.execute(
             select(Rating).where(
@@ -614,6 +684,7 @@ async def athlete_combined(athlete_id: int) -> AthleteCombined:
 # POST /api/v1/projections
 # ---------------------------------------------------------------------------
 
+
 def _make_projection_cache_key(discipline: Discipline, athlete_ids: list[int]) -> str:
     """Stable cache key for a projection request fingerprint."""
     sorted_ids = sorted(athlete_ids)
@@ -627,7 +698,9 @@ def _make_projection_cache_key(discipline: Discipline, athlete_ids: list[int]) -
     summary="Compute podium probability projections",
 )
 @limiter.limit("10/minute")
-async def projections(request: Request, response: Response, body: ProjectionRequest) -> ProjectionResponse:
+async def projections(
+    request: Request, response: Response, body: ProjectionRequest
+) -> ProjectionResponse:
     """
     Run Monte Carlo podium-probability projections for a custom set of athletes.
 
@@ -699,7 +772,9 @@ async def projections(request: Request, response: Response, body: ProjectionRequ
                 top_8=probs[a.athlete_id]["top_8"],
                 expected_rank=probs[a.athlete_id]["expected_rank"],
             )
-            for a in sorted(proj_inputs, key=lambda x: probs[x.athlete_id]["expected_rank"])
+            for a in sorted(
+                proj_inputs, key=lambda x: probs[x.athlete_id]["expected_rank"]
+            )
         ]
 
     return ProjectionResponse(
@@ -713,6 +788,7 @@ async def projections(request: Request, response: Response, body: ProjectionRequ
 # ---------------------------------------------------------------------------
 # GET /api/v1/predictions/upcoming
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "/predictions/upcoming",
@@ -763,11 +839,13 @@ async def predictions_upcoming(
             raise HTTPException(
                 status_code=422,
                 detail="boulder_lead / combined is not available for upcoming predictions. "
-                       "Use lead or boulder individually.",
+                "Use lead or boulder individually.",
             )
         disciplines_to_query = [(_discipline_label(disc_enum), disc_enum)]
     else:
-        disciplines_to_query = [(label, disc) for (label, _, disc) in _PREDICTIONS_DISCIPLINES]
+        disciplines_to_query = [
+            (label, disc) for (label, _, disc) in _PREDICTIONS_DISCIPLINES
+        ]
 
     all_entries: list[UpcomingPredictionEntry] = []
 
@@ -832,14 +910,17 @@ async def predictions_upcoming(
                             sigma = rating.sigma if rating else DEFAULT_SIGMA
                             proj_inputs.append(
                                 AthleteProjectionInput(
-                                    athlete_id=aid, mu=mu, sigma=sigma, name=athlete.name
+                                    athlete_id=aid,
+                                    mu=mu,
+                                    sigma=sigma,
+                                    name=athlete.name,
                                 )
                             )
 
                         if len(proj_inputs) > _MAX_ATHLETES_PER_PROJECTION:
-                            proj_inputs = sorted(proj_inputs, key=lambda a: a.mu, reverse=True)[
-                                :_MAX_ATHLETES_PER_PROJECTION
-                            ]
+                            proj_inputs = sorted(
+                                proj_inputs, key=lambda a: a.mu, reverse=True
+                            )[:_MAX_ATHLETES_PER_PROJECTION]
 
                         _fingerprint = ":".join(
                             f"{a.athlete_id},{a.mu:.2f},{a.sigma:.2f}"
@@ -853,10 +934,15 @@ async def predictions_upcoming(
                         )
                         probs = predictions_cache.get(_cache_key)
                         if probs is None:
-                            probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
+                            probs = compute_podium_probabilities(
+                                proj_inputs, n_simulations=10_000
+                            )
                             predictions_cache.set(_cache_key, probs)
 
-                        ranked = sorted(proj_inputs, key=lambda a: probs[a.athlete_id]["expected_rank"])
+                        ranked = sorted(
+                            proj_inputs,
+                            key=lambda a: probs[a.athlete_id]["expected_rank"],
+                        )
                         top3 = [
                             PredictedAthlete(
                                 athlete_id=a.athlete_id,
@@ -880,7 +966,9 @@ async def predictions_upcoming(
                     from climbing_elo.cache import likely_roster_cache
 
                     for gender_enum in [Gender.M, Gender.F]:
-                        _roster_key = f"roster:{disc_enum.value}:{ev.season}:{gender_enum.value}"
+                        _roster_key = (
+                            f"roster:{disc_enum.value}:{ev.season}:{gender_enum.value}"
+                        )
                         athlete_ids_roster = likely_roster_cache.get(_roster_key)
                         if athlete_ids_roster is None:
                             athlete_ids_roster = likely_competitors(
@@ -909,7 +997,10 @@ async def predictions_upcoming(
                             sigma = rating.sigma if rating else DEFAULT_SIGMA
                             proj_inputs_fb.append(
                                 AthleteProjectionInput(
-                                    athlete_id=aid, mu=mu, sigma=sigma, name=athlete.name
+                                    athlete_id=aid,
+                                    mu=mu,
+                                    sigma=sigma,
+                                    name=athlete.name,
                                 )
                             )
 

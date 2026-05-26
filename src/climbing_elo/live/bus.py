@@ -15,6 +15,7 @@ Usage:
     # Publisher (poller)
     await event_bus.publish(event_id, {"type": "new_result", ...})
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -38,8 +39,11 @@ class EventBus:
                 self._subscribers[event_id] = set()
             q: asyncio.Queue = asyncio.Queue(maxsize=256)
             self._subscribers[event_id].add(q)
-            log.debug("EventBus: subscriber added for event %d (total=%d)",
-                      event_id, len(self._subscribers[event_id]))
+            log.debug(
+                "EventBus: subscriber added for event %d (total=%d)",
+                event_id,
+                len(self._subscribers[event_id]),
+            )
             return q
 
     async def unsubscribe(self, event_id: int, queue: asyncio.Queue) -> None:
@@ -59,7 +63,9 @@ class EventBus:
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
-                log.warning("EventBus: queue full for event %d — dropping payload", event_id)
+                log.warning(
+                    "EventBus: queue full for event %d — dropping payload", event_id
+                )
 
     def subscriber_count(self, event_id: int) -> int:
         """Return the current number of subscribers for event_id (not async-safe, approximate)."""

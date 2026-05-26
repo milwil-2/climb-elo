@@ -76,7 +76,9 @@ class Event(Base):
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     discipline: Mapped[Discipline] = mapped_column(Enum(Discipline), nullable=False)
 
-    rounds: Mapped[list[Round]] = relationship(back_populates="event", cascade="all, delete-orphan")
+    rounds: Mapped[list[Round]] = relationship(
+        back_populates="event", cascade="all, delete-orphan"
+    )
     rating_history: Mapped[list[RatingHistory]] = relationship(back_populates="event")
 
 
@@ -90,10 +92,14 @@ class Round(Base):
     gender: Mapped[Gender] = mapped_column(Enum(Gender), nullable=False)
 
     event: Mapped[Event] = relationship(back_populates="rounds")
-    results: Mapped[list[Result]] = relationship(back_populates="round", cascade="all, delete-orphan")
+    results: Mapped[list[Result]] = relationship(
+        back_populates="round", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
-        UniqueConstraint("event_id", "round_type", "gender", name="uq_round_event_type_gender"),
+        UniqueConstraint(
+            "event_id", "round_type", "gender", name="uq_round_event_type_gender"
+        ),
     )
 
 
@@ -122,7 +128,9 @@ class Rating(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), nullable=False)
-    discipline: Mapped[Discipline] = mapped_column(Enum(Discipline), nullable=False, default=Discipline.LEAD)
+    discipline: Mapped[Discipline] = mapped_column(
+        Enum(Discipline), nullable=False, default=Discipline.LEAD
+    )
     mu: Mapped[float] = mapped_column(Float, nullable=False, default=1500.0)
     sigma: Mapped[float] = mapped_column(Float, nullable=False, default=350.0)
     n_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -132,7 +140,9 @@ class Rating(Base):
     athlete: Mapped[Athlete] = relationship(back_populates="ratings")
 
     __table_args__ = (
-        UniqueConstraint("athlete_id", "discipline", name="uq_rating_athlete_discipline"),
+        UniqueConstraint(
+            "athlete_id", "discipline", name="uq_rating_athlete_discipline"
+        ),
     )
 
 

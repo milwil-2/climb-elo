@@ -2,14 +2,12 @@
 
 Reproduces the PRD Appendix C worked example (adapted to K/(N-1) normalization).
 """
+
 from datetime import date
 
 from climbing_elo.engine.elo import (
     BOULDER_MARGIN_MAX_GAP,
-    DEFAULT_MU,
-    DEFAULT_SIGMA,
     MARGIN_CAP,
-    SPEED_MAX_GAP_SECONDS,
     AthleteRating,
     AthleteResult,
     apply_time_decay,
@@ -52,6 +50,7 @@ def test_margin_multiplier_capped():
     # MARGIN_CAP is tuned to 1.5 (from empirical grid search in tune_kfactors.py).
     # Any score gap large enough to exceed the cap should return MARGIN_CAP.
     from climbing_elo.engine import elo as elo_module
+
     mult = compute_margin_multiplier(40.0, 0.0, max_gap=20.0)
     assert mult == elo_module.MARGIN_CAP
 
@@ -78,11 +77,11 @@ def test_time_decay_capped():
 
 def test_calculate_round_updates_zero_sum():
     """Rating changes must sum to zero across all athletes."""
-    results = [
-        AthleteResult(athlete_id=i, rank=i) for i in range(1, 9)
-    ]
+    results = [AthleteResult(athlete_id=i, rank=i) for i in range(1, 9)]
     ratings = {
-        i: AthleteRating(athlete_id=i, mu=1500 + (5 - i) * 30, n_events=10, provisional=False)
+        i: AthleteRating(
+            athlete_id=i, mu=1500 + (5 - i) * 30, n_events=10, provisional=False
+        )
         for i in range(1, 9)
     }
     updates = calculate_round_updates(
@@ -204,10 +203,18 @@ def test_provisional_higher_k():
     }
 
     updates_est = calculate_round_updates(
-        results, ratings_established, EventTier.WORLD_CUP, RoundType.FINAL, date(2024, 6, 1)
+        results,
+        ratings_established,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
     )
     updates_prov = calculate_round_updates(
-        results, ratings_provisional, EventTier.WORLD_CUP, RoundType.FINAL, date(2024, 6, 1)
+        results,
+        ratings_provisional,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
     )
 
     delta_est = updates_est[0].mu_after - updates_est[0].mu_before
@@ -227,6 +234,7 @@ def test_single_athlete_no_updates():
 # ---------------------------------------------------------------------------
 # Boulder margin weighting tests
 # ---------------------------------------------------------------------------
+
 
 def test_boulder_margin_no_scores():
     """Boulder multiplier returns 1.0 when scores are absent."""
@@ -263,17 +271,29 @@ def test_boulder_margin_uses_boulder_max_gap():
 def test_boulder_round_updates_zero_sum():
     """Boulder rating changes must still sum to zero."""
     results = [
-        AthleteResult(athlete_id=1, rank=1, score_normalized=4 * 1000 + 4 * 100 - 4 * 10 - 4),
-        AthleteResult(athlete_id=2, rank=2, score_normalized=3 * 1000 + 4 * 100 - 5 * 10 - 4),
-        AthleteResult(athlete_id=3, rank=3, score_normalized=2 * 1000 + 3 * 100 - 8 * 10 - 6),
-        AthleteResult(athlete_id=4, rank=4, score_normalized=1 * 1000 + 2 * 100 - 3 * 10 - 2),
+        AthleteResult(
+            athlete_id=1, rank=1, score_normalized=4 * 1000 + 4 * 100 - 4 * 10 - 4
+        ),
+        AthleteResult(
+            athlete_id=2, rank=2, score_normalized=3 * 1000 + 4 * 100 - 5 * 10 - 4
+        ),
+        AthleteResult(
+            athlete_id=3, rank=3, score_normalized=2 * 1000 + 3 * 100 - 8 * 10 - 6
+        ),
+        AthleteResult(
+            athlete_id=4, rank=4, score_normalized=1 * 1000 + 2 * 100 - 3 * 10 - 2
+        ),
     ]
     ratings = {
         i: AthleteRating(athlete_id=i, mu=1500, n_events=10, provisional=False)
         for i in range(1, 5)
     }
     updates = calculate_round_updates(
-        results, ratings, EventTier.WORLD_CUP, RoundType.FINAL, date(2024, 6, 1),
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
         discipline=Discipline.BOULDER,
     )
     total_delta = sum(u.mu_after - u.mu_before for u in updates)
@@ -326,8 +346,12 @@ def test_speed_round_updates_zero_sum():
         for i in range(1, 9)
     }
     updates = calculate_round_updates(
-        results, ratings, EventTier.WORLD_CUP, RoundType.QUALIFICATION,
-        date(2024, 6, 1), discipline=Discipline.SPEED,
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.QUALIFICATION,
+        date(2024, 6, 1),
+        discipline=Discipline.SPEED,
     )
     total_delta = sum(u.mu_after - u.mu_before for u in updates)
     assert abs(total_delta) < 0.0001
@@ -344,8 +368,12 @@ def test_speed_false_start_treated_as_dnf():
         2: AthleteRating(athlete_id=2, mu=1500.0, n_events=10, provisional=False),
     }
     updates = calculate_round_updates(
-        results, ratings, EventTier.WORLD_CUP, RoundType.FINAL,
-        date(2024, 6, 1), discipline=Discipline.SPEED,
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.SPEED,
     )
     by_id = {u.athlete_id: u for u in updates}
     # Margin multiplier for the pair should be 1.0 (DNF path)
@@ -358,6 +386,7 @@ def test_speed_false_start_treated_as_dnf():
 
 def test_speed_winner_gains_more_with_large_margin():
     """Larger time gap should produce a bigger rating swing than a small gap."""
+
     def _run(winner_time, loser_time):
         results = [
             AthleteResult(athlete_id=1, rank=1, score_normalized=winner_time),
@@ -368,13 +397,17 @@ def test_speed_winner_gains_more_with_large_margin():
             2: AthleteRating(2, mu=1500.0, n_events=10, provisional=False),
         }
         upd = calculate_round_updates(
-            results, ratings, EventTier.WORLD_CUP, RoundType.FINAL,
-            date(2024, 6, 1), discipline=Discipline.SPEED,
+            results,
+            ratings,
+            EventTier.WORLD_CUP,
+            RoundType.FINAL,
+            date(2024, 6, 1),
+            discipline=Discipline.SPEED,
         )
         return next(u for u in upd if u.athlete_id == 1).mu_after - 1500.0
 
-    delta_small = _run(6.5, 6.6)   # 0.1 s gap
-    delta_large = _run(6.5, 8.5)   # 2.0 s gap (capped)
+    delta_small = _run(6.5, 6.6)  # 0.1 s gap
+    delta_large = _run(6.5, 8.5)  # 2.0 s gap (capped)
     assert delta_large > delta_small
 
 
@@ -390,8 +423,12 @@ def test_speed_dns_excluded():
         for i in range(1, 4)
     }
     updates = calculate_round_updates(
-        results, ratings, EventTier.WORLD_CUP, RoundType.QUALIFICATION,
-        date(2024, 6, 1), discipline=Discipline.SPEED,
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.QUALIFICATION,
+        date(2024, 6, 1),
+        discipline=Discipline.SPEED,
     )
     ids_updated = {u.athlete_id for u in updates}
     assert 3 not in ids_updated

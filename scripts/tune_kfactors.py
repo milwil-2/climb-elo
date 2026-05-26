@@ -8,6 +8,7 @@ For each combination of hyperparameters:
 
 Prints all results sorted by ELO hit-rate, then outputs the best configuration.
 """
+
 import copy
 import itertools
 import sys
@@ -155,14 +156,18 @@ def main() -> None:
         cutoff_season = max_season - HOLDOUT_SEASONS + 1
         cutoff_date = date(cutoff_season, 1, 1)
 
-        holdout_events = session.execute(
-            select(Event)
-            .where(
-                Event.discipline == Discipline.LEAD,
-                Event.start_date >= cutoff_date,
+        holdout_events = (
+            session.execute(
+                select(Event)
+                .where(
+                    Event.discipline == Discipline.LEAD,
+                    Event.start_date >= cutoff_date,
+                )
+                .order_by(Event.start_date.asc())
             )
-            .order_by(Event.start_date.asc())
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         training_count = session.execute(
             select(func.count(Event.id)).where(
@@ -172,14 +177,18 @@ def main() -> None:
         ).scalar()
 
         total_combos = (
-            len(K_SCALE_VALUES) * len(MARGIN_CAP_VALUES) * len(PROVISIONAL_K_MULT_VALUES)
+            len(K_SCALE_VALUES)
+            * len(MARGIN_CAP_VALUES)
+            * len(PROVISIONAL_K_MULT_VALUES)
         )
 
         print(f"Grid search: {total_combos} combinations")
         print(f"  K-scale:        {K_SCALE_VALUES}")
         print(f"  MARGIN_CAP:     {MARGIN_CAP_VALUES}")
         print(f"  PROV_K_MULT:    {PROVISIONAL_K_MULT_VALUES}")
-        print(f"  Training events: {training_count}, holdout events: {len(holdout_events)}")
+        print(
+            f"  Training events: {training_count}, holdout events: {len(holdout_events)}"
+        )
         print()
 
         results_log: list[dict[str, Any]] = []
@@ -195,17 +204,21 @@ def main() -> None:
             elo_module.MARGIN_CAP = margin_cap
             elo_module.PROVISIONAL_K_MULTIPLIER = prov_mult
 
-            elo_rate, baseline_rate = run_evaluation(session, holdout_events, cutoff_date)
+            elo_rate, baseline_rate = run_evaluation(
+                session, holdout_events, cutoff_date
+            )
             delta = elo_rate - baseline_rate
 
-            results_log.append({
-                "k_scale": k_scale,
-                "margin_cap": margin_cap,
-                "prov_mult": prov_mult,
-                "elo_rate": elo_rate,
-                "baseline_rate": baseline_rate,
-                "delta": delta,
-            })
+            results_log.append(
+                {
+                    "k_scale": k_scale,
+                    "margin_cap": margin_cap,
+                    "prov_mult": prov_mult,
+                    "elo_rate": elo_rate,
+                    "baseline_rate": baseline_rate,
+                    "delta": delta,
+                }
+            )
 
             status = "PASS" if delta >= 15 else "FAIL"
             print(
@@ -227,8 +240,10 @@ def main() -> None:
         print("=" * 65)
         print("TOP 10 CONFIGURATIONS (by ELO hit-rate):")
         print("-" * 65)
-        print(f"{'rank':>4}  {'k_scale':>7}  {'cap':>5}  {'prov':>5}  "
-              f"{'ELO%':>6}  {'BASE%':>6}  {'delta':>7}")
+        print(
+            f"{'rank':>4}  {'k_scale':>7}  {'cap':>5}  {'prov':>5}  "
+            f"{'ELO%':>6}  {'BASE%':>6}  {'delta':>7}"
+        )
         print("-" * 65)
         for i, r in enumerate(results_log[:10], 1):
             print(

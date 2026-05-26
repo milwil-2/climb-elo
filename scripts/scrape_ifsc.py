@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Scrape IFSC results (Lead, Boulder, or Speed) from the IFSC results API into the database."""
+
 import argparse
 import logging
 
@@ -11,8 +12,12 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape IFSC competition results")
-    parser.add_argument("--min-year", type=int, default=2006, help="Earliest season to scrape")
-    parser.add_argument("--max-year", type=int, default=2026, help="Latest season to scrape")
+    parser.add_argument(
+        "--min-year", type=int, default=2006, help="Earliest season to scrape"
+    )
+    parser.add_argument(
+        "--max-year", type=int, default=2026, help="Latest season to scrape"
+    )
     parser.add_argument(
         "--discipline",
         choices=["lead", "boulder", "speed"],
@@ -23,7 +28,9 @@ def main() -> None:
 
     SessionFactory = init_db()
 
-    print(f"Scraping IFSC {args.discipline.capitalize()} results for {args.min_year}–{args.max_year}...")
+    print(
+        f"Scraping IFSC {args.discipline.capitalize()} results for {args.min_year}–{args.max_year}..."
+    )
     print("This will take a few minutes due to rate limiting.\n")
 
     with SessionFactory() as session:

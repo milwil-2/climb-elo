@@ -5,11 +5,11 @@ Exercises the two bugs fixed:
   Bug 2: _dcat_discipline_keyword falls back to name parsing when
          dc["discipline"] is null (upcoming events on the IFSC API).
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -48,7 +48,11 @@ class TestDcatDisciplineKeyword:
         assert _dcat_discipline_keyword(dc) == "lead"
 
     def test_upcoming_null_discipline_boulder(self):
-        dc = {"discipline": None, "status": "registration_pending", "name": "BOULDER Women"}
+        dc = {
+            "discipline": None,
+            "status": "registration_pending",
+            "name": "BOULDER Women",
+        }
         assert _dcat_discipline_keyword(dc) == "boulder"
 
     def test_upcoming_null_discipline_speed(self):
@@ -64,13 +68,21 @@ class TestDcatDisciplineKeyword:
         """Boulder&Lead combined d_cats: keyword = 'boulder' (has both).
         Caller is responsible for excluding combined categories for
         discipline-specific scrapes."""
-        dc = {"discipline": "boulder&lead", "status": "finished", "name": "BOULDER&LEAD Mixed"}
+        dc = {
+            "discipline": "boulder&lead",
+            "status": "finished",
+            "name": "BOULDER&LEAD Mixed",
+        }
         # The helper returns the first match — "boulder" appears in "boulder&lead"
         result = _dcat_discipline_keyword(dc)
         assert result == "boulder"
 
     def test_unknown_discipline_and_name_returns_none(self):
-        dc = {"discipline": None, "status": "registration_pending", "name": "PARACLIMBING Open"}
+        dc = {
+            "discipline": None,
+            "status": "registration_pending",
+            "name": "PARACLIMBING Open",
+        }
         assert _dcat_discipline_keyword(dc) is None
 
     def test_arbitrary_discipline_string_not_propagated(self):
@@ -110,7 +122,13 @@ def _make_session():
 MOCK_SEASONS = [
     {
         "name": "2026",
-        "leagues": [{"league_id": 1, "url": "/api/v1/season_leagues/457", "name": "IFSC World Cups 2026"}],
+        "leagues": [
+            {
+                "league_id": 1,
+                "url": "/api/v1/season_leagues/457",
+                "name": "IFSC World Cups 2026",
+            }
+        ],
     }
 ]
 
@@ -176,23 +194,35 @@ class TestScrapeUpcomingEventsIntegration:
         """Both upcoming lead events should be stored; the past event should not."""
         session = _make_session()
 
-        with patch("climbing_elo.scraper.ifsc_api.get_seasons", return_value=MOCK_SEASONS), \
-             patch("climbing_elo.scraper.ifsc_api._api_get", side_effect=_api_get_side_effect):
-
+        with (
+            patch(
+                "climbing_elo.scraper.ifsc_api.get_seasons", return_value=MOCK_SEASONS
+            ),
+            patch(
+                "climbing_elo.scraper.ifsc_api._api_get",
+                side_effect=_api_get_side_effect,
+            ),
+        ):
             import httpx
+
             client = MagicMock(spec=httpx.Client)
 
             # Patch _api_get inside the module
-            with patch("climbing_elo.scraper.ifsc_api._api_get", side_effect=_api_get_side_effect):
-                from climbing_elo.scraper import ifsc_api as api_mod
-
+            with patch(
+                "climbing_elo.scraper.ifsc_api._api_get",
+                side_effect=_api_get_side_effect,
+            ):
                 # Directly call with a mock client; _api_get is patched
-                report = scrape_upcoming_events(client, session, discipline="lead", seasons_ahead=1)
+                report = scrape_upcoming_events(
+                    client, session, discipline="lead", seasons_ahead=1
+                )
 
         stored = session.execute(select(Event)).scalars().all()
         names = [e.name for e in stored]
 
-        assert report.events_stored == 2, f"Expected 2 stored events, got {report.events_stored}. Names: {names}"
+        assert report.events_stored == 2, (
+            f"Expected 2 stored events, got {report.events_stored}. Names: {names}"
+        )
         assert "World Climbing Series Innsbruck 2026" in names
         assert "World Climbing Series Chamonix 2026" in names
         assert "Past Lead World Cup 2026" not in names
@@ -201,14 +231,18 @@ class TestScrapeUpcomingEventsIntegration:
         """Boulder upcoming events are stored when discipline='boulder'."""
         session = _make_session()
 
-        with patch("climbing_elo.scraper.ifsc_api._api_get", side_effect=_api_get_side_effect):
+        with patch(
+            "climbing_elo.scraper.ifsc_api._api_get", side_effect=_api_get_side_effect
+        ):
             import httpx
+
             client = MagicMock(spec=httpx.Client)
 
-            report = scrape_upcoming_events(client, session, discipline="boulder", seasons_ahead=1)
+            report = scrape_upcoming_events(
+                client, session, discipline="boulder", seasons_ahead=1
+            )
 
         stored = session.execute(select(Event)).scalars().all()
-        names = [e.name for e in stored]
 
         assert report.events_stored == 2
         for e in stored:
@@ -218,11 +252,14 @@ class TestScrapeUpcomingEventsIntegration:
         """Finished-only events (dc status='finished') must not be stored."""
         session = _make_session()
 
-        with patch("climbing_elo.scraper.ifsc_api._api_get", side_effect=_api_get_side_effect):
+        with patch(
+            "climbing_elo.scraper.ifsc_api._api_get", side_effect=_api_get_side_effect
+        ):
             import httpx
+
             client = MagicMock(spec=httpx.Client)
 
-            report = scrape_upcoming_events(client, session, discipline="lead", seasons_ahead=1)
+            scrape_upcoming_events(client, session, discipline="lead", seasons_ahead=1)
 
         stored = session.execute(select(Event)).scalars().all()
         names = [e.name for e in stored]
@@ -232,12 +269,17 @@ class TestScrapeUpcomingEventsIntegration:
         """Calling scrape_upcoming_events twice should not duplicate events."""
         session = _make_session()
 
-        with patch("climbing_elo.scraper.ifsc_api._api_get", side_effect=_api_get_side_effect):
+        with patch(
+            "climbing_elo.scraper.ifsc_api._api_get", side_effect=_api_get_side_effect
+        ):
             import httpx
+
             client = MagicMock(spec=httpx.Client)
 
-            report1 = scrape_upcoming_events(client, session, discipline="lead", seasons_ahead=1)
-            report2 = scrape_upcoming_events(client, session, discipline="lead", seasons_ahead=1)
+            scrape_upcoming_events(client, session, discipline="lead", seasons_ahead=1)
+            report2 = scrape_upcoming_events(
+                client, session, discipline="lead", seasons_ahead=1
+            )
 
         stored = session.execute(select(Event)).scalars().all()
         assert len(stored) == 2

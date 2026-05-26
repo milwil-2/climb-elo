@@ -10,11 +10,11 @@ Covers:
 - Cap: more than cap eligible athletes → returns top-cap by μ
 - DNS exclusion: athletes marked DNS don't count as participating
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
 
-import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -37,6 +37,7 @@ from climbing_elo.models import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def make_session():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -44,25 +45,38 @@ def make_session():
     return factory()
 
 
-def add_athlete(session, name: str, gender: Gender, mu: float = 1500.0,
-                discipline: Discipline = Discipline.LEAD, n_events: int = 10) -> Athlete:
+def add_athlete(
+    session,
+    name: str,
+    gender: Gender,
+    mu: float = 1500.0,
+    discipline: Discipline = Discipline.LEAD,
+    n_events: int = 10,
+) -> Athlete:
     a = Athlete(name=name, gender=gender)
     session.add(a)
     session.flush()
-    session.add(Rating(
-        athlete_id=a.id,
-        discipline=discipline,
-        mu=mu,
-        sigma=200.0,
-        n_events=n_events,
-        provisional=False,
-    ))
+    session.add(
+        Rating(
+            athlete_id=a.id,
+            discipline=discipline,
+            mu=mu,
+            sigma=200.0,
+            n_events=n_events,
+            provisional=False,
+        )
+    )
     session.flush()
     return a
 
 
-def add_wc_event(session, discipline: Discipline, season: int, index: int,
-                  tier: EventTier = EventTier.WORLD_CUP) -> Event:
+def add_wc_event(
+    session,
+    discipline: Discipline,
+    season: int,
+    index: int,
+    tier: EventTier = EventTier.WORLD_CUP,
+) -> Event:
     ev = Event(
         name=f"{discipline.value} WC {season} #{index}",
         tier=tier,
@@ -75,11 +89,13 @@ def add_wc_event(session, discipline: Discipline, season: int, index: int,
     return ev
 
 
-def add_result(session, event: Event, athlete: Athlete, gender: Gender,
-               dns: bool = False) -> None:
+def add_result(
+    session, event: Event, athlete: Athlete, gender: Gender, dns: bool = False
+) -> None:
     """Add a qualification round result for athlete at event."""
     # Reuse existing round if any.
     from sqlalchemy import select
+
     rnd = session.execute(
         select(Round).where(
             Round.event_id == event.id,
@@ -99,6 +115,7 @@ def add_result(session, event: Event, athlete: Athlete, gender: Gender,
 
     # Skip duplicate results (unique constraint on round_id + athlete_id).
     from sqlalchemy import select as sel
+
     existing = session.execute(
         sel(Result).where(
             Result.round_id == rnd.id,
@@ -106,12 +123,14 @@ def add_result(session, event: Event, athlete: Athlete, gender: Gender,
         )
     ).scalar_one_or_none()
     if existing is None:
-        session.add(Result(
-            round_id=rnd.id,
-            athlete_id=athlete.id,
-            rank=None if dns else 1,
-            dns=dns,
-        ))
+        session.add(
+            Result(
+                round_id=rnd.id,
+                athlete_id=athlete.id,
+                rank=None if dns else 1,
+                dns=dns,
+            )
+        )
         session.flush()
 
 
@@ -119,13 +138,14 @@ def add_result(session, event: Event, athlete: Athlete, gender: Gender,
 # Test: empty season — no events yet → top-cap-by-μ fallback
 # ---------------------------------------------------------------------------
 
+
 class TestEmptySeason:
     def test_empty_season_returns_top_by_mu(self):
         """With no season events, fall back to top athletes by μ."""
         session = make_session()
         a1 = add_athlete(session, "A", Gender.M, mu=1800.0)
         a2 = add_athlete(session, "B", Gender.M, mu=1600.0)
-        a3 = add_athlete(session, "C", Gender.M, mu=1400.0)
+        add_athlete(session, "C", Gender.M, mu=1400.0)
         session.commit()
 
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
@@ -161,6 +181,7 @@ class TestEmptySeason:
 # Test: early season (< min_events_for_threshold) → top-cap-by-μ fallback
 # ---------------------------------------------------------------------------
 
+
 class TestEarlySeason:
     def test_two_events_uses_fallback(self):
         """With only 2 events (< 3), use the top-by-μ fallback."""
@@ -186,9 +207,11 @@ class TestEarlySeason:
 # Test: mid season — attendance threshold logic
 # ---------------------------------------------------------------------------
 
+
 class TestMidSeason:
-    def _setup_five_events(self, session, discipline=Discipline.LEAD, season=2026,
-                           gender=Gender.M):
+    def _setup_five_events(
+        self, session, discipline=Discipline.LEAD, season=2026, gender=Gender.M
+    ):
         """Return 5 World Cup events for the given season."""
         return [add_wc_event(session, discipline, season, i) for i in range(1, 6)]
 
@@ -250,6 +273,7 @@ class TestMidSeason:
 # Test: boundary — exactly 60% included, just below 60% excluded
 # ---------------------------------------------------------------------------
 
+
 class TestBoundary:
     def _five_events(self, session):
         return [add_wc_event(session, Discipline.LEAD, 2026, i) for i in range(1, 6)]
@@ -289,6 +313,7 @@ class TestBoundary:
 # ---------------------------------------------------------------------------
 # Test: gender separation
 # ---------------------------------------------------------------------------
+
 
 class TestGenderSeparation:
     def test_womens_events_dont_count_for_men(self):
@@ -332,6 +357,7 @@ class TestGenderSeparation:
 # Test: tier filtering — continental events excluded
 # ---------------------------------------------------------------------------
 
+
 class TestTierFiltering:
     def test_continental_events_dont_count(self):
         """Continental events must be excluded from the World Cup denominator."""
@@ -340,11 +366,15 @@ class TestTierFiltering:
 
         # 3 continental events + 2 WC events → denominator should be 2 (< 3 = fallback)
         for i in range(1, 4):
-            ev = add_wc_event(session, Discipline.LEAD, 2026, i, tier=EventTier.CONTINENTAL)
+            ev = add_wc_event(
+                session, Discipline.LEAD, 2026, i, tier=EventTier.CONTINENTAL
+            )
             add_result(session, ev, athlete, Gender.M)
 
         for i in range(4, 6):
-            ev = add_wc_event(session, Discipline.LEAD, 2026, i, tier=EventTier.WORLD_CUP)
+            ev = add_wc_event(
+                session, Discipline.LEAD, 2026, i, tier=EventTier.WORLD_CUP
+            )
             add_result(session, ev, athlete, Gender.M)
 
         session.commit()
@@ -363,7 +393,10 @@ class TestTierFiltering:
         # 5 world championship events — denominator for WC should be 0 → fallback
         for i in range(1, 6):
             ev = add_wc_event(
-                session, Discipline.LEAD, 2026, i,
+                session,
+                Discipline.LEAD,
+                2026,
+                i,
                 tier=EventTier.WORLD_CHAMPIONSHIP,
             )
             add_result(session, ev, athlete, Gender.M)
@@ -379,6 +412,7 @@ class TestTierFiltering:
 # ---------------------------------------------------------------------------
 # Test: cap enforcement
 # ---------------------------------------------------------------------------
+
 
 class TestCap:
     def test_cap_limits_returned_athletes(self):
@@ -396,9 +430,7 @@ class TestCap:
         session.commit()
 
         # Cap at 5
-        result = likely_competitors(
-            session, Discipline.LEAD, 2026, Gender.M, cap=5
-        )
+        result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M, cap=5)
         assert len(result) == 5
 
     def test_cap_returns_highest_mu_athletes(self):
@@ -414,9 +446,7 @@ class TestCap:
                 add_result(session, ev, athlete, Gender.M)
         session.commit()
 
-        result = likely_competitors(
-            session, Discipline.LEAD, 2026, Gender.M, cap=3
-        )
+        result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M, cap=3)
         assert len(result) == 3
         # Top 3 by mu: athletes[5], [4], [3]
         assert athletes[5].id in result
@@ -428,6 +458,7 @@ class TestCap:
 # ---------------------------------------------------------------------------
 # Test: DNS exclusion
 # ---------------------------------------------------------------------------
+
 
 class TestDNSExclusion:
     def test_dns_does_not_count_as_participation(self):

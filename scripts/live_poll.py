@@ -13,6 +13,7 @@ Arguments:
 
 Press Ctrl+C to stop.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,6 +23,7 @@ import sys
 
 # Ensure src is on the path when run directly
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from climbing_elo.live.poller import LivePoller
@@ -39,9 +41,14 @@ def parse_args() -> argparse.Namespace:
         description="Start a live IFSC event poller (manual ops / testing)."
     )
     parser.add_argument("--event-id", type=int, required=True, help="IFSC API event ID")
-    parser.add_argument("--dcat-id", type=int, required=True, help="IFSC API discipline-category ID")
     parser.add_argument(
-        "--interval", type=int, default=15, help="Poll interval in seconds (default: 15)"
+        "--dcat-id", type=int, required=True, help="IFSC API discipline-category ID"
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=15,
+        help="Poll interval in seconds (default: 15)",
     )
     parser.add_argument(
         "--event-db-id",

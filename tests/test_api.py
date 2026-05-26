@@ -4,11 +4,10 @@ Uses FastAPI's TestClient with a temporary SQLite file containing seeded test
 data. The module-level _session() in v1_routes is monkey-patched to use the
 test sessionmaker so no production DB is touched.
 """
+
 from __future__ import annotations
 
-import tempfile
 from datetime import date, timedelta
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -37,6 +36,7 @@ from climbing_elo.models import (
 # Module-scoped test DB + seeding
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def test_db_path(tmp_path_factory):
     return tmp_path_factory.mktemp("db") / "test.db"
@@ -51,8 +51,12 @@ def test_factory(test_db_path):
     session = factory()
 
     # -- Athletes
-    adam = Athlete(name="Adam Ondra", gender=Gender.M, nationality="CZE", year_of_birth=1993)
-    janja = Athlete(name="Janja Garnbret", gender=Gender.F, nationality="SVN", year_of_birth=1999)
+    adam = Athlete(
+        name="Adam Ondra", gender=Gender.M, nationality="CZE", year_of_birth=1993
+    )
+    janja = Athlete(
+        name="Janja Garnbret", gender=Gender.F, nationality="SVN", year_of_birth=1999
+    )
     session.add_all([adam, janja])
     session.flush()
 
@@ -69,8 +73,12 @@ def test_factory(test_db_path):
     session.flush()
 
     # -- Rounds
-    rnd_m = Round(event_id=event.id, round_type=RoundType.FINAL, gender=Gender.M, athlete_count=1)
-    rnd_f = Round(event_id=event.id, round_type=RoundType.FINAL, gender=Gender.F, athlete_count=1)
+    rnd_m = Round(
+        event_id=event.id, round_type=RoundType.FINAL, gender=Gender.M, athlete_count=1
+    )
+    rnd_f = Round(
+        event_id=event.id, round_type=RoundType.FINAL, gender=Gender.F, athlete_count=1
+    )
     session.add_all([rnd_m, rnd_f])
     session.flush()
 
@@ -80,31 +88,55 @@ def test_factory(test_db_path):
     session.flush()
 
     # -- Ratings
-    session.add(Rating(
-        athlete_id=adam.id, discipline=Discipline.LEAD,
-        mu=1750.0, sigma=120.0, n_events=10, provisional=False,
-        last_event_at=date(2024, 6, 1),
-    ))
-    session.add(Rating(
-        athlete_id=janja.id, discipline=Discipline.LEAD,
-        mu=1800.0, sigma=100.0, n_events=12, provisional=False,
-        last_event_at=date(2024, 6, 1),
-    ))
+    session.add(
+        Rating(
+            athlete_id=adam.id,
+            discipline=Discipline.LEAD,
+            mu=1750.0,
+            sigma=120.0,
+            n_events=10,
+            provisional=False,
+            last_event_at=date(2024, 6, 1),
+        )
+    )
+    session.add(
+        Rating(
+            athlete_id=janja.id,
+            discipline=Discipline.LEAD,
+            mu=1800.0,
+            sigma=100.0,
+            n_events=12,
+            provisional=False,
+            last_event_at=date(2024, 6, 1),
+        )
+    )
     session.flush()
 
     # -- Rating history
-    session.add(RatingHistory(
-        athlete_id=adam.id, event_id=event.id, round_id=rnd_m.id,
-        mu_before=1740.0, mu_after=1750.0,
-        sigma_before=125.0, sigma_after=120.0,
-        contributing_pairs=[],
-    ))
-    session.add(RatingHistory(
-        athlete_id=janja.id, event_id=event.id, round_id=rnd_f.id,
-        mu_before=1790.0, mu_after=1800.0,
-        sigma_before=105.0, sigma_after=100.0,
-        contributing_pairs=[],
-    ))
+    session.add(
+        RatingHistory(
+            athlete_id=adam.id,
+            event_id=event.id,
+            round_id=rnd_m.id,
+            mu_before=1740.0,
+            mu_after=1750.0,
+            sigma_before=125.0,
+            sigma_after=120.0,
+            contributing_pairs=[],
+        )
+    )
+    session.add(
+        RatingHistory(
+            athlete_id=janja.id,
+            event_id=event.id,
+            round_id=rnd_f.id,
+            mu_before=1790.0,
+            mu_after=1800.0,
+            sigma_before=105.0,
+            sigma_after=100.0,
+            contributing_pairs=[],
+        )
+    )
     session.commit()
     session.close()
 
@@ -142,6 +174,7 @@ def client(test_db_path, test_factory):
 # /api/v1/disciplines
 # ---------------------------------------------------------------------------
 
+
 def test_disciplines_returns_list(client):
     r = client.get("/api/v1/disciplines")
     assert r.status_code == 200
@@ -166,6 +199,7 @@ def test_disciplines_schema(client):
 # ---------------------------------------------------------------------------
 # /api/v1/leaderboard
 # ---------------------------------------------------------------------------
+
 
 def test_leaderboard_default(client):
     r = client.get("/api/v1/leaderboard")
@@ -227,12 +261,15 @@ def test_leaderboard_limit_too_large(client):
 def test_leaderboard_discipline_aliases(client):
     for alias in ("lead", "LEAD", "boulder", "speed", "combined", "boulder_lead"):
         r = client.get(f"/api/v1/leaderboard?discipline={alias}")
-        assert r.status_code == 200, f"alias '{alias}' returned {r.status_code}: {r.text}"
+        assert r.status_code == 200, (
+            f"alias '{alias}' returned {r.status_code}: {r.text}"
+        )
 
 
 # ---------------------------------------------------------------------------
 # /api/v1/athletes/{athlete_id}
 # ---------------------------------------------------------------------------
+
 
 def test_athlete_detail_adam(client):
     lb = client.get("/api/v1/leaderboard?gender=M").json()
@@ -264,6 +301,7 @@ def test_athlete_detail_not_found(client):
 # ---------------------------------------------------------------------------
 # /api/v1/athletes/{athlete_id}/history
 # ---------------------------------------------------------------------------
+
 
 def test_athlete_history_found(client):
     lb = client.get("/api/v1/leaderboard?gender=M").json()
@@ -300,6 +338,7 @@ def test_athlete_history_invalid_discipline(client):
 # ---------------------------------------------------------------------------
 # /api/v1/events
 # ---------------------------------------------------------------------------
+
 
 def test_events_list(client):
     r = client.get("/api/v1/events")
@@ -356,6 +395,7 @@ def test_events_invalid_season(client):
 # /api/v1/events/{event_id}
 # ---------------------------------------------------------------------------
 
+
 def test_event_detail(client):
     events = client.get("/api/v1/events?discipline=lead").json()["items"]
     assert len(events) >= 1
@@ -395,6 +435,7 @@ def test_event_detail_not_found(client):
 # CORS headers
 # ---------------------------------------------------------------------------
 
+
 def test_cors_allows_all_origins(client):
     r = client.get("/api/v1/disciplines", headers={"Origin": "https://example.com"})
     assert r.status_code == 200
@@ -404,6 +445,7 @@ def test_cors_allows_all_origins(client):
 # ---------------------------------------------------------------------------
 # OpenAPI docs
 # ---------------------------------------------------------------------------
+
 
 def test_openapi_schema(client):
     r = client.get("/openapi.json")
@@ -428,6 +470,7 @@ def test_docs_endpoint(client):
 # Extended fixture — includes combined ratings, boulder ratings, upcoming event
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def extended_db_path(tmp_path_factory):
     return tmp_path_factory.mktemp("db_ext") / "test_ext.db"
@@ -444,8 +487,12 @@ def extended_factory(extended_db_path):
     today = date.today()
 
     # Athletes
-    adam = Athlete(name="Adam Ondra", gender=Gender.M, nationality="CZE", year_of_birth=1993)
-    janja = Athlete(name="Janja Garnbret", gender=Gender.F, nationality="SVN", year_of_birth=1999)
+    adam = Athlete(
+        name="Adam Ondra", gender=Gender.M, nationality="CZE", year_of_birth=1993
+    )
+    janja = Athlete(
+        name="Janja Garnbret", gender=Gender.F, nationality="SVN", year_of_birth=1999
+    )
     session.add_all([adam, janja])
     session.flush()
 
@@ -461,13 +508,39 @@ def extended_factory(extended_db_path):
     session.add(lead_event)
     session.flush()
 
-    rnd_lead_m = Round(event_id=lead_event.id, round_type=RoundType.FINAL, gender=Gender.M, athlete_count=2)
-    rnd_lead_f = Round(event_id=lead_event.id, round_type=RoundType.FINAL, gender=Gender.F, athlete_count=1)
+    rnd_lead_m = Round(
+        event_id=lead_event.id,
+        round_type=RoundType.FINAL,
+        gender=Gender.M,
+        athlete_count=2,
+    )
+    rnd_lead_f = Round(
+        event_id=lead_event.id,
+        round_type=RoundType.FINAL,
+        gender=Gender.F,
+        athlete_count=1,
+    )
     session.add_all([rnd_lead_m, rnd_lead_f])
     session.flush()
 
-    session.add(Result(round_id=rnd_lead_m.id, athlete_id=adam.id, rank=1, raw_score="TOP", dns=False))
-    session.add(Result(round_id=rnd_lead_f.id, athlete_id=janja.id, rank=1, raw_score="TOP", dns=False))
+    session.add(
+        Result(
+            round_id=rnd_lead_m.id,
+            athlete_id=adam.id,
+            rank=1,
+            raw_score="TOP",
+            dns=False,
+        )
+    )
+    session.add(
+        Result(
+            round_id=rnd_lead_f.id,
+            athlete_id=janja.id,
+            rank=1,
+            raw_score="TOP",
+            dns=False,
+        )
+    )
     session.flush()
 
     # Past boulder event
@@ -482,11 +555,24 @@ def extended_factory(extended_db_path):
     session.add(boulder_event)
     session.flush()
 
-    rnd_boul_m = Round(event_id=boulder_event.id, round_type=RoundType.FINAL, gender=Gender.M, athlete_count=1)
+    rnd_boul_m = Round(
+        event_id=boulder_event.id,
+        round_type=RoundType.FINAL,
+        gender=Gender.M,
+        athlete_count=1,
+    )
     session.add(rnd_boul_m)
     session.flush()
 
-    session.add(Result(round_id=rnd_boul_m.id, athlete_id=adam.id, rank=1, raw_score="4T", dns=False))
+    session.add(
+        Result(
+            round_id=rnd_boul_m.id,
+            athlete_id=adam.id,
+            rank=1,
+            raw_score="4T",
+            dns=False,
+        )
+    )
     session.flush()
 
     # Upcoming lead event (in the future)
@@ -503,59 +589,108 @@ def extended_factory(extended_db_path):
 
     # Ratings
     # Lead ratings
-    session.add(Rating(
-        athlete_id=adam.id, discipline=Discipline.LEAD,
-        mu=1750.0, sigma=120.0, n_events=10, provisional=False,
-        last_event_at=date(today.year, 1, 15),
-    ))
-    session.add(Rating(
-        athlete_id=janja.id, discipline=Discipline.LEAD,
-        mu=1800.0, sigma=100.0, n_events=12, provisional=False,
-        last_event_at=date(today.year, 1, 15),
-    ))
+    session.add(
+        Rating(
+            athlete_id=adam.id,
+            discipline=Discipline.LEAD,
+            mu=1750.0,
+            sigma=120.0,
+            n_events=10,
+            provisional=False,
+            last_event_at=date(today.year, 1, 15),
+        )
+    )
+    session.add(
+        Rating(
+            athlete_id=janja.id,
+            discipline=Discipline.LEAD,
+            mu=1800.0,
+            sigma=100.0,
+            n_events=12,
+            provisional=False,
+            last_event_at=date(today.year, 1, 15),
+        )
+    )
     # Boulder ratings
-    session.add(Rating(
-        athlete_id=adam.id, discipline=Discipline.BOULDER,
-        mu=1700.0, sigma=130.0, n_events=8, provisional=False,
-        last_event_at=date(today.year, 2, 10),
-    ))
-    session.add(Rating(
-        athlete_id=janja.id, discipline=Discipline.BOULDER,
-        mu=1720.0, sigma=110.0, n_events=9, provisional=False,
-        last_event_at=date(today.year, 2, 10),
-    ))
+    session.add(
+        Rating(
+            athlete_id=adam.id,
+            discipline=Discipline.BOULDER,
+            mu=1700.0,
+            sigma=130.0,
+            n_events=8,
+            provisional=False,
+            last_event_at=date(today.year, 2, 10),
+        )
+    )
+    session.add(
+        Rating(
+            athlete_id=janja.id,
+            discipline=Discipline.BOULDER,
+            mu=1720.0,
+            sigma=110.0,
+            n_events=9,
+            provisional=False,
+            last_event_at=date(today.year, 2, 10),
+        )
+    )
     # Combined (BOULDER_LEAD) ratings — geometric mean
     import math
+
     adam_combined_mu = round(math.sqrt(1750.0 * 1700.0), 2)
     adam_combined_sigma = round(math.sqrt((120.0**2 + 130.0**2) / 2), 2)
     janja_combined_mu = round(math.sqrt(1800.0 * 1720.0), 2)
     janja_combined_sigma = round(math.sqrt((100.0**2 + 110.0**2) / 2), 2)
 
-    session.add(Rating(
-        athlete_id=adam.id, discipline=Discipline.BOULDER_LEAD,
-        mu=adam_combined_mu, sigma=adam_combined_sigma, n_events=8, provisional=False,
-        last_event_at=date(today.year, 2, 10),
-    ))
-    session.add(Rating(
-        athlete_id=janja.id, discipline=Discipline.BOULDER_LEAD,
-        mu=janja_combined_mu, sigma=janja_combined_sigma, n_events=9, provisional=False,
-        last_event_at=date(today.year, 2, 10),
-    ))
+    session.add(
+        Rating(
+            athlete_id=adam.id,
+            discipline=Discipline.BOULDER_LEAD,
+            mu=adam_combined_mu,
+            sigma=adam_combined_sigma,
+            n_events=8,
+            provisional=False,
+            last_event_at=date(today.year, 2, 10),
+        )
+    )
+    session.add(
+        Rating(
+            athlete_id=janja.id,
+            discipline=Discipline.BOULDER_LEAD,
+            mu=janja_combined_mu,
+            sigma=janja_combined_sigma,
+            n_events=9,
+            provisional=False,
+            last_event_at=date(today.year, 2, 10),
+        )
+    )
     session.flush()
 
     # Rating history for lead event
-    session.add(RatingHistory(
-        athlete_id=adam.id, event_id=lead_event.id, round_id=rnd_lead_m.id,
-        mu_before=1740.0, mu_after=1750.0,
-        sigma_before=125.0, sigma_after=120.0,
-        contributing_pairs=[],
-    ))
-    session.add(RatingHistory(
-        athlete_id=janja.id, event_id=lead_event.id, round_id=rnd_lead_f.id,
-        mu_before=1790.0, mu_after=1800.0,
-        sigma_before=105.0, sigma_after=100.0,
-        contributing_pairs=[],
-    ))
+    session.add(
+        RatingHistory(
+            athlete_id=adam.id,
+            event_id=lead_event.id,
+            round_id=rnd_lead_m.id,
+            mu_before=1740.0,
+            mu_after=1750.0,
+            sigma_before=125.0,
+            sigma_after=120.0,
+            contributing_pairs=[],
+        )
+    )
+    session.add(
+        RatingHistory(
+            athlete_id=janja.id,
+            event_id=lead_event.id,
+            round_id=rnd_lead_f.id,
+            mu_before=1790.0,
+            mu_after=1800.0,
+            sigma_before=105.0,
+            sigma_after=100.0,
+            contributing_pairs=[],
+        )
+    )
 
     session.commit()
     session.close()
@@ -590,6 +725,7 @@ def ext_client(extended_db_path, extended_factory):
 # /api/v1/combined/leaderboard
 # ---------------------------------------------------------------------------
 
+
 def test_combined_leaderboard_200(ext_client):
     r = ext_client.get("/api/v1/combined/leaderboard?gender=M&limit=5")
     assert r.status_code == 200
@@ -608,9 +744,19 @@ def test_combined_leaderboard_shape(ext_client):
     body = r.json()
     assert len(body["items"]) >= 1
     entry = body["items"][0]
-    for field in ("rank", "athlete_id", "name", "mu", "sigma",
-                  "mu_boulder", "mu_lead", "sigma_boulder", "sigma_lead",
-                  "n_events", "provisional"):
+    for field in (
+        "rank",
+        "athlete_id",
+        "name",
+        "mu",
+        "sigma",
+        "mu_boulder",
+        "mu_lead",
+        "sigma_boulder",
+        "sigma_lead",
+        "n_events",
+        "provisional",
+    ):
         assert field in entry, f"Missing field: {field}"
     # mu_boulder and mu_lead should be positive floats
     assert entry["mu_boulder"] > 0
@@ -648,6 +794,7 @@ def test_combined_leaderboard_pagination(ext_client):
 # ---------------------------------------------------------------------------
 # /api/v1/athletes/{id}/combined
 # ---------------------------------------------------------------------------
+
 
 def test_athlete_combined_200(ext_client):
     # Get adam's ID via the combined leaderboard
@@ -689,6 +836,7 @@ def test_athlete_not_found_combined(ext_client):
 # POST /api/v1/projections
 # ---------------------------------------------------------------------------
 
+
 def test_projections_valid(ext_client):
     """Valid request with 2+ athletes returns 200 with proper shape."""
     lb = ext_client.get("/api/v1/combined/leaderboard?gender=M").json()
@@ -709,7 +857,16 @@ def test_projections_valid(ext_client):
     assert body["n_simulations"] == 10_000
     assert len(body["items"]) == 2
     entry = body["items"][0]
-    for field in ("athlete_id", "name", "mu", "sigma", "win", "podium", "top_8", "expected_rank"):
+    for field in (
+        "athlete_id",
+        "name",
+        "mu",
+        "sigma",
+        "win",
+        "podium",
+        "top_8",
+        "expected_rank",
+    ):
         assert field in entry, f"Missing field: {field}"
     # Probabilities should sum to ~1
     total_win = sum(e["win"] for e in body["items"])
@@ -779,6 +936,7 @@ def test_projections_missing_body_fields(ext_client):
 # GET /api/v1/predictions/upcoming
 # ---------------------------------------------------------------------------
 
+
 def test_predictions_upcoming_200(ext_client):
     """Endpoint returns 200 with valid shape."""
     r = ext_client.get("/api/v1/predictions/upcoming")
@@ -809,15 +967,24 @@ def test_predictions_upcoming_filter_season(ext_client):
 def test_predictions_upcoming_shape(ext_client):
     """Each entry must have the expected fields."""
     today = date.today()
-    r = ext_client.get(f"/api/v1/predictions/upcoming?discipline=lead&season={today.year}")
+    r = ext_client.get(
+        f"/api/v1/predictions/upcoming?discipline=lead&season={today.year}"
+    )
     assert r.status_code == 200
     body = r.json()
     # The future lead event should appear
     assert body["total"] >= 1
     entry = body["items"][0]
     for field in (
-        "event_id", "event_name", "discipline", "season", "start_date",
-        "tier", "has_registered_athletes", "from_likely_roster", "genders",
+        "event_id",
+        "event_name",
+        "discipline",
+        "season",
+        "start_date",
+        "tier",
+        "has_registered_athletes",
+        "from_likely_roster",
+        "genders",
     ):
         assert field in entry, f"Missing field: {field}"
     assert isinstance(entry["genders"], list)
@@ -851,6 +1018,7 @@ def test_predictions_upcoming_invalid_season_low(ext_client):
 # ---------------------------------------------------------------------------
 # OpenAPI schema includes new endpoints
 # ---------------------------------------------------------------------------
+
 
 def test_openapi_includes_combined_endpoints(ext_client):
     r = ext_client.get("/openapi.json")

@@ -21,6 +21,7 @@ Boulder score formats across years:
   - 2025+: Floating-point total points (e.g. "124.9"), but ascent-level
             structured data (top, zone, top_tries, zone_tries) is still present.
 """
+
 from __future__ import annotations
 
 import logging
@@ -80,7 +81,6 @@ def health_check() -> bool:
         return False
 
 
-
 def _api_get(client: httpx.Client, path: str) -> dict | list | None:
     url = f"{BASE_URL}{path}" if path.startswith("/") else path
     try:
@@ -101,7 +101,12 @@ def _classify_tier(event_name: str, league_name: str) -> EventTier:
         return EventTier.OLYMPICS
     if "world championship" in name:
         return EventTier.WORLD_CHAMPIONSHIP
-    if "continental" in name or "european" in league or "asia" in league or "pan america" in league:
+    if (
+        "continental" in name
+        or "european" in league
+        or "asia" in league
+        or "pan america" in league
+    ):
         return EventTier.CONTINENTAL
     return EventTier.WORLD_CUP
 
@@ -217,7 +222,9 @@ def _get_or_create_athlete(
         return cache[athlete_id]
 
     existing = session.execute(
-        select(Athlete).where(Athlete.name == f"{firstname} {lastname}", Athlete.gender == gender)
+        select(Athlete).where(
+            Athlete.name == f"{firstname} {lastname}", Athlete.gender == gender
+        )
     ).scalar_one_or_none()
 
     if existing:
@@ -358,9 +365,13 @@ def scrape_season(
             gender = Gender.M if target_dcats[dcat_id] == "M" else Gender.F
 
             time.sleep(REQUEST_DELAY)
-            result_data = _api_get(client, f"/api/v1/events/{event_id}/result/{dcat_id}")
+            result_data = _api_get(
+                client, f"/api/v1/events/{event_id}/result/{dcat_id}"
+            )
             if not result_data:
-                report.errors.append(f"Failed to fetch results for event {event_id} dcat {dcat_id}")
+                report.errors.append(
+                    f"Failed to fetch results for event {event_id} dcat {dcat_id}"
+                )
                 continue
 
             for athlete_entry in result_data.get("ranking", []):
@@ -370,7 +381,13 @@ def scrape_season(
                 country = athlete_entry.get("country", "")
 
                 athlete = _get_or_create_athlete(
-                    session, ifsc_athlete_id, firstname, lastname, country, gender, athlete_cache
+                    session,
+                    ifsc_athlete_id,
+                    firstname,
+                    lastname,
+                    country,
+                    gender,
+                    athlete_cache,
                 )
 
                 for rnd_data in athlete_entry.get("rounds", []):
@@ -398,7 +415,9 @@ def scrape_season(
                         if rank is None and not dnf:
                             dns = True
                     elif db_discipline == Discipline.BOULDER:
-                        raw_str, normalized = _parse_boulder_score(score_raw, ascents or None)
+                        raw_str, normalized = _parse_boulder_score(
+                            score_raw, ascents or None
+                        )
                         dns = rank is None
                         dnf = False
                     else:
@@ -424,7 +443,11 @@ def scrape_season(
                     try:
                         rank_int = int(rank) if rank is not None else 999
                     except (TypeError, ValueError):
-                        log.warning("Non-integer rank %r for athlete %s; skipping", rank, athlete.id)
+                        log.warning(
+                            "Non-integer rank %r for athlete %s; skipping",
+                            rank,
+                            athlete.id,
+                        )
                         continue
 
                     result = Result(
@@ -447,7 +470,13 @@ def scrape_season(
 
         session.commit()
         report.events_scraped += 1
-        log.info("Scraped %s (%s) [%s] — %d results", event_name, season_name, discipline, report.results_created)
+        log.info(
+            "Scraped %s (%s) [%s] — %d results",
+            event_name,
+            season_name,
+            discipline,
+            report.results_created,
+        )
 
     report.seasons_scraped = 1
     report.athletes_created = len(athlete_cache)
@@ -462,10 +491,15 @@ class UpcomingScrapeReport:
 
 
 #: Statuses that indicate an event has not yet completed (upcoming / in-progress).
-UPCOMING_STATUSES = frozenset({
-    "scheduled", "registration", "registration_pending",
-    "live", "in_progress",
-})
+UPCOMING_STATUSES = frozenset(
+    {
+        "scheduled",
+        "registration",
+        "registration_pending",
+        "live",
+        "in_progress",
+    }
+)
 
 #: Max events stored per `scrape_upcoming_events` call to bound Monte Carlo work on page load.
 MAX_UPCOMING_EVENTS = 50
@@ -581,21 +615,15 @@ def scrape_upcoming_events(
         # dc["discipline"] is null) are matched via their name field.
         if disc_lower == "boulder":
             target_dcat_ids = {
-                dc["id"]
-                for dc in d_cats
-                if _dcat_discipline_keyword(dc) == "boulder"
+                dc["id"] for dc in d_cats if _dcat_discipline_keyword(dc) == "boulder"
             }
         elif disc_lower == "lead":
             target_dcat_ids = {
-                dc["id"]
-                for dc in d_cats
-                if _dcat_discipline_keyword(dc) == "lead"
+                dc["id"] for dc in d_cats if _dcat_discipline_keyword(dc) == "lead"
             }
         else:  # speed
             target_dcat_ids = {
-                dc["id"]
-                for dc in d_cats
-                if _dcat_discipline_keyword(dc) == "speed"
+                dc["id"] for dc in d_cats if _dcat_discipline_keyword(dc) == "speed"
             }
 
         if not target_dcat_ids:
@@ -605,7 +633,9 @@ def scrape_upcoming_events(
         events = league_data.get("events", [])
         for ev in events:
             if report.events_stored >= MAX_UPCOMING_EVENTS:
-                log.warning("Reached MAX_UPCOMING_EVENTS=%d; stopping", MAX_UPCOMING_EVENTS)
+                log.warning(
+                    "Reached MAX_UPCOMING_EVENTS=%d; stopping", MAX_UPCOMING_EVENTS
+                )
                 return report
 
             event_name = str(ev.get("event", "Unknown"))[:200]
@@ -637,7 +667,9 @@ def scrape_upcoming_events(
             ).scalar_one_or_none()
 
             if existing:
-                log.debug("Upcoming event already stored: %s (%s)", event_name, year_str)
+                log.debug(
+                    "Upcoming event already stored: %s (%s)", event_name, year_str
+                )
                 report.events_skipped += 1
                 continue
 
@@ -652,7 +684,9 @@ def scrape_upcoming_events(
             session.add(db_event)
             session.flush()
             report.events_stored += 1
-            log.info("Stored upcoming event: %s (%s) [%s]", event_name, year_str, discipline)
+            log.info(
+                "Stored upcoming event: %s (%s) [%s]", event_name, year_str, discipline
+            )
 
     session.commit()
     return report

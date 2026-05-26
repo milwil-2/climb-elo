@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run historical backfill: compute ELO ratings from all results in the DB."""
+
 import argparse
 import logging
 import sys
@@ -18,7 +19,9 @@ DISCIPLINE_MAP = {
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Compute ELO ratings from scraped results")
+    parser = argparse.ArgumentParser(
+        description="Compute ELO ratings from scraped results"
+    )
     parser.add_argument(
         "--discipline",
         choices=list(DISCIPLINE_MAP.keys()),

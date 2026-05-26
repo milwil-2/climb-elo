@@ -13,6 +13,7 @@ Usage
     uv run python scripts/scrape_upcoming.py --discipline speed --seasons-ahead 1
     uv run python scripts/scrape_upcoming.py --all-disciplines
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,6 +42,7 @@ def main() -> None:
         action="store_true",
         help="Scrape all three disciplines (lead, boulder, speed)",
     )
+
     def _bounded_seasons_ahead(value: str) -> int:
         n = int(value)
         if n < 0 or n > 5:
@@ -56,7 +58,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    disciplines = ["lead", "boulder", "speed"] if args.all_disciplines else [args.discipline]
+    disciplines = (
+        ["lead", "boulder", "speed"] if args.all_disciplines else [args.discipline]
+    )
 
     SessionFactory = init_db()
 

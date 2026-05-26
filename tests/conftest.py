@@ -10,9 +10,6 @@ from climbing_elo.models import (
     EventTier,
     Gender,
     Rating,
-    Result,
-    Round,
-    RoundType,
 )
 
 
@@ -59,13 +56,15 @@ def eight_athletes_with_ratings(
 ) -> list[Athlete]:
     mus = [1750, 1700, 1680, 1650, 1620, 1600, 1570, 1540]
     for athlete, mu in zip(eight_athletes, mus):
-        db_session.add(Rating(
-            athlete_id=athlete.id,
-            discipline=Discipline.LEAD,
-            mu=mu,
-            sigma=100.0,
-            n_events=10,
-            provisional=False,
-        ))
+        db_session.add(
+            Rating(
+                athlete_id=athlete.id,
+                discipline=Discipline.LEAD,
+                mu=mu,
+                sigma=100.0,
+                n_events=10,
+                provisional=False,
+            )
+        )
     db_session.flush()
     return eight_athletes

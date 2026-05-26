@@ -21,7 +21,6 @@ from climbing_elo.models import (
     Rating,
     RatingHistory,
     Result,
-    Round,
     RoundType,
 )
 
@@ -42,7 +41,9 @@ class BackfillReport:
     errors: list[str] = field(default_factory=list)
 
 
-def _load_current_ratings(session: Session, discipline: Discipline) -> dict[int, AthleteRating]:
+def _load_current_ratings(
+    session: Session, discipline: Discipline
+) -> dict[int, AthleteRating]:
     stmt = select(Rating).where(Rating.discipline == discipline)
     ratings = {}
     for row in session.execute(stmt).scalars():
@@ -125,14 +126,18 @@ def run_backfill(
 
             athlete_results = []
             for res in results:
-                _get_or_create_rating(session, res.athlete_id, discipline, ratings_cache)
-                athlete_results.append(AthleteResult(
-                    athlete_id=res.athlete_id,
-                    rank=res.rank or 999,
-                    score_normalized=res.score_normalized,
-                    dnf=res.dnf,
-                    dns=res.dns,
-                ))
+                _get_or_create_rating(
+                    session, res.athlete_id, discipline, ratings_cache
+                )
+                athlete_results.append(
+                    AthleteResult(
+                        athlete_id=res.athlete_id,
+                        rank=res.rank or 999,
+                        score_normalized=res.score_normalized,
+                        dnf=res.dnf,
+                        dns=res.dns,
+                    )
+                )
 
             try:
                 updates = calculate_round_updates(
@@ -174,16 +179,18 @@ def run_backfill(
                     }
                     for p in upd.contributing_pairs
                 ]
-                session.add(RatingHistory(
-                    athlete_id=upd.athlete_id,
-                    event_id=event.id,
-                    round_id=rnd.id,
-                    mu_before=upd.mu_before,
-                    mu_after=upd.mu_after,
-                    sigma_before=upd.sigma_before,
-                    sigma_after=upd.sigma_after,
-                    contributing_pairs=pairs_json,
-                ))
+                session.add(
+                    RatingHistory(
+                        athlete_id=upd.athlete_id,
+                        event_id=event.id,
+                        round_id=rnd.id,
+                        mu_before=upd.mu_before,
+                        mu_after=upd.mu_after,
+                        sigma_before=upd.sigma_before,
+                        sigma_after=upd.sigma_after,
+                        contributing_pairs=pairs_json,
+                    )
+                )
 
                 report.athletes_rated.add(upd.athlete_id)
 
@@ -219,7 +226,9 @@ def run_backfill(
             report.events_processed += 1
             log.info(
                 "Processed event %s (%s) — %d rounds",
-                event.name, event.start_date, len(rounds),
+                event.name,
+                event.start_date,
+                len(rounds),
             )
 
     return report

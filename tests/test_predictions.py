@@ -8,11 +8,10 @@ Covers:
 - Events with athletes show prediction data
 - Events without athletes show "select manually" fallback
 """
+
 from __future__ import annotations
 
-import tempfile
 from datetime import date, timedelta
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,6 +37,7 @@ from climbing_elo.models import (
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def test_db_path(tmp_path_factory):
@@ -74,10 +74,17 @@ def test_factory(test_db_path):
     )
     session.add(past_event)
     session.flush()
-    rnd_past = Round(event_id=past_event.id, round_type=RoundType.FINAL, gender=Gender.M, athlete_count=1)
+    rnd_past = Round(
+        event_id=past_event.id,
+        round_type=RoundType.FINAL,
+        gender=Gender.M,
+        athlete_count=1,
+    )
     session.add(rnd_past)
     session.flush()
-    session.add(Result(round_id=rnd_past.id, athlete_id=adam.id, rank=1, raw_score="TOP"))
+    session.add(
+        Result(round_id=rnd_past.id, athlete_id=adam.id, rank=1, raw_score="TOP")
+    )
 
     # --- upcoming event WITH athletes ---
     future_event_athletes = Event(
@@ -103,8 +110,12 @@ def test_factory(test_db_path):
     )
     session.add_all([rnd_future_m, rnd_future_f])
     session.flush()
-    session.add(Result(round_id=rnd_future_m.id, athlete_id=adam.id, rank=1, raw_score="TOP"))
-    session.add(Result(round_id=rnd_future_f.id, athlete_id=janja.id, rank=1, raw_score="TOP"))
+    session.add(
+        Result(round_id=rnd_future_m.id, athlete_id=adam.id, rank=1, raw_score="TOP")
+    )
+    session.add(
+        Result(round_id=rnd_future_f.id, athlete_id=janja.id, rank=1, raw_score="TOP")
+    )
 
     # --- upcoming event WITHOUT athletes (bare event row, as stored by scrape_upcoming_events) ---
     future_event_no_athletes = Event(
@@ -118,18 +129,28 @@ def test_factory(test_db_path):
     session.flush()
 
     # --- ratings ---
-    session.add(Rating(
-        athlete_id=adam.id,
-        discipline=Discipline.LEAD,
-        mu=1750.0, sigma=120.0, n_events=10, provisional=False,
-        last_event_at=past_date,
-    ))
-    session.add(Rating(
-        athlete_id=janja.id,
-        discipline=Discipline.LEAD,
-        mu=1800.0, sigma=100.0, n_events=12, provisional=False,
-        last_event_at=past_date,
-    ))
+    session.add(
+        Rating(
+            athlete_id=adam.id,
+            discipline=Discipline.LEAD,
+            mu=1750.0,
+            sigma=120.0,
+            n_events=10,
+            provisional=False,
+            last_event_at=past_date,
+        )
+    )
+    session.add(
+        Rating(
+            athlete_id=janja.id,
+            discipline=Discipline.LEAD,
+            mu=1800.0,
+            sigma=100.0,
+            n_events=12,
+            provisional=False,
+            last_event_at=past_date,
+        )
+    )
 
     session.commit()
     session.close()
@@ -164,6 +185,7 @@ def client(test_db_path, test_factory):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestPredictionsRoute:
     def test_returns_200(self, client):

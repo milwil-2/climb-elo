@@ -18,6 +18,7 @@ engine).
 Sigma combination: RMS of the two sigmas, i.e. sqrt((sigma_b**2 + sigma_l**2) / 2),
 which is the natural pooled uncertainty when combining two independent estimates.
 """
+
 from __future__ import annotations
 
 import logging
@@ -57,7 +58,7 @@ def compute_combined_mu(mu_boulder: float, mu_lead: float) -> float:
 
 def compute_combined_sigma(sigma_boulder: float, sigma_lead: float) -> float:
     """Root-mean-square of Boulder and Lead sigmas (pooled uncertainty)."""
-    return math.sqrt((sigma_boulder ** 2 + sigma_lead ** 2) / 2.0)
+    return math.sqrt((sigma_boulder**2 + sigma_lead**2) / 2.0)
 
 
 def main() -> None:
@@ -93,11 +94,17 @@ def main() -> None:
         )
 
         # Delete any existing BL ratings (idempotent re-run)
-        existing_bl = session.execute(
-            select(Rating).where(Rating.discipline == Discipline.BOULDER_LEAD)
-        ).scalars().all()
+        existing_bl = (
+            session.execute(
+                select(Rating).where(Rating.discipline == Discipline.BOULDER_LEAD)
+            )
+            .scalars()
+            .all()
+        )
         if existing_bl:
-            log.info("Deleting %d existing BL ratings before recomputing", len(existing_bl))
+            log.info(
+                "Deleting %d existing BL ratings before recomputing", len(existing_bl)
+            )
             for r in existing_bl:
                 session.delete(r)
             session.flush()
@@ -105,23 +112,23 @@ def main() -> None:
         inserted = 0
         for aid in sorted(combined_athlete_ids):
             b = boulder_ratings[aid]
-            l = lead_ratings[aid]
+            lead = lead_ratings[aid]
 
-            mu_combined = compute_combined_mu(b.mu, l.mu)
-            sigma_combined = compute_combined_sigma(b.sigma, l.sigma)
+            mu_combined = compute_combined_mu(b.mu, lead.mu)
+            sigma_combined = compute_combined_sigma(b.sigma, lead.sigma)
 
             # Use the more recent of the two last_event_at dates
             last_event = None
-            if b.last_event_at and l.last_event_at:
-                last_event = max(b.last_event_at, l.last_event_at)
+            if b.last_event_at and lead.last_event_at:
+                last_event = max(b.last_event_at, lead.last_event_at)
             elif b.last_event_at:
                 last_event = b.last_event_at
-            elif l.last_event_at:
-                last_event = l.last_event_at
+            elif lead.last_event_at:
+                last_event = lead.last_event_at
 
             # n_events for combined = min of the two (the athlete only qualifies
             # for combined rounds when they've competed in both)
-            n_events_combined = min(b.n_events, l.n_events)
+            n_events_combined = min(b.n_events, lead.n_events)
 
             rating = Rating(
                 athlete_id=aid,

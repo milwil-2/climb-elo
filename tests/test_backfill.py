@@ -1,4 +1,5 @@
 """Integration test for the backfill pipeline."""
+
 from datetime import date
 
 from sqlalchemy import select
@@ -40,11 +41,13 @@ def _seed_event(session, name, event_date, athletes, final_order):
     session.flush()
 
     for rank, athlete_idx in enumerate(final_order, 1):
-        session.add(Result(
-            round_id=rnd.id,
-            athlete_id=athletes[athlete_idx].id,
-            rank=rank,
-        ))
+        session.add(
+            Result(
+                round_id=rnd.id,
+                athlete_id=athletes[athlete_idx].id,
+                rank=rank,
+            )
+        )
     session.flush()
     return event
 

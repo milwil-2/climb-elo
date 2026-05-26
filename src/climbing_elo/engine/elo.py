@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -130,7 +129,9 @@ def compute_speed_margin_multiplier(
     return min(1.0 + gap / SPEED_MAX_GAP_SECONDS, MARGIN_CAP)
 
 
-def apply_time_decay(sigma: float, last_event_at: date | None, current_date: date) -> float:
+def apply_time_decay(
+    sigma: float, last_event_at: date | None, current_date: date
+) -> float:
     if last_event_at is None:
         return sigma
     days_inactive = (current_date - last_event_at).days
@@ -160,14 +161,18 @@ def calculate_round_updates(
     pairs: dict[int, list[PairContribution]] = {r.athlete_id: [] for r in active}
 
     for i, res_i in enumerate(active):
-        rating_i = ratings.get(res_i.athlete_id, AthleteRating(athlete_id=res_i.athlete_id))
+        rating_i = ratings.get(
+            res_i.athlete_id, AthleteRating(athlete_id=res_i.athlete_id)
+        )
         mu_i = rating_i.mu
 
         for j, res_j in enumerate(active):
             if i == j:
                 continue
 
-            rating_j = ratings.get(res_j.athlete_id, AthleteRating(athlete_id=res_j.athlete_id))
+            rating_j = ratings.get(
+                res_j.athlete_id, AthleteRating(athlete_id=res_j.athlete_id)
+            )
             mu_j = rating_j.mu
 
             if res_i.rank == res_j.rank:
@@ -206,22 +211,26 @@ def calculate_round_updates(
             deltas[res_i.athlete_id] += delta_i
             deltas[res_j.athlete_id] += delta_j
 
-            pairs[res_i.athlete_id].append(PairContribution(
-                opponent_id=res_j.athlete_id,
-                result="won",
-                expected=round(e_i, 4),
-                actual=1.0,
-                delta=round(delta_i, 2),
-                margin_multiplier=round(margin_mult, 2),
-            ))
-            pairs[res_j.athlete_id].append(PairContribution(
-                opponent_id=res_i.athlete_id,
-                result="lost",
-                expected=round(1.0 - e_i, 4),
-                actual=0.0,
-                delta=round(delta_j, 2),
-                margin_multiplier=round(margin_mult, 2),
-            ))
+            pairs[res_i.athlete_id].append(
+                PairContribution(
+                    opponent_id=res_j.athlete_id,
+                    result="won",
+                    expected=round(e_i, 4),
+                    actual=1.0,
+                    delta=round(delta_i, 2),
+                    margin_multiplier=round(margin_mult, 2),
+                )
+            )
+            pairs[res_j.athlete_id].append(
+                PairContribution(
+                    opponent_id=res_i.athlete_id,
+                    result="lost",
+                    expected=round(1.0 - e_i, 4),
+                    actual=0.0,
+                    delta=round(delta_j, 2),
+                    margin_multiplier=round(margin_mult, 2),
+                )
+            )
 
     updates = []
     for res in active:
@@ -234,13 +243,15 @@ def calculate_round_updates(
         mu_after = mu_before + deltas[aid]
         sigma_after = max(sigma_before * SIGMA_CONVERGENCE_FACTOR, SIGMA_FLOOR)
 
-        updates.append(RatingUpdate(
-            athlete_id=aid,
-            mu_before=mu_before,
-            mu_after=mu_after,
-            sigma_before=sigma_before,
-            sigma_after=sigma_after,
-            contributing_pairs=pairs[aid],
-        ))
+        updates.append(
+            RatingUpdate(
+                athlete_id=aid,
+                mu_before=mu_before,
+                mu_after=mu_after,
+                sigma_before=sigma_before,
+                sigma_after=sigma_after,
+                contributing_pairs=pairs[aid],
+            )
+        )
 
     return updates

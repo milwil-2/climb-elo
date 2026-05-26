@@ -2,6 +2,7 @@
 
 All tests use mocks — no real network calls are made.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -11,7 +12,6 @@ import sys
 import time
 from pathlib import Path
 from types import ModuleType
-from typing import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -51,18 +51,20 @@ class TestExitCodes:
                 cli.main.__module__  # ensure cli is loaded
                 # Reload to pick up fresh state
                 _cli = _load_cli()
-                with patch.object(
-                    sys, "argv", ["health_check_cli.py"]
-                ), patch(
-                    "climbing_elo.scraper.ifsc_api.health_check", return_value=True
+                with (
+                    patch.object(sys, "argv", ["health_check_cli.py"]),
+                    patch(
+                        "climbing_elo.scraper.ifsc_api.health_check", return_value=True
+                    ),
                 ):
                     _cli.main()
         assert exc_info.value.code == 0
 
     def test_unhealthy_exits_one(self, capsys: pytest.CaptureFixture):
         _cli = _load_cli()
-        with patch.object(sys, "argv", ["health_check_cli.py"]), patch(
-            "climbing_elo.scraper.ifsc_api.health_check", return_value=False
+        with (
+            patch.object(sys, "argv", ["health_check_cli.py"]),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _cli.main()
@@ -70,8 +72,9 @@ class TestExitCodes:
 
     def test_healthy_quiet_no_output(self, capsys: pytest.CaptureFixture):
         _cli = _load_cli()
-        with patch.object(sys, "argv", ["health_check_cli.py", "--quiet"]), patch(
-            "climbing_elo.scraper.ifsc_api.health_check", return_value=True
+        with (
+            patch.object(sys, "argv", ["health_check_cli.py", "--quiet"]),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=True),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _cli.main()
@@ -82,8 +85,9 @@ class TestExitCodes:
 
     def test_unhealthy_quiet_no_output(self, capsys: pytest.CaptureFixture):
         _cli = _load_cli()
-        with patch.object(sys, "argv", ["health_check_cli.py", "--quiet"]), patch(
-            "climbing_elo.scraper.ifsc_api.health_check", return_value=False
+        with (
+            patch.object(sys, "argv", ["health_check_cli.py", "--quiet"]),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _cli.main()
@@ -94,8 +98,9 @@ class TestExitCodes:
 
     def test_healthy_prints_status(self, capsys: pytest.CaptureFixture):
         _cli = _load_cli()
-        with patch.object(sys, "argv", ["health_check_cli.py"]), patch(
-            "climbing_elo.scraper.ifsc_api.health_check", return_value=True
+        with (
+            patch.object(sys, "argv", ["health_check_cli.py"]),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=True),
         ):
             with pytest.raises(SystemExit):
                 _cli.main()
@@ -104,8 +109,9 @@ class TestExitCodes:
 
     def test_unhealthy_prints_status(self, capsys: pytest.CaptureFixture):
         _cli = _load_cli()
-        with patch.object(sys, "argv", ["health_check_cli.py"]), patch(
-            "climbing_elo.scraper.ifsc_api.health_check", return_value=False
+        with (
+            patch.object(sys, "argv", ["health_check_cli.py"]),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False),
         ):
             with pytest.raises(SystemExit):
                 _cli.main()
@@ -129,8 +135,9 @@ class TestDiscordWebhook:
         argv = ["health_check_cli.py", "--webhook", self.FAKE_WEBHOOK]
         if extra_argv:
             argv.extend(extra_argv)
-        with patch.object(sys, "argv", argv), patch(
-            "climbing_elo.scraper.ifsc_api.health_check", return_value=healthy
+        with (
+            patch.object(sys, "argv", argv),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=healthy),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _cli.main()
@@ -141,9 +148,13 @@ class TestDiscordWebhook:
         # Ensure no cooldown is in effect
         _cli.SENTINEL_FILE.unlink(missing_ok=True)
 
-        with patch("httpx.Client") as mock_httpx, patch.object(
-            sys, "argv", ["health_check_cli.py", "--webhook", self.FAKE_WEBHOOK]
-        ), patch("climbing_elo.scraper.ifsc_api.health_check", return_value=True):
+        with (
+            patch("httpx.Client") as mock_httpx,
+            patch.object(
+                sys, "argv", ["health_check_cli.py", "--webhook", self.FAKE_WEBHOOK]
+            ),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=True),
+        ):
             with pytest.raises(SystemExit) as exc_info:
                 _cli.main()
 
@@ -161,9 +172,13 @@ class TestDiscordWebhook:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post = MagicMock(return_value=mock_response)
 
-        with patch("httpx.Client", return_value=mock_client), patch.object(
-            sys, "argv", ["health_check_cli.py", "--webhook", self.FAKE_WEBHOOK]
-        ), patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False):
+        with (
+            patch("httpx.Client", return_value=mock_client),
+            patch.object(
+                sys, "argv", ["health_check_cli.py", "--webhook", self.FAKE_WEBHOOK]
+            ),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False),
+        ):
             with pytest.raises(SystemExit) as exc_info:
                 _cli.main()
 
@@ -190,9 +205,13 @@ class TestDiscordWebhook:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post = MagicMock(side_effect=capture_post)
 
-        with patch("httpx.Client", return_value=mock_client), patch.object(
-            sys, "argv", ["health_check_cli.py", "--webhook", self.FAKE_WEBHOOK]
-        ), patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False):
+        with (
+            patch("httpx.Client", return_value=mock_client),
+            patch.object(
+                sys, "argv", ["health_check_cli.py", "--webhook", self.FAKE_WEBHOOK]
+            ),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False),
+        ):
             with pytest.raises(SystemExit):
                 _cli.main()
 
@@ -211,9 +230,13 @@ class TestDiscordWebhook:
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
 
-        with patch("httpx.Client", return_value=mock_client), patch.object(
-            sys, "argv", ["health_check_cli.py", "--webhook", self.FAKE_WEBHOOK]
-        ), patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False):
+        with (
+            patch("httpx.Client", return_value=mock_client),
+            patch.object(
+                sys, "argv", ["health_check_cli.py", "--webhook", self.FAKE_WEBHOOK]
+            ),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False),
+        ):
             with pytest.raises(SystemExit) as exc_info:
                 _cli.main()
 
@@ -237,9 +260,13 @@ class TestDiscordWebhook:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post = MagicMock(return_value=mock_response)
 
-        with patch("httpx.Client", return_value=mock_client), patch.object(
-            sys, "argv", ["health_check_cli.py", "--webhook", self.FAKE_WEBHOOK]
-        ), patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False):
+        with (
+            patch("httpx.Client", return_value=mock_client),
+            patch.object(
+                sys, "argv", ["health_check_cli.py", "--webhook", self.FAKE_WEBHOOK]
+            ),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False),
+        ):
             with pytest.raises(SystemExit) as exc_info:
                 _cli.main()
 
@@ -254,9 +281,11 @@ class TestDiscordWebhook:
         _cli = _load_cli()
         _cli.SENTINEL_FILE.unlink(missing_ok=True)
 
-        with patch("httpx.Client") as mock_httpx, patch.object(
-            sys, "argv", ["health_check_cli.py"]
-        ), patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False):
+        with (
+            patch("httpx.Client") as mock_httpx,
+            patch.object(sys, "argv", ["health_check_cli.py"]),
+            patch("climbing_elo.scraper.ifsc_api.health_check", return_value=False),
+        ):
             with pytest.raises(SystemExit) as exc_info:
                 _cli.main()
 

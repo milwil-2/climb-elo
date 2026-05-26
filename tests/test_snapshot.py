@@ -11,7 +11,7 @@ import importlib.util
 import sqlite3
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -189,7 +189,9 @@ class TestSnapshotDb:
 
 
 class TestRestoreSnapshot:
-    def _make_release(self, tmp_path: Path, fake_db: Path, date_str: str = "2025-06-01"):
+    def _make_release(
+        self, tmp_path: Path, fake_db: Path, date_str: str = "2025-06-01"
+    ):
         """Build a fake gz + sha256 pair in tmp_path (simulating a release asset)."""
         backup_path = tmp_path / "backup.db"
         snapshot_mod._backup_db(fake_db, backup_path)
@@ -243,9 +245,7 @@ class TestRestoreSnapshot:
         with pytest.raises(SystemExit):
             restore_mod._latest_snapshot_date([])
 
-    def test_full_restore_roundtrip(
-        self, fake_db: Path, tmp_path: Path, monkeypatch
-    ):
+    def test_full_restore_roundtrip(self, fake_db: Path, tmp_path: Path, monkeypatch):
         """
         End-to-end restore: mock gh CLI to serve local files, verify the
         restored DB is identical to the original.
