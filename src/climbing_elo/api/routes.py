@@ -643,7 +643,7 @@ _MAX_ATHLETES_PER_PROJECTION_CARD = 64
 
 @router.get("/predictions", response_class=HTMLResponse)
 async def predictions(request: Request):
-    """List upcoming IFSC events with ELO-based outcome predictions.
+    """List upcoming World Climbing (formerly IFSC) events with ELO-based outcome predictions.
 
     For each upcoming event (start_date >= today) that has at least one result
     stored (i.e. athletes registered via the scraper), we run Monte Carlo
