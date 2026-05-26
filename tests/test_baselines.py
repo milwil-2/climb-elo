@@ -28,6 +28,7 @@ from climbing_elo.engine.baselines import (
     RandomEngine,
     StrippedEloEngine,
     _StrippedConfig,
+    _RankSnapshotEngine,
 )
 from climbing_elo.engine.evaluation import (
     BACKTEST_VARIANTS,

@@ -46,6 +46,7 @@ Output:
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import math
@@ -639,6 +640,26 @@ def _json_default(obj: Any) -> Any:
     raise TypeError(f"Unserialisable {type(obj).__name__}")
 
 
+def _build_engine(
+    factory: EngineFactory,
+    session: Session,
+    cutoff_date: date,
+) -> "RatingEngine":
+    """Construct an engine, passing ``cutoff_date`` when the factory supports it.
+
+    Snapshot-based engines (:class:`~climbing_elo.engine.baselines.IFSCOfficialEngine`
+    and :class:`~climbing_elo.engine.baselines.AscentStatsEngine`) accept a
+    ``cutoff_date`` keyword argument so they can restrict snapshot selection to
+    seasons that pre-date the training window, preventing data leakage.  Other
+    engines (e.g. ``current``, ``persistence``) only accept a ``session``
+    positional argument; we fall back gracefully for those.
+    """
+    sig = inspect.signature(factory)
+    if "cutoff_date" in sig.parameters:
+        return factory(session, cutoff_date=cutoff_date)  # type: ignore[call-arg]
+    return factory(session)
+
+
 class BacktestRunner:
     """Coordinator — wires together dataset, engine variant, OOS mode, metrics.
 
@@ -805,7 +826,7 @@ class BacktestRunner:
             session = self._in_memory_session
             run_backfill(session, discipline, end_date=split.train_end_date)
             session.commit()
-            engine = self.engine_factory(session)
+            engine = _build_engine(self.engine_factory, session, split.train_end_date)
             return self._score_split_events(session, engine, split, discipline)
 
         assert self._pristine_copy is not None and self._working_copy is not None
@@ -814,7 +835,7 @@ class BacktestRunner:
         with factory() as session:
             run_backfill(session, discipline, end_date=split.train_end_date)
             session.commit()
-            engine = self.engine_factory(session)
+            engine = _build_engine(self.engine_factory, session, split.train_end_date)
             return self._score_split_events(session, engine, split, discipline)
 
     def _score_split_events(

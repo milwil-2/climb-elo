@@ -333,8 +333,14 @@ class _RankSnapshotEngine:
     #: from the current calendar year so newer fixtures are preferred.
     _SEASON_PROBE_WINDOW = 6
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, cutoff_date: date | None = None):
         self._session = session
+        # When provided, snapshot selection stops at this year so that a
+        # backtest holding out season Y does not accidentally consume a
+        # season-end ranking from year Y or later (data leakage).
+        # Default ``None`` means "use today" — backwards-compatible for
+        # callers that don't pass a cutoff.
+        self._cutoff_date = cutoff_date
         # discipline → {athlete_id: (rank, n_events_proxy)}
         self._cache: dict[Discipline, dict[int, tuple[int, int]]] = {}
         self._name_index: dict[str, int] | None = None
@@ -352,6 +358,14 @@ class _RankSnapshotEngine:
         index: dict[str, int] = {}
         for row in self._session.execute(select(Athlete.id, Athlete.name)).all():
             key = normalize_name(row.name)
+            if key in index:
+                log.debug(
+                    "_build_name_index: collision on normalised name %r "
+                    "(athlete_id=%d conflicts with existing id=%d — first wins).",
+                    key,
+                    row.id,
+                    index[key],
+                )
             # Don't clobber — first match wins. The override table in the
             # scraper handles the known ambiguous cases.
             index.setdefault(key, row.id)
@@ -360,13 +374,20 @@ class _RankSnapshotEngine:
     def _latest_snapshot(
         self,
         discipline: Discipline,
+        cutoff_date: date | None = None,
     ) -> list[RankedAthlete]:
         """Return the most recent non-empty snapshot for both genders combined.
 
-        Walks years descending from the current calendar year. For each
-        candidate year we concatenate the M and F rankings — the harness
-        does not give us a gender filter, and athletes only ever appear in
-        one gender's ranking, so this is safe.
+        Walks years descending from ``cutoff_date.year`` (or the current
+        calendar year when ``cutoff_date`` is ``None``). For each candidate
+        year we concatenate the M and F rankings — the harness does not give
+        us a gender filter, and athletes only ever appear in one gender's
+        ranking, so this is safe.
+
+        The ``cutoff_date`` guard prevents data leakage: a backtest that
+        holds out e.g. 2024–25 events must not receive a snapshot from 2025
+        or later, because the season-end ranking is itself computed from the
+        results being held out.
         """
         discipline_key = _DISCIPLINE_KEY.get(discipline)
         if discipline_key is None:
@@ -374,8 +395,8 @@ class _RankSnapshotEngine:
 
         from datetime import date as _date
 
-        current_year = _date.today().year
-        for season in range(current_year, current_year - self._SEASON_PROBE_WINDOW, -1):
+        max_year = (cutoff_date or _date.today()).year
+        for season in range(max_year, max_year - self._SEASON_PROBE_WINDOW, -1):
             combined: list[RankedAthlete] = []
             for gender in ("M", "F"):
                 combined.extend(
@@ -391,7 +412,7 @@ class _RankSnapshotEngine:
         if self._name_index is None:
             self._name_index = self._build_name_index()
 
-        snapshot = self._latest_snapshot(discipline)
+        snapshot = self._latest_snapshot(discipline, cutoff_date=self._cutoff_date)
         if not snapshot:
             log.info(
                 "No %s snapshot available for discipline=%s — engine will "
@@ -478,6 +499,10 @@ class IFSCOfficialEngine(_RankSnapshotEngine):
     Engine state is built lazily per-discipline on first ``predict()`` call,
     then cached for the lifetime of the engine instance (the harness
     creates one engine per backtest split).
+
+    Pass ``cutoff_date`` at construction to prevent snapshot selection from
+    consuming season-end rankings that post-date the training window (data
+    leakage).  The harness supplies ``split.train_end_date`` for this.
     """
 
     _SOURCE: Source = "ifsc_official"
