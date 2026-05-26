@@ -322,6 +322,109 @@ def default_event_format(tier: str) -> list[RoundConfig]:
         raise ValueError(f"Unknown event tier: {tier!r}")
 
 
+def compute_partial_event_probabilities(
+    completed_athletes: list[tuple[AthleteProjectionInput, int]],
+    remaining_athletes: list[AthleteProjectionInput],
+    n_simulations: int = 10_000,
+    rng_seed: int | None = None,
+) -> dict[int, dict[str, float]]:
+    """Like compute_podium_probabilities but locks completed athletes at their finished ranks.
+
+    Completed athletes already have a deterministic rank (e.g. rank 1 = 1.0 win
+    probability if they are actually ranked 1st).  Only the remaining athletes
+    are simulated via Monte Carlo and assigned to the available rank slots above
+    the lowest completed rank.
+
+    This is a v1 approximation: completed athletes have fixed ranks regardless
+    of any simulation; remaining athletes are sorted by simulated performance and
+    assigned sequentially to the remaining rank slots.
+
+    Args:
+        completed_athletes: List of (AthleteProjectionInput, finished_rank) tuples.
+            Finished ranks must be positive integers; duplicates are allowed but
+            unusual (e.g. ties in qualifying).
+        remaining_athletes: Athletes who have not yet competed.  Their probabilities
+            are estimated via Monte Carlo within the unfilled rank slots.
+        n_simulations: Monte Carlo iterations.
+        rng_seed: Optional seed for reproducibility.
+
+    Returns:
+        Dict mapping athlete_id to the same schema as compute_podium_probabilities:
+            ``win``           — fraction finishing 1st
+            ``podium``        — fraction finishing top-3
+            ``top_8``         — fraction finishing top-8
+            ``expected_rank`` — mean finishing rank
+    """
+    if not completed_athletes and not remaining_athletes:
+        return {}
+
+    results: dict[int, dict[str, float]] = {}
+
+    # Completed athletes: their rank is known with certainty.
+    for athlete, rank in completed_athletes:
+        results[athlete.athlete_id] = {
+            "win": 1.0 if rank == 1 else 0.0,
+            "podium": 1.0 if rank <= 3 else 0.0,
+            "top_8": 1.0 if rank <= 8 else 0.0,
+            "expected_rank": float(rank),
+        }
+
+    if not remaining_athletes:
+        return results
+
+    # Determine which rank slots are still open.
+    taken_ranks = {rank for _, rank in completed_athletes}
+    n_remaining = len(remaining_athletes)
+    # Assign the lowest available rank slots to the remaining athletes.
+    # The remaining athletes compete for all integer rank slots not yet taken,
+    # starting from 1 up to (total).
+    available_slots: list[int] = []
+    candidate = 1
+    while len(available_slots) < n_remaining:
+        if candidate not in taken_ranks:
+            available_slots.append(candidate)
+        candidate += 1
+
+    # Monte Carlo: simulate performance of remaining athletes and assign ranks.
+    n_simulations = max(1, min(int(n_simulations), MAX_SIMULATIONS))
+    rng = np.random.default_rng(rng_seed)
+    n = len(remaining_athletes)
+
+    mus = np.array([a.mu for a in remaining_athletes], dtype=np.float64)
+    sigmas = np.clip(
+        np.array([a.sigma for a in remaining_athletes], dtype=np.float64),
+        SIGMA_FLOOR,
+        None,
+    )
+
+    # (n_simulations, n) — higher score = better
+    performances = rng.normal(mus, sigmas, size=(n_simulations, n))
+    # For each sim, sort remaining athletes by descending performance and
+    # assign them to the available_slots in order.
+    slot_arr = np.array(available_slots, dtype=np.int64)  # shape (n_remaining,)
+    # order[sim, k] = index of the k-th best remaining athlete in sim
+    order = np.argsort(-performances, axis=1)  # (n_simulations, n)
+    # ranks[sim, athlete_idx] = assigned rank slot
+    ranks = np.empty_like(order)
+    sim_indices = np.arange(n_simulations)[:, np.newaxis]
+    ranks[sim_indices, order] = slot_arr[np.newaxis, :]
+
+    win_counts = (ranks == 1).sum(axis=0)
+    podium_counts = (ranks <= 3).sum(axis=0)
+    top8_counts = (ranks <= 8).sum(axis=0)
+    mean_rank = ranks.mean(axis=0)
+
+    for i, athlete in enumerate(remaining_athletes):
+        results[athlete.athlete_id] = {
+            "win": round(float(win_counts[i]) / n_simulations, 4),
+            "podium": round(float(podium_counts[i]) / n_simulations, 4),
+            "top_8": round(float(top8_counts[i]) / n_simulations, 4),
+            "expected_rank": round(float(mean_rank[i]), 2),
+        }
+
+    return results
+
+
 def predict_winner(athletes: list[AthleteProjectionInput]) -> int | None:
     """Return athlete_id of the athlete with the highest mu rating.
 

@@ -14,19 +14,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-from collections import defaultdict
 from datetime import date
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 import climbing_elo.api.sse as _sse_module
+import climbing_elo.database as _db_module
 from climbing_elo.live.bus import EventBus
 from climbing_elo.live.poller import (
     LivePoller,
@@ -46,6 +43,7 @@ from climbing_elo.models import (
     Event,
     EventTier,
     Gender,
+    Rating,
     Result,
     Round,
     RoundType,
@@ -528,3 +526,150 @@ class TestSSETimeout:
 
         # Generator should have yielded at most a heartbeat then exited
         assert len(chunks) <= 1
+
+
+# ---------------------------------------------------------------------------
+# GET /live/{event_id} — HTML route tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def live_html_db_path(tmp_path_factory):
+    return tmp_path_factory.mktemp("live_html") / "live_test.db"
+
+
+@pytest.fixture(scope="module")
+def live_html_factory(live_html_db_path):
+    """Create and seed a file-based SQLite DB for live HTML route tests."""
+    eng = create_engine(f"sqlite:///{live_html_db_path}")
+    Base.metadata.create_all(eng)
+    factory = sessionmaker(bind=eng)
+
+    sess = factory()
+    ev = Event(
+        name="HTML Route Live Test Cup",
+        tier=EventTier.WORLD_CUP,
+        season=2026,
+        start_date=date(2026, 7, 1),
+        discipline=Discipline.LEAD,
+    )
+    sess.add(ev)
+    sess.flush()
+    saved_event_id = ev.id
+
+    a1 = Athlete(name="Live Athlete One", gender=Gender.M, nationality="AUT")
+    a2 = Athlete(name="Live Athlete Two", gender=Gender.M, nationality="CZE")
+    sess.add_all([a1, a2])
+    sess.flush()
+
+    sess.add(Rating(athlete_id=a1.id, discipline=Discipline.LEAD, mu=1700.0, sigma=100.0, n_events=5, provisional=False))
+    sess.add(Rating(athlete_id=a2.id, discipline=Discipline.LEAD, mu=1650.0, sigma=110.0, n_events=4, provisional=False))
+    sess.flush()
+
+    rnd = Round(event_id=ev.id, round_type=RoundType.FINAL, gender=Gender.M, athlete_count=2)
+    sess.add(rnd)
+    sess.flush()
+
+    sess.add(Result(round_id=rnd.id, athlete_id=a1.id, rank=1, raw_score="TOP"))
+    sess.add(Result(round_id=rnd.id, athlete_id=a2.id, rank=2, raw_score="34+"))
+    sess.commit()
+    sess.close()
+
+    return factory, saved_event_id
+
+
+@pytest.fixture(scope="module")
+def live_html_client(live_html_db_path, live_html_factory):
+    """TestClient with get_engine patched to use our seeded test DB."""
+    from climbing_elo.api.app import create_app
+
+    factory, event_id = live_html_factory
+    original_get_engine = _db_module.get_engine
+
+    def _patched_get_engine(db_path=None):
+        from sqlalchemy import create_engine
+        return create_engine(f"sqlite:///{live_html_db_path}")
+
+    _db_module.get_engine = _patched_get_engine
+    try:
+        app = create_app()
+        client = TestClient(app, raise_server_exceptions=True)
+        yield client, event_id
+    finally:
+        _db_module.get_engine = original_get_engine
+
+
+class TestLiveHTMLRoute:
+    def test_200_for_known_event(self, live_html_client):
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}")
+        assert resp.status_code == 200
+
+    def test_404_for_unknown_event(self, live_html_client):
+        client, _ = live_html_client
+        resp = client.get("/live/999999999")
+        assert resp.status_code == 404
+
+    def test_response_is_html(self, live_html_client):
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}")
+        assert "text/html" in resp.headers.get("content-type", "")
+
+    def test_event_name_in_response(self, live_html_client):
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}")
+        assert "HTML Route Live Test Cup" in resp.text
+
+    def test_leaderboard_table_present(self, live_html_client):
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}")
+        assert "leaderboard-table" in resp.text
+
+    def test_athlete_names_in_leaderboard(self, live_html_client):
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}")
+        assert "Live Athlete One" in resp.text
+        assert "Live Athlete Two" in resp.text
+
+    def test_scores_in_leaderboard(self, live_html_client):
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}")
+        assert "TOP" in resp.text
+        assert "34+" in resp.text
+
+    def test_projections_table_present(self, live_html_client):
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}")
+        assert "projections-body" in resp.text
+
+    def test_sse_script_block_present(self, live_html_client):
+        """The page must contain the EventSource subscription script."""
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}")
+        assert "EventSource" in resp.text
+        assert "/live/" in resp.text and "/stream" in resp.text
+
+    def test_status_bar_present(self, live_html_client):
+        """Status indicator elements must be present."""
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}")
+        assert "status-dot" in resp.text
+        assert "status-text" in resp.text
+
+    def test_reconnect_button_present(self, live_html_client):
+        """Fallback Reconnect button must be in the rendered HTML."""
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}")
+        assert "reconnect-btn" in resp.text
+
+    def test_gender_query_param_accepted(self, live_html_client):
+        """?gender=M should return 200 and not crash."""
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}?gender=M")
+        assert resp.status_code == 200
+
+    def test_invalid_gender_falls_back_to_m(self, live_html_client):
+        """An unrecognised gender value should not crash — falls back to M."""
+        client, event_id = live_html_client
+        resp = client.get(f"/live/{event_id}?gender=X")
+        assert resp.status_code == 200

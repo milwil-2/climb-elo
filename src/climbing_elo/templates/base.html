@@ -103,6 +103,9 @@
         <a href="/events">Events</a>
         <a href="/projections/new">Projections</a>
         <a href="/predictions">Predictions</a>
+        {# TODO(#22): Only show when there is an active live event. For now hardcoded
+           visible — live-event detection logic not yet built. #}
+        <a href="/live" style="color:#4ade80">Live</a>
     </nav>
     <div class="container">
         {% block content %}{% endblock %}
