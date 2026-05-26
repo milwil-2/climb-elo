@@ -10,12 +10,14 @@ from climbing_elo.engine.elo import (
     MARGIN_CAP,
     AthleteRating,
     AthleteResult,
+    _is_new_boulder_format,
     apply_time_decay,
     calculate_round_updates,
     compute_boulder_margin_multiplier,
     compute_margin_multiplier,
     compute_speed_margin_multiplier,
     expected_score,
+    normalize_boulder_score,
 )
 from climbing_elo.models import Discipline, EventTier, RoundType
 
@@ -305,6 +307,119 @@ def test_boulder_vs_lead_margin_scale():
     lead_mult = compute_margin_multiplier(50.0, 0.0, max_gap=20.0)
     boulder_mult = compute_boulder_margin_multiplier(50.0, 0.0)
     assert boulder_mult < lead_mult
+
+
+# ---------------------------------------------------------------------------
+# Boulder format detection and normalization tests
+# ---------------------------------------------------------------------------
+
+
+def test_is_new_boulder_format_decimal():
+    """Decimal strings are recognised as the new 2025+ format."""
+    assert _is_new_boulder_format("34.5") is True
+    assert _is_new_boulder_format("25.0") is True
+    assert _is_new_boulder_format("10.1") is True
+    assert _is_new_boulder_format("0.0") is True
+
+
+def test_is_new_boulder_format_integer_string():
+    """Plain integer strings are also new-format (parseable as float)."""
+    assert _is_new_boulder_format("100") is True
+
+
+def test_is_new_boulder_format_old_format():
+    """Old ordinal strings are NOT the new format."""
+    assert _is_new_boulder_format("1T2z 3 4") is False
+    assert _is_new_boulder_format("2T2z 2 2") is False
+    assert _is_new_boulder_format("0T1z 0 5") is False
+
+
+def test_normalize_boulder_score_new_format():
+    """New-format decimal scores pass through as floats."""
+    assert normalize_boulder_score("34.5") == 34.5
+    assert normalize_boulder_score("25.0") == 25.0
+    assert normalize_boulder_score("10.1") == 10.1
+
+
+def test_normalize_boulder_score_old_format_ntz():
+    """Old 'NTMz A B' format is parsed into tops*1000+zones*100-top_att*10-zone_att."""
+    # "1T2z 3 4" → 1*1000 + 2*100 - 3*10 - 4 = 1166
+    assert normalize_boulder_score("1T2z 3 4") == 1166.0
+    # "2T2z 2 2" → 2*1000 + 2*100 - 2*10 - 2 = 2178
+    assert normalize_boulder_score("2T2z 2 2") == 2178.0
+    # "0T1z 0 5" → 0*1000 + 1*100 - 0*10 - 5 = 95
+    assert normalize_boulder_score("0T1z 0 5") == 95.0
+
+
+def test_normalize_boulder_score_old_format_tb():
+    """Old 'NT A MBB' alternative format is also parsed correctly."""
+    # "2T3 4B5" → tops=2, top_att=3, zones=4, zone_att=5
+    # → 2*1000 + 4*100 - 3*10 - 5 = 2365
+    assert normalize_boulder_score("2T3 4B5") == 2365.0
+
+
+def test_normalize_boulder_score_dnf_dns():
+    """DNF / DNS / empty strings return None."""
+    assert normalize_boulder_score("DNF") is None
+    assert normalize_boulder_score("DNS") is None
+    assert normalize_boulder_score("") is None
+    assert normalize_boulder_score("-") is None
+
+
+def test_normalize_boulder_score_unparseable():
+    """Unparseable garbage returns None."""
+    assert normalize_boulder_score("GARBAGE") is None
+
+
+def test_boulder_old_format_zero_sum():
+    """Zero-sum invariant holds when score_normalized comes from old-format Boulder raw scores."""
+    # Parse old-format raw scores into normalized floats
+    raw_scores = ["4T4z 4 4", "3T4z 5 4", "2T3z 8 6", "1T2z 3 2"]
+    norm_scores = [normalize_boulder_score(s) for s in raw_scores]
+
+    results = [
+        AthleteResult(athlete_id=i + 1, rank=i + 1, score_normalized=norm_scores[i])
+        for i in range(4)
+    ]
+    ratings = {
+        i: AthleteRating(athlete_id=i, mu=1500, n_events=10, provisional=False)
+        for i in range(1, 5)
+    }
+    updates = calculate_round_updates(
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.BOULDER,
+    )
+    total_delta = sum(u.mu_after - u.mu_before for u in updates)
+    assert abs(total_delta) < 0.0001
+
+
+def test_boulder_new_format_zero_sum():
+    """Zero-sum invariant holds when score_normalized comes from new-format (decimal) Boulder scores."""
+    raw_scores = ["34.5", "25.0", "10.1", "5.0"]
+    norm_scores = [normalize_boulder_score(s) for s in raw_scores]
+
+    results = [
+        AthleteResult(athlete_id=i + 1, rank=i + 1, score_normalized=norm_scores[i])
+        for i in range(4)
+    ]
+    ratings = {
+        i: AthleteRating(athlete_id=i, mu=1500, n_events=10, provisional=False)
+        for i in range(1, 5)
+    }
+    updates = calculate_round_updates(
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.BOULDER,
+    )
+    total_delta = sum(u.mu_after - u.mu_before for u in updates)
+    assert abs(total_delta) < 0.0001
 
 
 # Speed discipline tests
