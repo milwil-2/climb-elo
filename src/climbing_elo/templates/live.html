@@ -52,6 +52,46 @@
   .live-panels{display:grid;grid-template-columns:1fr 1fr;gap:28px;align-items:start}
   @media (max-width:920px){.live-panels{grid-template-columns:1fr}}
 
+  /* Issue #23: livestream embed/link (renders above .live-panels). */
+  .stream-section{margin-bottom:28px}
+  .stream-frame{
+    position:relative;width:100%;
+    aspect-ratio:16 / 9;
+    border:1px solid var(--line);background:var(--paper-2);
+    overflow:hidden;
+  }
+  .stream-frame iframe{
+    position:absolute;inset:0;width:100%;height:100%;border:0;display:block;
+  }
+  .stream-attr{
+    display:flex;align-items:center;gap:10px;
+    padding:10px 14px;border:1px solid var(--line);border-top:0;
+    font-size:10.5px;letter-spacing:0.16em;text-transform:uppercase;
+    color:var(--dim);font-weight:500;
+  }
+  .stream-attr .yt-mark{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:6px;height:6px;border-radius:50%;background:var(--ink);
+  }
+  .stream-link{
+    display:inline-flex;align-items:center;gap:10px;
+    padding:12px 18px;border:1px solid var(--line-2);background:transparent;
+    color:var(--ink);font-size:12px;letter-spacing:0.14em;text-transform:uppercase;
+    font-weight:500;transition:border-color .15s,color .15s;text-decoration:none;
+  }
+  .stream-link:hover{border-color:var(--ink);color:var(--ink)}
+  .stream-link .arr{font-size:14px;line-height:1}
+
+  /* On wide screens, video sits beside the stats panels. */
+  @media (min-width:1024px){
+    .live-with-stream{
+      display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);
+      gap:28px;align-items:start;
+    }
+    .live-with-stream .stream-section{margin-bottom:0;position:sticky;top:80px}
+    .live-with-stream .live-panels{grid-template-columns:1fr}
+  }
+
   .panel{border:1px solid var(--line);background:transparent}
   .panel-head{
     padding:14px 18px;border-bottom:1px solid var(--line);
@@ -155,7 +195,33 @@
     </div>
     {% endif %}
 
-    <div class="live-panels">
+    <div class="{% if livestream_embed_url %}live-with-stream{% endif %}">
+      {% if livestream_embed_url %}
+      <div class="stream-section reveal" id="livestream-panel">
+        <div class="stream-frame">
+          <iframe
+            src="{{ livestream_embed_url }}"
+            title="IFSC live stream &mdash; {{ event.name }}"
+            loading="lazy"
+            allow="encrypted-media; picture-in-picture; fullscreen"
+            allowfullscreen
+            referrerpolicy="strict-origin-when-cross-origin"
+            sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
+          ></iframe>
+        </div>
+        <div class="stream-attr">
+          <span class="yt-mark" aria-hidden="true"></span>
+          <span>Stream by IFSC / YouTube</span>
+          <span style="flex:1"></span>
+          <a href="{{ livestream_watch_url }}" target="_blank" rel="noopener noreferrer"
+             style="color:var(--ink-2);letter-spacing:0.14em;">
+            Open on YouTube &rarr;
+          </a>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="live-panels">
       <!-- Leaderboard panel -->
       <div class="panel reveal">
         <div class="panel-head">
@@ -268,6 +334,7 @@
         </div>
       </div>
     </div>
+    </div>{# /live-with-stream wrapper #}
   </section>
 </main>
 {% endblock %}
