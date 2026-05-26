@@ -402,6 +402,70 @@ _DISCIPLINE_FROM_STR: dict[str, Discipline] = {
 }
 
 
+def _build_proj_inputs_batched(
+    session,
+    athlete_ids: list[int],
+    disc_enum: Discipline,
+) -> list[AthleteProjectionInput]:
+    """Build AthleteProjectionInput list with a single batched join query.
+
+    Replaces the per-athlete ``session.get(Athlete, aid)`` +
+    ``select(Rating)`` N+1 loop with one join query covering all athlete_ids
+    at once.  Athletes missing a rating receive the ELO defaults so they still
+    appear in projections.
+    """
+    from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
+
+    if not athlete_ids:
+        return []
+
+    rows = session.execute(
+        select(Athlete, Rating)
+        .join(Rating, Rating.athlete_id == Athlete.id)
+        .where(
+            Athlete.id.in_(athlete_ids),
+            Rating.discipline == disc_enum,
+        )
+    ).all()
+    athletes_by_id: dict[int, tuple[Athlete, Rating]] = {
+        a.id: (a, r) for a, r in rows
+    }
+
+    # Fallback: fetch athletes that have no rating for this discipline.
+    ids_missing_rating = [aid for aid in athlete_ids if aid not in athletes_by_id]
+    athletes_no_rating: dict[int, Athlete] = {}
+    if ids_missing_rating:
+        for ath in session.execute(
+            select(Athlete).where(Athlete.id.in_(ids_missing_rating))
+        ).scalars():
+            athletes_no_rating[ath.id] = ath
+
+    proj_inputs: list[AthleteProjectionInput] = []
+    for aid in athlete_ids:
+        if aid in athletes_by_id:
+            ath, rating = athletes_by_id[aid]
+            proj_inputs.append(
+                AthleteProjectionInput(
+                    athlete_id=aid,
+                    mu=rating.mu,
+                    sigma=rating.sigma,
+                    name=ath.name,
+                )
+            )
+        elif aid in athletes_no_rating:
+            ath = athletes_no_rating[aid]
+            proj_inputs.append(
+                AthleteProjectionInput(
+                    athlete_id=aid,
+                    mu=DEFAULT_MU,
+                    sigma=DEFAULT_SIGMA,
+                    name=ath.name,
+                )
+            )
+        # else: unknown athlete_id — skip silently (same as before)
+    return proj_inputs
+
+
 def _build_projection_rows(
     session,
     athletes: list[AthleteProjectionInput],
@@ -735,35 +799,13 @@ async def event_projections(request: Request, event_id: int, gender: str = "M"):
                 },
             )
 
-        # Build projection inputs
-        proj_inputs: list[AthleteProjectionInput] = []
-        for aid in athlete_ids_ordered:
-            athlete = session.get(Athlete, aid)
-            if not athlete:
-                continue
-            # Use the rating BEFORE the event if available, otherwise current rating
-            # For simplicity we use the current rating (post-event) — for past events
-            # this is fine as context; for live events there is no post rating yet.
-            rating = session.execute(
-                select(Rating).where(
-                    Rating.athlete_id == aid,
-                    Rating.discipline == event.discipline,
-                )
-            ).scalar_one_or_none()
-            if rating is None:
-                from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
-
-                mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
-            else:
-                mu, sigma = rating.mu, rating.sigma
-            proj_inputs.append(
-                AthleteProjectionInput(
-                    athlete_id=aid,
-                    mu=mu,
-                    sigma=sigma,
-                    name=athlete.name,
-                )
-            )
+        # Build projection inputs — one batched join instead of N+1 per athlete.
+        # Use the rating BEFORE the event if available, otherwise current rating.
+        # For simplicity we use the current rating (post-event) — for past events
+        # this is fine as context; for live events there is no post rating yet.
+        proj_inputs: list[AthleteProjectionInput] = _build_proj_inputs_batched(
+            session, athlete_ids_ordered, event.discipline
+        )
 
         # Available genders for this event
         available_genders = sorted({rnd.gender.value for rnd in event.rounds})
@@ -1317,34 +1359,10 @@ async def predictions(request: Request):
                         if not athlete_ids:
                             continue
 
-                        proj_inputs: list[AthleteProjectionInput] = []
-                        for aid in athlete_ids:
-                            athlete = session.get(Athlete, aid)
-                            if not athlete:
-                                continue
-                            rating = session.execute(
-                                select(Rating).where(
-                                    Rating.athlete_id == aid,
-                                    Rating.discipline == disc_enum,
-                                )
-                            ).scalar_one_or_none()
-                            if rating is None:
-                                from climbing_elo.engine.elo import (
-                                    DEFAULT_MU,
-                                    DEFAULT_SIGMA,
-                                )
-
-                                mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
-                            else:
-                                mu, sigma = rating.mu, rating.sigma
-                            proj_inputs.append(
-                                AthleteProjectionInput(
-                                    athlete_id=aid,
-                                    mu=mu,
-                                    sigma=sigma,
-                                    name=athlete.name,
-                                )
-                            )
+                        # One batched join instead of N+1 per athlete.
+                        proj_inputs: list[AthleteProjectionInput] = (
+                            _build_proj_inputs_batched(session, athlete_ids, disc_enum)
+                        )
 
                         # Cap per-event athlete count for the landing page Monte Carlo,
                         # so a 200-athlete qualification field doesn't make the page hang.
@@ -1425,35 +1443,14 @@ async def predictions(request: Request):
                         if not athlete_ids:
                             continue
 
-                        # Cap and build projection inputs.
-                        proj_inputs_fallback: list[AthleteProjectionInput] = []
-                        for aid in athlete_ids[:_MAX_ATHLETES_PER_PROJECTION_CARD]:
-                            athlete = session.get(Athlete, aid)
-                            if not athlete:
-                                continue
-                            rating = session.execute(
-                                select(Rating).where(
-                                    Rating.athlete_id == aid,
-                                    Rating.discipline == disc_enum,
-                                )
-                            ).scalar_one_or_none()
-                            if rating is None:
-                                from climbing_elo.engine.elo import (
-                                    DEFAULT_MU,
-                                    DEFAULT_SIGMA,
-                                )
-
-                                mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
-                            else:
-                                mu, sigma = rating.mu, rating.sigma
-                            proj_inputs_fallback.append(
-                                AthleteProjectionInput(
-                                    athlete_id=aid,
-                                    mu=mu,
-                                    sigma=sigma,
-                                    name=athlete.name,
-                                )
+                        # Cap and build projection inputs — one batched join.
+                        proj_inputs_fallback: list[AthleteProjectionInput] = (
+                            _build_proj_inputs_batched(
+                                session,
+                                athlete_ids[:_MAX_ATHLETES_PER_PROJECTION_CARD],
+                                disc_enum,
                             )
+                        )
 
                         if len(proj_inputs_fallback) < 2:
                             continue

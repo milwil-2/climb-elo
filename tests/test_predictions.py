@@ -239,6 +239,154 @@ class TestPredictionsRoute:
         assert "/projections/new" in r.text
 
 
+class TestPredictionsQueryCount:
+    """Regression tests: query count must be O(events × disciplines), not O(athletes × …).
+
+    Uses SQLAlchemy's ``before_cursor_execute`` event to count DB round-trips.
+    With the N+1 fix in place, building projection inputs for N athletes should
+    require at most 2 queries per (gender, event) block regardless of N.
+    """
+
+    def test_query_count_not_linear_in_athletes(self, tmp_path):
+        """With K athletes across G genders, the predictions route should issue
+        significantly fewer queries than 2 * K * G (the old N+1 baseline).
+
+        We seed 8 athletes (4M + 4F) into one upcoming event.  The N+1 baseline
+        would fire 2*8 = 16 queries just for athlete+rating lookups.  The batched
+        implementation uses 1 query per gender block — so ≤ 2 total for athletes
+        (one batched join per gender).
+        """
+        import climbing_elo.api.routes as _routes
+        import climbing_elo.api.v1_routes as _v1
+        import climbing_elo.database as _db_mod
+
+        from datetime import date, timedelta
+        from sqlalchemy import create_engine, event as sa_event
+        from sqlalchemy.orm import sessionmaker
+        from fastapi.testclient import TestClient
+        from climbing_elo.api.app import create_app
+        from climbing_elo.models import (
+            Athlete,
+            Base,
+            Discipline,
+            Event,
+            EventTier,
+            Gender,
+            Rating,
+            Result,
+            Round,
+            RoundType,
+        )
+
+        db_file = tmp_path / "qcount.db"
+        engine = create_engine(f"sqlite:///{db_file}")
+        Base.metadata.create_all(engine)
+        factory = sessionmaker(bind=engine)
+        session = factory()
+
+        today = date.today()
+        future_date = today + timedelta(days=10)
+
+        # Seed 4 men + 4 women
+        athletes = []
+        for i in range(4):
+            a = Athlete(name=f"Man{i}", gender=Gender.M, nationality="TST")
+            session.add(a)
+            athletes.append(a)
+        for i in range(4):
+            a = Athlete(name=f"Woman{i}", gender=Gender.F, nationality="TST")
+            session.add(a)
+            athletes.append(a)
+        session.flush()
+
+        # One upcoming event with all 8 athletes
+        ev = Event(
+            name="Q-Count Future WC",
+            tier=EventTier.WORLD_CUP,
+            season=today.year,
+            start_date=future_date,
+            discipline=Discipline.LEAD,
+        )
+        session.add(ev)
+        session.flush()
+
+        rnd_m = Round(
+            event_id=ev.id, round_type=RoundType.QUALIFICATION,
+            gender=Gender.M, athlete_count=4,
+        )
+        rnd_f = Round(
+            event_id=ev.id, round_type=RoundType.QUALIFICATION,
+            gender=Gender.F, athlete_count=4,
+        )
+        session.add_all([rnd_m, rnd_f])
+        session.flush()
+
+        for i, ath in enumerate(athletes):
+            rnd = rnd_m if ath.gender == Gender.M else rnd_f
+            session.add(Result(round_id=rnd.id, athlete_id=ath.id, rank=i + 1,
+                               raw_score="TOP", dns=False))
+
+        # Ratings for all athletes in Lead
+        for i, ath in enumerate(athletes):
+            session.add(Rating(
+                athlete_id=ath.id,
+                discipline=Discipline.LEAD,
+                mu=1500.0 + i * 10,
+                sigma=100.0,
+                n_events=5,
+                provisional=False,
+                last_event_at=today,
+            ))
+
+        session.commit()
+        session.close()
+
+        # Wire up the test DB
+        original_get_engine = _db_mod.get_engine
+        original_session = _v1._session
+        original_get_session_factory = None
+
+        def patched_get_engine(db_path=None):
+            return create_engine(f"sqlite:///{db_file}")
+
+        def patched_session():
+            return factory()
+
+        _db_mod.get_engine = patched_get_engine  # type: ignore[assignment]
+        _v1._session = patched_session  # type: ignore[assignment]
+
+        # Count queries via SQLAlchemy event hook
+        query_count: list[int] = [0]
+
+        def _before_execute(conn, cursor, statement, params, context, executemany):
+            query_count[0] += 1
+
+        sa_event.listen(engine, "before_cursor_execute", _before_execute)
+
+        try:
+            app = create_app()
+            tc = TestClient(app)
+            query_count[0] = 0
+            r = tc.get("/predictions")
+            assert r.status_code == 200
+            n_queries = query_count[0]
+
+            # N+1 baseline: 2 queries/athlete × 8 athletes × 1 gender block = 16
+            # just for the athlete+rating lookups in one (event, gender) block.
+            # The batched fix: 1 join query per gender block = 2 total for all athletes.
+            # We allow generous headroom (≤ 8) to account for the other queries
+            # (event fetch, result_count, result rows, etc.) without being brittle.
+            # Key assertion: must be WELL under 16 (the N+1 count for 8 athletes).
+            assert n_queries < 16, (
+                f"Query count {n_queries} suggests N+1 regression "
+                f"(expected < 16 with 8 athletes across 2 genders)"
+            )
+        finally:
+            sa_event.remove(engine, "before_cursor_execute", _before_execute)
+            _db_mod.get_engine = original_get_engine
+            _v1._session = original_session
+
+
 class TestPredictionsEmptyState:
     """Test the empty-state branch when there are genuinely no upcoming events."""
 
