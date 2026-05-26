@@ -1,14 +1,13 @@
-"""Tests for engine/likely_roster.py (Issue #33).
+"""Tests for engine/likely_roster.py (Issue #33, updated #62).
 
 Covers:
-- Empty season: no events yet → returns top-cap-by-μ fallback
-- Early season: 2 events (< 3) → returns top-cap-by-μ fallback
-- Mid season: 5 events; 80% attendance included, 40% excluded
-- Boundary: exactly 60% (3/5) included, just below (2/5) excluded
-- Gender separation: women's events don't count toward men's threshold
-- Tier filtering: continental events excluded from World Cup denominator
+- Pre-season (empty DB) → returns []
+- Athlete with 1 non-DNS event in season → included
+- Athlete with 0 events in season (high historical μ) → excluded
+- Gender separation: women's events don't count toward men's roster
+- Tier filtering: continental/world-championship events excluded
 - Cap: more than cap eligible athletes → returns top-cap by μ
-- DNS exclusion: athletes marked DNS don't count as participating
+- DNS exclusion: DNS results don't count as participation
 """
 
 from __future__ import annotations
@@ -93,7 +92,6 @@ def add_result(
     session, event: Event, athlete: Athlete, gender: Gender, dns: bool = False
 ) -> None:
     """Add a qualification round result for athlete at event."""
-    # Reuse existing round if any.
     from sqlalchemy import select
 
     rnd = session.execute(
@@ -113,7 +111,6 @@ def add_result(
         session.add(rnd)
         session.flush()
 
-    # Skip duplicate results (unique constraint on round_id + athlete_id).
     from sqlalchemy import select as sel
 
     existing = session.execute(
@@ -135,42 +132,36 @@ def add_result(
 
 
 # ---------------------------------------------------------------------------
-# Test: empty season — no events yet → top-cap-by-μ fallback
+# Test: pre-season — empty DB → always returns []
 # ---------------------------------------------------------------------------
 
 
-class TestEmptySeason:
-    def test_empty_season_returns_top_by_mu(self):
-        """With no season events, fall back to top athletes by μ."""
+class TestPreSeason:
+    def test_empty_db_returns_empty_list(self):
+        """With no events at all, return empty list — don't fabricate a roster."""
         session = make_session()
-        a1 = add_athlete(session, "A", Gender.M, mu=1800.0)
-        a2 = add_athlete(session, "B", Gender.M, mu=1600.0)
-        add_athlete(session, "C", Gender.M, mu=1400.0)
         session.commit()
 
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
+        assert result == []
 
-        assert len(result) > 0
-        # Should be ordered by mu descending
-        assert a1.id in result
-        assert a2.id in result
-        assert result.index(a1.id) < result.index(a2.id)
-
-    def test_empty_season_excludes_wrong_gender(self):
-        """Fallback must only return athletes of the requested gender."""
+    def test_no_season_events_returns_empty_even_with_high_mu_athletes(self):
+        """Athletes with high historical mu but no current-season events are excluded."""
         session = make_session()
-        male = add_athlete(session, "Male", Gender.M, mu=1700.0)
-        female = add_athlete(session, "Female", Gender.F, mu=1900.0)
+        add_athlete(session, "RetiredStar", Gender.M, mu=2000.0)
+        add_athlete(session, "AnotherStar", Gender.M, mu=1900.0)
         session.commit()
 
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
+        assert result == []
 
-        assert male.id in result
-        assert female.id not in result
-
-    def test_empty_season_returns_empty_when_no_athletes(self):
-        """A truly empty DB returns an empty list."""
+    def test_events_in_different_season_return_empty(self):
+        """Events from a prior season don't count; still returns []."""
         session = make_session()
+        athlete = add_athlete(session, "OldTimer", Gender.M, mu=1800.0)
+        # event from 2025, not 2026
+        ev = add_wc_event(session, Discipline.LEAD, 2025, 1)
+        add_result(session, ev, athlete, Gender.M)
         session.commit()
 
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
@@ -178,136 +169,60 @@ class TestEmptySeason:
 
 
 # ---------------------------------------------------------------------------
-# Test: early season (< min_events_for_threshold) → top-cap-by-μ fallback
+# Test: current-season participation → included
 # ---------------------------------------------------------------------------
 
 
-class TestEarlySeason:
-    def test_two_events_uses_fallback(self):
-        """With only 2 events (< 3), use the top-by-μ fallback."""
+class TestCurrentSeasonParticipation:
+    def test_athlete_with_one_event_included(self):
+        """Athlete with exactly 1 non-DNS WC event this season is included."""
         session = make_session()
-        a1 = add_athlete(session, "TopMu", Gender.M, mu=1900.0)
-        a2 = add_athlete(session, "LowAttend", Gender.M, mu=1300.0)
-
-        ev1 = add_wc_event(session, Discipline.LEAD, 2026, 1)
-        ev2 = add_wc_event(session, Discipline.LEAD, 2026, 2)
-        # a2 attended both; a1 attended neither
-        add_result(session, ev1, a2, Gender.M)
-        add_result(session, ev2, a2, Gender.M)
+        athlete = add_athlete(session, "OneEvent", Gender.M, mu=1600.0)
+        ev = add_wc_event(session, Discipline.LEAD, 2026, 1)
+        add_result(session, ev, athlete, Gender.M)
         session.commit()
 
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
+        assert athlete.id in result
 
-        # Fallback: top by mu, so a1 (mu=1900) should come before a2 (mu=1300)
-        assert a1.id in result
-        assert result.index(a1.id) < result.index(a2.id)
-
-
-# ---------------------------------------------------------------------------
-# Test: mid season — attendance threshold logic
-# ---------------------------------------------------------------------------
-
-
-class TestMidSeason:
-    def _setup_five_events(
-        self, session, discipline=Discipline.LEAD, season=2026, gender=Gender.M
-    ):
-        """Return 5 World Cup events for the given season."""
-        return [add_wc_event(session, discipline, season, i) for i in range(1, 6)]
-
-    def test_80_percent_included(self):
-        """Athlete attending 4/5 events (80%) is included."""
+    def test_athlete_with_multiple_events_included(self):
+        """Athlete attending several events this season is included."""
         session = make_session()
-        regular = add_athlete(session, "Regular", Gender.M, mu=1600.0)
-        events = self._setup_five_events(session)
-        for ev in events[:4]:  # 4 of 5 = 80%
-            add_result(session, ev, regular, Gender.M)
-        session.commit()
-
-        result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
-        assert regular.id in result
-
-    def test_40_percent_excluded(self):
-        """Athlete attending 2/5 events (40%) is excluded.
-
-        A background athlete attends all 5 events so all 5 are marked 'finished'
-        (have results in the DB), giving a true denominator of 5.
-        """
-        session = make_session()
-        irregular = add_athlete(session, "Irregular", Gender.M, mu=1600.0)
-        background = add_athlete(session, "Background", Gender.M, mu=1700.0)
-        events = self._setup_five_events(session)
-        # background attends all 5 → denominator = 5
-        for ev in events:
-            add_result(session, ev, background, Gender.M)
-        for ev in events[:2]:  # 2 of 5 = 40%
-            add_result(session, ev, irregular, Gender.M)
-        session.commit()
-
-        result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
-        assert irregular.id not in result
-
-    def test_both_in_same_season(self):
-        """80% athlete included; 40% athlete excluded — both in same DB."""
-        session = make_session()
-        regular = add_athlete(session, "Regular", Gender.M, mu=1700.0)
-        irregular = add_athlete(session, "Irregular", Gender.M, mu=1500.0)
-        events = self._setup_five_events(session)
-        # regular attends 4/5 (80%) → included
-        for ev in events[:4]:
-            add_result(session, ev, regular, Gender.M)
-        # irregular attends 2/5 (40%) → excluded; regular's attendance also
-        # covers events 0-3, so all 5 events have ≥1 result in the DB
-        for ev in events[4:]:
-            add_result(session, ev, regular, Gender.M)  # complete denominator
-        for ev in events[:2]:
-            add_result(session, ev, irregular, Gender.M)
-        session.commit()
-
-        result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
-        assert regular.id in result
-        assert irregular.id not in result
-
-
-# ---------------------------------------------------------------------------
-# Test: boundary — exactly 60% included, just below 60% excluded
-# ---------------------------------------------------------------------------
-
-
-class TestBoundary:
-    def _five_events(self, session):
-        return [add_wc_event(session, Discipline.LEAD, 2026, i) for i in range(1, 6)]
-
-    def test_exactly_60_percent_included(self):
-        """Athlete with exactly 3/5 events (60%) meets the threshold → included."""
-        session = make_session()
-        athlete = add_athlete(session, "Boundary", Gender.M, mu=1600.0)
-        events = self._five_events(session)
-        for ev in events[:3]:  # 3/5 = 60%
+        athlete = add_athlete(session, "Regular", Gender.M, mu=1700.0)
+        for i in range(1, 6):
+            ev = add_wc_event(session, Discipline.LEAD, 2026, i)
             add_result(session, ev, athlete, Gender.M)
         session.commit()
 
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
         assert athlete.id in result
 
-    def test_just_below_60_percent_excluded(self):
-        """Athlete with 2/5 events (40%) is below threshold → excluded.
-
-        A background athlete ensures all 5 events have results so the
-        denominator is correctly 5.
-        """
+    def test_high_mu_athlete_without_season_events_excluded(self):
+        """An athlete with a high historical mu but zero current-season events is excluded."""
         session = make_session()
-        athlete = add_athlete(session, "JustBelow", Gender.M, mu=1600.0)
-        background = add_athlete(session, "Background", Gender.M, mu=1700.0)
-        events = self._five_events(session)
-        for ev in events:
-            add_result(session, ev, background, Gender.M)
-        for ev in events[:2]:  # 2/5 = 40%
-            add_result(session, ev, athlete, Gender.M)
+        retired_star = add_athlete(session, "RetiredStar", Gender.M, mu=2000.0)
+        active = add_athlete(session, "Active", Gender.M, mu=1500.0)
+        ev = add_wc_event(session, Discipline.LEAD, 2026, 1)
+        add_result(session, ev, active, Gender.M)
         session.commit()
 
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
-        assert athlete.id not in result
+        assert active.id in result
+        assert retired_star.id not in result
+
+    def test_ordered_by_mu_descending(self):
+        """Results are ordered by mu descending."""
+        session = make_session()
+        low = add_athlete(session, "Low", Gender.M, mu=1300.0)
+        high = add_athlete(session, "High", Gender.M, mu=1800.0)
+        mid = add_athlete(session, "Mid", Gender.M, mu=1550.0)
+        ev = add_wc_event(session, Discipline.LEAD, 2026, 1)
+        for a in [low, high, mid]:
+            add_result(session, ev, a, Gender.M)
+        session.commit()
+
+        result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
+        assert result.index(high.id) < result.index(mid.id) < result.index(low.id)
 
 
 # ---------------------------------------------------------------------------
@@ -316,82 +231,68 @@ class TestBoundary:
 
 
 class TestGenderSeparation:
-    def test_womens_events_dont_count_for_men(self):
-        """A woman's attendance in Women's rounds must NOT count toward Men's threshold.
-
-        A background male athlete attends all 5 events so the men's denominator
-        is 5.  The test male attends only 2/5 (40%) → below threshold → excluded
-        from men's likely roster even though women have results in all 5 events.
-        """
+    def test_womens_results_not_counted_for_men(self):
+        """Women's WC results must NOT cause male athletes to appear in men's roster."""
         session = make_session()
         male = add_athlete(session, "Male", Gender.M, mu=1600.0)
-        background_male = add_athlete(session, "BackgroundM", Gender.M, mu=1400.0)
         female = add_athlete(session, "Female", Gender.F, mu=1700.0)
-
-        events = [add_wc_event(session, Discipline.LEAD, 2026, i) for i in range(1, 6)]
-
-        # background male attends all 5 men's events → denominator = 5
-        for ev in events:
-            add_result(session, ev, background_male, Gender.M)
-
-        # test male attends 2/5 men's rounds (40%) → below threshold
-        for ev in events[:2]:
-            add_result(session, ev, male, Gender.M)
-
-        # Female attends 5/5 women's rounds (100%)
-        for ev in events:
-            add_result(session, ev, female, Gender.F)
-
+        ev = add_wc_event(session, Discipline.LEAD, 2026, 1)
+        # only female has a result this season
+        add_result(session, ev, female, Gender.F)
         session.commit()
 
         men_result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
-        # male attended only 2/5 men's events → should be excluded
         assert male.id not in men_result
+        assert men_result == []
 
         women_result = likely_competitors(session, Discipline.LEAD, 2026, Gender.F)
-        # female attended 5/5 → should be included
         assert female.id in women_result
+
+    def test_gender_filter_applied_to_results(self):
+        """Requesting men only returns men even when women competed at same event."""
+        session = make_session()
+        male = add_athlete(session, "Male", Gender.M, mu=1600.0)
+        female = add_athlete(session, "Female", Gender.F, mu=1900.0)
+        ev = add_wc_event(session, Discipline.LEAD, 2026, 1)
+        add_result(session, ev, male, Gender.M)
+        add_result(session, ev, female, Gender.F)
+        session.commit()
+
+        men_result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
+        women_result = likely_competitors(session, Discipline.LEAD, 2026, Gender.F)
+
+        assert male.id in men_result
+        assert female.id not in men_result
+        assert female.id in women_result
+        assert male.id not in women_result
 
 
 # ---------------------------------------------------------------------------
-# Test: tier filtering — continental events excluded
+# Test: tier filtering — only WORLD_CUP events count
 # ---------------------------------------------------------------------------
 
 
 class TestTierFiltering:
-    def test_continental_events_dont_count(self):
-        """Continental events must be excluded from the World Cup denominator."""
+    def test_continental_events_not_counted(self):
+        """Continental-tier results don't qualify an athlete for the likely roster."""
         session = make_session()
         athlete = add_athlete(session, "Continental", Gender.M, mu=1600.0)
-
-        # 3 continental events + 2 WC events → denominator should be 2 (< 3 = fallback)
         for i in range(1, 4):
             ev = add_wc_event(
                 session, Discipline.LEAD, 2026, i, tier=EventTier.CONTINENTAL
             )
             add_result(session, ev, athlete, Gender.M)
-
-        for i in range(4, 6):
-            ev = add_wc_event(
-                session, Discipline.LEAD, 2026, i, tier=EventTier.WORLD_CUP
-            )
-            add_result(session, ev, athlete, Gender.M)
-
         session.commit()
 
-        # Only 2 WC events exist → below min_events_for_threshold → fallback mode
-        # In fallback mode athlete is included if they have n_events >= 3
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
-        # athlete has n_events=10 in ratings, so should appear in fallback
-        assert athlete.id in result
+        assert athlete.id not in result
+        assert result == []
 
     def test_world_championship_not_counted(self):
-        """World championship events are also not World Cup tier → excluded."""
+        """World Championship results don't qualify an athlete."""
         session = make_session()
-        athlete = add_athlete(session, "WC_champ", Gender.M, mu=1600.0)
-
-        # 5 world championship events — denominator for WC should be 0 → fallback
-        for i in range(1, 6):
+        athlete = add_athlete(session, "WCChamp", Gender.M, mu=1600.0)
+        for i in range(1, 4):
             ev = add_wc_event(
                 session,
                 Discipline.LEAD,
@@ -400,12 +301,25 @@ class TestTierFiltering:
                 tier=EventTier.WORLD_CHAMPIONSHIP,
             )
             add_result(session, ev, athlete, Gender.M)
-
         session.commit()
 
-        # 0 WC events → fallback
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
-        # athlete in fallback because they have n_events=10
+        assert athlete.id not in result
+        assert result == []
+
+    def test_wc_tier_counts_but_continental_does_not(self):
+        """Athlete with mixed tiers is included because they have ≥1 WC result."""
+        session = make_session()
+        athlete = add_athlete(session, "Mixed", Gender.M, mu=1600.0)
+        cont_ev = add_wc_event(
+            session, Discipline.LEAD, 2026, 1, tier=EventTier.CONTINENTAL
+        )
+        add_result(session, cont_ev, athlete, Gender.M)
+        wc_ev = add_wc_event(session, Discipline.LEAD, 2026, 2)
+        add_result(session, wc_ev, athlete, Gender.M)
+        session.commit()
+
+        result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
         assert athlete.id in result
 
 
@@ -416,39 +330,35 @@ class TestTierFiltering:
 
 class TestCap:
     def test_cap_limits_returned_athletes(self):
-        """When more athletes than cap meet the threshold, only cap are returned."""
+        """When more athletes than cap qualify, only cap are returned."""
         session = make_session()
         athletes = [
             add_athlete(session, f"Athlete{i}", Gender.M, mu=1500.0 + i)
             for i in range(10)
         ]
-        events = [add_wc_event(session, Discipline.LEAD, 2026, i) for i in range(1, 6)]
-        # All 10 athletes attend all 5 events
-        for athlete in athletes:
-            for ev in events:
-                add_result(session, ev, athlete, Gender.M)
+        ev = add_wc_event(session, Discipline.LEAD, 2026, 1)
+        for a in athletes:
+            add_result(session, ev, a, Gender.M)
         session.commit()
 
-        # Cap at 5
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M, cap=5)
         assert len(result) == 5
 
     def test_cap_returns_highest_mu_athletes(self):
-        """When capping, the highest-μ athletes are returned."""
+        """When capping, the highest-mu athletes are returned."""
         session = make_session()
         athletes = [
             add_athlete(session, f"Athlete{i}", Gender.M, mu=float(1000 + i * 100))
             for i in range(6)
         ]
-        events = [add_wc_event(session, Discipline.LEAD, 2026, i) for i in range(1, 6)]
-        for athlete in athletes:
-            for ev in events:
-                add_result(session, ev, athlete, Gender.M)
+        ev = add_wc_event(session, Discipline.LEAD, 2026, 1)
+        for a in athletes:
+            add_result(session, ev, a, Gender.M)
         session.commit()
 
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M, cap=3)
         assert len(result) == 3
-        # Top 3 by mu: athletes[5], [4], [3]
+        # Top 3 by mu: athletes[5] (1500), athletes[4] (1400), athletes[3] (1300)
         assert athletes[5].id in result
         assert athletes[4].id in result
         assert athletes[3].id in result
@@ -461,41 +371,41 @@ class TestCap:
 
 
 class TestDNSExclusion:
+    def test_dns_only_athlete_excluded(self):
+        """An athlete with only DNS results is not included."""
+        session = make_session()
+        dns_only = add_athlete(session, "DNSOnly", Gender.M, mu=1800.0)
+        ev = add_wc_event(session, Discipline.LEAD, 2026, 1)
+        add_result(session, ev, dns_only, Gender.M, dns=True)
+        session.commit()
+
+        result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
+        assert dns_only.id not in result
+        assert result == []
+
     def test_dns_does_not_count_as_participation(self):
-        """A DNS entry must NOT count toward an athlete's event attendance."""
+        """Mixed scenario: DNS-only athlete excluded, athlete with real result included."""
         session = make_session()
         dns_only = add_athlete(session, "DNSOnly", Gender.M, mu=1600.0)
         regular = add_athlete(session, "Regular", Gender.M, mu=1500.0)
-
-        events = [add_wc_event(session, Discipline.LEAD, 2026, i) for i in range(1, 6)]
-
-        # dns_only is present in the DB but DNS in all 5 events → 0 actual participations
-        for ev in events:
-            add_result(session, ev, dns_only, Gender.M, dns=True)
-
-        # regular attends 3/5 events (60%) → meets threshold
-        for ev in events[:3]:
-            add_result(session, ev, regular, Gender.M, dns=False)
-
+        ev = add_wc_event(session, Discipline.LEAD, 2026, 1)
+        add_result(session, ev, dns_only, Gender.M, dns=True)
+        add_result(session, ev, regular, Gender.M, dns=False)
         session.commit()
 
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
         assert dns_only.id not in result
         assert regular.id in result
 
-    def test_mixed_dns_and_finishes(self):
-        """Only non-DNS appearances count; mixed athlete (2 DNS + 2 finishes) of 5 is excluded."""
+    def test_athlete_with_dns_and_real_result_included(self):
+        """Athlete DNS at one event but competed at another is included."""
         session = make_session()
-        mixed = add_athlete(session, "Mixed", Gender.M, mu=1600.0)
-        events = [add_wc_event(session, Discipline.LEAD, 2026, i) for i in range(1, 6)]
-
-        # 2 real participations + 2 DNS = only 2 count → 2/5 = 40% → excluded
-        add_result(session, events[0], mixed, Gender.M, dns=False)
-        add_result(session, events[1], mixed, Gender.M, dns=False)
-        add_result(session, events[2], mixed, Gender.M, dns=True)
-        add_result(session, events[3], mixed, Gender.M, dns=True)
-        # events[4]: no result at all
+        athlete = add_athlete(session, "SometimesDNS", Gender.M, mu=1600.0)
+        ev1 = add_wc_event(session, Discipline.LEAD, 2026, 1)
+        ev2 = add_wc_event(session, Discipline.LEAD, 2026, 2)
+        add_result(session, ev1, athlete, Gender.M, dns=True)
+        add_result(session, ev2, athlete, Gender.M, dns=False)
         session.commit()
 
         result = likely_competitors(session, Discipline.LEAD, 2026, Gender.M)
-        assert mixed.id not in result
+        assert athlete.id in result
