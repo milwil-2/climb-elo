@@ -2,6 +2,26 @@
 {% block title %}{{ athlete.name }} — Climbing ELO{% endblock %}
 {% block head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+    .table-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .chart-container {
+        position: relative;
+        height: 300px;
+        margin: 1rem 0;
+        min-width: 0; /* allow shrinking inside flex/grid */
+    }
+    @media (max-width: 600px) {
+        .stats-row {
+            gap: 1rem;
+        }
+        .stat-value {
+            font-size: 1.3rem;
+        }
+    }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -39,10 +59,12 @@
 </div>
 
 <h2>Recent Events</h2>
+<div class="table-scroll">
 <table>
     <thead>
         <tr>
             <th>Event</th>
+            <th>Place</th>
             <th>Season</th>
             <th>Before</th>
             <th>After</th>
@@ -54,6 +76,25 @@
         {% for e in recent_events %}
         <tr>
             <td><a href="/events/{{ e.event_id }}">{{ e.event_name }}</a></td>
+            <td>
+                {%- if e.place is none -%}
+                    <span>—</span>
+                {%- else -%}
+                    {%- set p = e.place -%}
+                    {%- if p in (11, 12, 13) -%}
+                        {%- set suffix = 'th' -%}
+                    {%- elif p % 10 == 1 -%}
+                        {%- set suffix = 'st' -%}
+                    {%- elif p % 10 == 2 -%}
+                        {%- set suffix = 'nd' -%}
+                    {%- elif p % 10 == 3 -%}
+                        {%- set suffix = 'rd' -%}
+                    {%- else -%}
+                        {%- set suffix = 'th' -%}
+                    {%- endif -%}
+                    <span{% if p <= 3 %} class="positive"{% endif %}>{{ p }}{{ suffix }}</span>
+                {%- endif -%}
+            </td>
             <td>{{ e.season }}</td>
             <td>{{ e.mu_before }}</td>
             <td>{{ e.mu_after }}</td>
@@ -63,6 +104,7 @@
         {% endfor %}
     </tbody>
 </table>
+</div>
 {% endblock %}
 
 {% block scripts %}
