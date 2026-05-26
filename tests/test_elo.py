@@ -5,9 +5,10 @@ Reproduces the PRD Appendix C worked example (adapted to K/(N-1) normalization).
 from datetime import date
 
 from climbing_elo.engine.elo import (
+    BOULDER_MARGIN_MAX_GAP,
     DEFAULT_MU,
     DEFAULT_SIGMA,
-    BOULDER_MARGIN_MAX_GAP,
+    MARGIN_CAP,
     AthleteRating,
     AthleteResult,
     apply_time_decay,
@@ -239,22 +240,20 @@ def test_boulder_margin_same_score():
 
 
 def test_boulder_margin_one_top_gap():
-    """A one-top gap (≈1000 points) should give ≈1.9× multiplier, capped at 2.0."""
+    """A one-top gap (≈1000 points) should saturate near the MARGIN_CAP."""
     # Athlete A: 4T4z 4 4 → 4*1000 + 4*100 - 4*10 - 4 = 3956
     score_a = 4 * 1000 + 4 * 100 - 4 * 10 - 4
     # Athlete B: 3T4z 3 4 → 3*1000 + 4*100 - 3*10 - 4 = 2966
     score_b = 3 * 1000 + 4 * 100 - 3 * 10 - 4
     mult = compute_boulder_margin_multiplier(float(score_a), float(score_b))
-    # Gap = 990, max_gap = 1000 → 1 + 990/1000 = 1.99
-    assert mult > 1.5
-    assert mult <= 2.0
+    # Gap = 990, max_gap = 1000 → 1 + 990/1000 = 1.99, capped at MARGIN_CAP
+    assert mult == min(1.99, MARGIN_CAP)
 
 
-def test_boulder_margin_capped_at_2():
-    """Very large Boulder score gap is capped at MARGIN_CAP (2.0)."""
-    # 5 tops vs 0 tops — huge gap
+def test_boulder_margin_capped_at_max():
+    """Very large Boulder score gap is capped at MARGIN_CAP."""
     mult = compute_boulder_margin_multiplier(5000.0, 0.0)
-    assert mult == 2.0
+    assert mult == MARGIN_CAP
 
 
 def test_boulder_margin_uses_boulder_max_gap():
