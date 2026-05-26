@@ -11,6 +11,7 @@ from climbing_elo.models import (
     Athlete,
     Discipline,
     Event,
+    Gender,
     Rating,
     RatingHistory,
     Result,
@@ -25,33 +26,51 @@ def _get_session():
     return factory()
 
 
+def _get_rankings(session, gender: Gender, discipline: Discipline, limit: int = 50):
+    stmt = (
+        select(Rating, Athlete)
+        .join(Athlete, Rating.athlete_id == Athlete.id)
+        .where(Rating.discipline == discipline, Athlete.gender == gender)
+        .order_by(Rating.mu.desc())
+        .limit(limit)
+    )
+    rows = session.execute(stmt).all()
+    return [
+        {
+            "rank": i + 1,
+            "id": athlete.id,
+            "name": athlete.name,
+            "nationality": athlete.nationality or "—",
+            "mu": round(rating.mu, 1),
+            "sigma": round(rating.sigma, 1),
+            "n_events": rating.n_events,
+            "provisional": rating.provisional,
+        }
+        for i, (rating, athlete) in enumerate(rows)
+    ]
+
+
 @router.get("/", response_class=HTMLResponse)
 async def leaderboard(request: Request):
     templates = request.app.state.templates
+    disciplines = [
+        ("lead", "Lead", Discipline.LEAD),
+        ("boulder", "Boulder", Discipline.BOULDER),
+        ("speed", "Speed", Discipline.SPEED),
+        ("combined", "Combined", Discipline.BOULDER_LEAD),
+    ]
     with _get_session() as session:
-        stmt = (
-            select(Rating, Athlete)
-            .join(Athlete, Rating.athlete_id == Athlete.id)
-            .where(Rating.discipline == Discipline.LEAD)
-            .order_by(Rating.mu.desc())
-            .limit(100)
-        )
-        rows = session.execute(stmt).all()
-        athletes = [
-            {
-                "rank": i + 1,
-                "id": athlete.id,
-                "name": athlete.name,
-                "nationality": athlete.nationality or "—",
-                "gender": athlete.gender.value,
-                "mu": round(rating.mu, 1),
-                "sigma": round(rating.sigma, 1),
-                "n_events": rating.n_events,
-                "provisional": rating.provisional,
+        standings = {}
+        for key, label, disc in disciplines:
+            men = _get_rankings(session, Gender.M, disc)
+            women = _get_rankings(session, Gender.F, disc)
+            standings[key] = {
+                "label": label,
+                "has_data": len(men) > 0 or len(women) > 0,
+                "men": men,
+                "women": women,
             }
-            for i, (rating, athlete) in enumerate(rows)
-        ]
-    return templates.TemplateResponse(request, "index.html", {"athletes": athletes})
+    return templates.TemplateResponse(request, "index.html", {"standings": standings})
 
 
 @router.get("/athletes/{athlete_id}", response_class=HTMLResponse)

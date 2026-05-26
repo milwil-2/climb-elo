@@ -209,6 +209,8 @@ def scrape_season(
         session.add(db_event)
         session.flush()
 
+        rounds_seen: dict[str, Round] = {}
+
         for dc in event_lead_dcats:
             dcat_id = dc["id"]
             gender = Gender.M if lead_dcats[dcat_id] == "M" else Gender.F
@@ -218,8 +220,6 @@ def scrape_season(
             if not result_data:
                 report.errors.append(f"Failed to fetch results for event {event_id} dcat {dcat_id}")
                 continue
-
-            rounds_seen: dict[str, Round] = {}
 
             for athlete_entry in result_data.get("ranking", []):
                 ifsc_athlete_id = athlete_entry.get("athlete_id")
