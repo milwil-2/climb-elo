@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import date
 
-from climbing_elo.models import EventTier, RoundType
+from climbing_elo.models import Discipline, EventTier, RoundType
 
 DEFAULT_MU = 1500.0
 DEFAULT_SIGMA = 350.0
@@ -15,6 +15,9 @@ SIGMA_FLOOR = 50.0
 SIGMA_CEILING = 350.0
 SIGMA_CONVERGENCE_FACTOR = 0.98
 MARGIN_CAP = 2.0
+
+# Speed-specific margin: max meaningful time gap in seconds
+SPEED_MAX_GAP_SECONDS = 2.0
 
 K_FACTOR_TABLE: dict[EventTier, dict[RoundType, float]] = {
     EventTier.OLYMPICS: {
@@ -98,6 +101,24 @@ def compute_margin_multiplier(
     return min(1.0 + gap / max_gap, MARGIN_CAP)
 
 
+def compute_speed_margin_multiplier(
+    winner_time: float | None,
+    loser_time: float | None,
+) -> float:
+    """Margin multiplier for Speed discipline.
+
+    Speed scores are times in seconds — lower is better.
+    winner_time < loser_time; gap in seconds is normalised against
+    SPEED_MAX_GAP_SECONDS (~2.0 s) which covers the typical elite spread.
+    False starts (DNF) produce no time, so None → 1.0.
+    """
+    if winner_time is None or loser_time is None:
+        return 1.0
+    # Ensure we always use a non-negative gap regardless of argument order
+    gap = abs(loser_time - winner_time)
+    return min(1.0 + gap / SPEED_MAX_GAP_SECONDS, MARGIN_CAP)
+
+
 def apply_time_decay(sigma: float, last_event_at: date | None, current_date: date) -> float:
     if last_event_at is None:
         return sigma
@@ -114,6 +135,7 @@ def calculate_round_updates(
     event_tier: EventTier,
     round_type: RoundType,
     event_date: date,
+    discipline: Discipline = Discipline.LEAD,
 ) -> list[RatingUpdate]:
     active = [r for r in results if not r.dns]
     if len(active) < 2:
@@ -122,6 +144,8 @@ def calculate_round_updates(
     base_k = get_k_factor(event_tier, round_type)
     n = len(active)
     pair_k = base_k / (n - 1)
+
+    is_speed = discipline == Discipline.SPEED
 
     deltas: dict[int, float] = {r.athlete_id: 0.0 for r in active}
     pairs: dict[int, list[PairContribution]] = {r.athlete_id: [] for r in active}
@@ -151,7 +175,13 @@ def calculate_round_updates(
                 k *= PROVISIONAL_K_MULTIPLIER
 
             if res_i.dnf:
+                # DNF (incl. false start in Speed) — no margin bonus
                 margin_mult = 1.0
+            elif is_speed:
+                # For Speed, res_i won (lower time), res_j lost (higher time)
+                margin_mult = compute_speed_margin_multiplier(
+                    res_i.score_normalized, res_j.score_normalized
+                )
             else:
                 margin_mult = compute_margin_multiplier(
                     res_i.score_normalized, res_j.score_normalized
