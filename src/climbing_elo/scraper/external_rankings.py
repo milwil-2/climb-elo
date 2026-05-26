@@ -132,7 +132,9 @@ _NAME_OVERRIDES: dict[str, str] = {
     "lee dohyun": "dohyun lee",
     "seo chae-hyun": "chaehyun seo",
     "kim chaeyeong": "chaeyoung kim",
-    "kibeom kwon": "kibeom kwon",
+    # Note: "kibeom kwon" (identity entry) was intentionally removed — it was
+    # a no-op that did nothing.  If a new mismatch arises, add the corrected
+    # mapping here.
 }
 
 
@@ -265,6 +267,13 @@ def load_snapshot(
 WIKIPEDIA_IFSC_URLS = {
     "boulder": "https://en.wikipedia.org/wiki/Bouldering_at_the_{season}_IFSC_Climbing_World_Cup",
     "lead": "https://en.wikipedia.org/wiki/Lead_climbing_at_the_{season}_IFSC_Climbing_World_Cup",
+    # TODO(Issue #61): The Speed URL template is defined but no fixtures ship
+    # and the Wikipedia Speed standings page uses a different table layout that
+    # has not been validated against ``_parse_wikipedia_standings``.  Before
+    # any Speed backtest path is used in production:
+    #   1. Validate / extend the parser for the Speed page layout.
+    #   2. Record ``tests/fixtures/external_rankings/ifsc_official/
+    #      {year}-speed-{M,F}.json`` fixtures so CI runs without network access.
     "speed": "https://en.wikipedia.org/wiki/Speed_climbing_at_the_{season}_IFSC_Climbing_World_Cup",
 }
 
@@ -288,6 +297,19 @@ def fetch_ifsc_official_ranking(
         raise ValueError(f"Unsupported discipline {discipline!r}")
     full_url = url.format(season=season)
 
+    import urllib.parse
+
+    _allowed_hosts_ifsc = frozenset(["en.wikipedia.org"])
+    parsed_url = urllib.parse.urlparse(full_url)
+    if parsed_url.hostname not in _allowed_hosts_ifsc:
+        log.error(
+            "Refusing to fetch %s — host %r is not in the IFSC allowlist %s.",
+            full_url,
+            parsed_url.hostname,
+            _allowed_hosts_ifsc,
+        )
+        return []
+
     close_after = False
     if client is None:
         client = httpx.Client(timeout=20.0, follow_redirects=True)
@@ -300,7 +322,14 @@ def fetch_ifsc_official_ranking(
         if resp.status_code != 200:
             log.warning("Wikipedia returned %d for %s", resp.status_code, full_url)
             return []
-        return _parse_wikipedia_standings(resp.text, gender)
+        parsed = _parse_wikipedia_standings(resp.text, gender)
+        if not parsed:
+            log.warning(
+                "fetch succeeded but parser found 0 rows for %s — "
+                "likely a Wikipedia template change; check the page structure.",
+                full_url,
+            )
+        return parsed
     except httpx.HTTPError as exc:
         log.error("Failed to fetch %s: %s", full_url, exc)
         return []
@@ -432,6 +461,19 @@ def fetch_ascentstats_ranking(
     """Live-fetch one AscentStats year-snapshot.  Boulder only (their scope)."""
     gender_slug = "men" if gender == "M" else "women"
     url = ASCENTSTATS_URL.format(season=season, gender_slug=gender_slug)
+
+    import urllib.parse
+
+    _allowed_hosts_ascentstats = frozenset(["ascentstats.com", "www.ascentstats.com"])
+    parsed_url = urllib.parse.urlparse(url)
+    if parsed_url.hostname not in _allowed_hosts_ascentstats:
+        log.error(
+            "Refusing to fetch %s — host %r is not in the AscentStats allowlist %s.",
+            url,
+            parsed_url.hostname,
+            _allowed_hosts_ascentstats,
+        )
+        return []
 
     close_after = False
     if client is None:
