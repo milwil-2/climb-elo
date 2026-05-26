@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from climbing_elo.models import Base
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[2].parent / "data" / "climbing_elo.db"
+DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "climbing_elo.db"
 
 
 def get_engine(db_path: Path | str = DEFAULT_DB_PATH):
