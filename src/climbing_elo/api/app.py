@@ -12,7 +12,6 @@ from climbing_elo.api.limiter import limiter
 from climbing_elo.api.routes import router as html_router
 from climbing_elo.api.v1_routes import router as v1_router
 from climbing_elo.api.sse import router as sse_router
-from climbing_elo.api.routes_v2 import router as v2_router
 from climbing_elo.database import init_db
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -59,7 +58,6 @@ def create_app() -> FastAPI:
     application.include_router(html_router)
     application.include_router(v1_router)
     application.include_router(sse_router)
-    application.include_router(v2_router)
     return application
 
 

@@ -215,11 +215,6 @@ class TestPredictionsRoute:
         r = client.get("/predictions")
         assert "Future Lead World Cup No Athletes" in r.text
 
-    def test_no_athletes_shows_manual_link(self, client):
-        """Events without athletes should show a link to /projections/new."""
-        r = client.get("/predictions")
-        assert "/projections/new" in r.text
-
     def test_prediction_data_rendered_for_event_with_athletes(self, client):
         """Events with athletes should include athlete name and win-probability data."""
         r = client.get("/predictions")
@@ -232,11 +227,6 @@ class TestPredictionsRoute:
         assert "Lead" in r.text
         assert "Boulder" in r.text
         assert "Speed" in r.text
-
-    def test_manual_projection_link_present(self, client):
-        """The page should always offer a link to the manual projections form."""
-        r = client.get("/predictions")
-        assert "/projections/new" in r.text
 
 
 class TestPredictionsQueryCount:
@@ -427,8 +417,8 @@ class TestPredictionsEmptyState:
             tc = TestClient(app)
             r = tc.get("/predictions")
             assert r.status_code == 200
-            # Empty state should prompt users to scrape or use manual form
-            assert "No upcoming events found" in r.text or "Manual Projection" in r.text
+            # Empty state should prompt users to scrape
+            assert "No upcoming events found" in r.text
         finally:
             _db_mod.get_engine = original_get_engine
             _v1._session = original_session

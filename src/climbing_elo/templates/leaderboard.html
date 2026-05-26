@@ -39,7 +39,7 @@
 {% block body %}
 <main>
   <section class="page-head">
-    <div class="crumbs reveal"><a href="/v2/">Home</a> / Leaderboard</div>
+    <div class="crumbs reveal"><a href="/">Home</a> / Leaderboard</div>
     <h1 class="reveal d2">The <em>full</em> board.</h1>
     <p class="lead reveal d3">
       Top twenty athletes per discipline, both genders. Ratings are field-quality-aware:
@@ -55,17 +55,17 @@
         <input type="text" id="lb-search" placeholder="Search by name or country code (e.g. JPN)" />
       </div>
       <div class="filters" style="margin:0">
-        <a href="/v2/leaderboard?disc=B&gender={{ gender }}" class="pill{% if disc == 'B' %} active{% endif %}">Boulder</a>
-        <a href="/v2/leaderboard?disc=L&gender={{ gender }}" class="pill{% if disc == 'L' %} active{% endif %}">Lead</a>
-        <a href="/v2/leaderboard?disc=S&gender={{ gender }}" class="pill{% if disc == 'S' %} active{% endif %}">Speed</a>
-        <a href="/v2/leaderboard?disc=BL&gender={{ gender }}" class="pill{% if disc == 'BL' %} active{% endif %}">Boulder + Lead</a>
+        <a href="/leaderboard?disc=B&gender={{ gender }}" class="pill{% if disc == 'B' %} active{% endif %}">Boulder</a>
+        <a href="/leaderboard?disc=L&gender={{ gender }}" class="pill{% if disc == 'L' %} active{% endif %}">Lead</a>
+        <a href="/leaderboard?disc=S&gender={{ gender }}" class="pill{% if disc == 'S' %} active{% endif %}">Speed</a>
+        <a href="/leaderboard?disc=BL&gender={{ gender }}" class="pill{% if disc == 'BL' %} active{% endif %}">Boulder + Lead</a>
       </div>
       <div class="toggle" style="display:flex;border:1px solid var(--line-2);border-radius:999px;padding:3px;background:var(--paper-2)">
-        <a href="/v2/leaderboard?disc={{ disc }}&gender=M"
+        <a href="/leaderboard?disc={{ disc }}&gender=M"
            style="padding:6px 14px;border-radius:999px;font-size:12.5px;font-weight:500;text-decoration:none;
              background:{% if gender == 'M' %}var(--paper){% else %}transparent{% endif %};
              color:{% if gender == 'M' %}var(--ink){% else %}var(--ink-2){% endif %}">Men</a>
-        <a href="/v2/leaderboard?disc={{ disc }}&gender=F"
+        <a href="/leaderboard?disc={{ disc }}&gender=F"
            style="padding:6px 14px;border-radius:999px;font-size:12.5px;font-weight:500;text-decoration:none;
              background:{% if gender == 'F' %}var(--paper){% else %}transparent{% endif %};
              color:{% if gender == 'F' %}var(--ink){% else %}var(--ink-2){% endif %}">Women</a>

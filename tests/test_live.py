@@ -952,8 +952,7 @@ def proj_json_client(proj_json_db_path):
 class TestLiveProjectionsJSON:
     """Tests for GET /live/{event_id}/projections.json endpoint (Issue #65).
 
-    Verifies that the endpoint returns a stable JSON shape, is reachable via
-    both / (routes.py) and /v2/ (routes_v2.py) surfaces, and handles edge
+    Verifies that the endpoint returns a stable JSON shape and handles edge
     cases (unknown event, invalid gender, gender fallback).
     """
 
@@ -1031,38 +1030,3 @@ class TestLiveProjectionsJSON:
         rows = resp.json()["rows"]
         # Falls back to M — should have projection rows
         assert len(rows) >= 1
-
-    def test_v2_endpoint_200_and_json(self, proj_json_client):
-        """The /v2/ surface JSON endpoint must also return 200 with rows."""
-        client, event_id = proj_json_client
-        resp = client.get(f"/v2/live/{event_id}/projections.json?gender=M")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "rows" in data
-        assert isinstance(data["rows"], list)
-
-    def test_v2_endpoint_rows_have_required_fields(self, proj_json_client):
-        """The /v2/ endpoint rows must have the same shape as the / endpoint."""
-        client, event_id = proj_json_client
-        resp = client.get(f"/v2/live/{event_id}/projections.json?gender=M")
-        rows = resp.json()["rows"]
-        assert len(rows) >= 1
-        required_fields = {
-            "athlete_id",
-            "name",
-            "mu",
-            "win",
-            "podium",
-            "expected_rank",
-            "is_completed",
-            "proj_rank",
-        }
-        for row in rows:
-            missing = required_fields - set(row.keys())
-            assert not missing, f"v2 row missing fields: {missing}"
-
-    def test_v2_endpoint_404_for_unknown_event(self, proj_json_client):
-        """The /v2/ endpoint returns 404 for unknown event."""
-        client, _ = proj_json_client
-        resp = client.get("/v2/live/999999999/projections.json?gender=M")
-        assert resp.status_code == 404
