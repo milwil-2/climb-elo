@@ -16,6 +16,9 @@ SIGMA_CEILING = 350.0
 SIGMA_CONVERGENCE_FACTOR = 0.98
 MARGIN_CAP = 1.5  # tuned: 1.5 outperforms 2.0 and 2.5 at 2x k-scale
 
+# Speed-specific margin: max meaningful time gap in seconds
+SPEED_MAX_GAP_SECONDS = 2.0
+
 # K-factors tuned via grid search (scripts/tune_kfactors.py).
 # Best config: 2.0x scale on base values, MARGIN_CAP=1.5
 # → 87.5% podium hit-rate on 2025–2026 holdout vs 25% baseline (+62.5pp).
@@ -101,11 +104,6 @@ def compute_margin_multiplier(
     return min(1.0 + gap / max_gap, MARGIN_CAP)
 
 
-# Boulder normalized score: tops*1000 + zones*100 - top_attempts*10 - zone_attempts
-# The dominant signal is tops differential (1000 per top).
-# A 1-top gap alone gives 1000 - worst_case_attempts ~ 900 gap.
-# We set max_gap = 1000 so that a 1-top margin gives ≈ 1.9× multiplier,
-# and a clean flash (0 extra attempts) vs a 2-top gap caps at 2.0×.
 BOULDER_MARGIN_MAX_GAP = 1000.0
 
 
@@ -115,13 +113,21 @@ def compute_boulder_margin_multiplier(
 ) -> float:
     """Margin multiplier for Boulder discipline.
 
-    Boulder normalized scores use: tops * 1000 + zones * 100 - top_att * 10 - zone_att
-
-    The gap between athletes who differ by one top is ~900-1000 points.
-    Using BOULDER_MARGIN_MAX_GAP=1000 means a one-top margin gives ≈1.9× multiplier,
-    which appropriately rewards significant dominance while preserving the zero-sum property.
+    Boulder normalized score: tops*1000 + zones*100 - top_att*10 - zone_att.
+    A one-top margin (~900-1000 point gap) gives ≈1.9× multiplier.
     """
     return compute_margin_multiplier(score_a, score_b, max_gap=BOULDER_MARGIN_MAX_GAP)
+
+
+def compute_speed_margin_multiplier(
+    winner_time: float | None,
+    loser_time: float | None,
+) -> float:
+    """Margin multiplier for Speed discipline (times in seconds, lower is better)."""
+    if winner_time is None or loser_time is None:
+        return 1.0
+    gap = abs(loser_time - winner_time)
+    return min(1.0 + gap / SPEED_MAX_GAP_SECONDS, MARGIN_CAP)
 
 
 def apply_time_decay(sigma: float, last_event_at: date | None, current_date: date) -> float:
@@ -178,7 +184,13 @@ def calculate_round_updates(
                 k *= PROVISIONAL_K_MULTIPLIER
 
             if res_i.dnf:
+                # DNF (incl. false start in Speed) — no margin bonus
                 margin_mult = 1.0
+            elif discipline == Discipline.SPEED:
+                # For Speed, res_i won (lower time), res_j lost (higher time)
+                margin_mult = compute_speed_margin_multiplier(
+                    res_i.score_normalized, res_j.score_normalized
+                )
             elif discipline == Discipline.BOULDER:
                 margin_mult = compute_boulder_margin_multiplier(
                     res_i.score_normalized, res_j.score_normalized

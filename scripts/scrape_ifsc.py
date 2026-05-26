@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scrape IFSC results (Lead or Boulder) from the IFSC results API into the database."""
+"""Scrape IFSC results (Lead, Boulder, or Speed) from the IFSC results API into the database."""
 import argparse
 import logging
 
@@ -10,14 +10,13 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scrape IFSC results")
+    parser = argparse.ArgumentParser(description="Scrape IFSC competition results")
     parser.add_argument("--min-year", type=int, default=2006, help="Earliest season to scrape")
     parser.add_argument("--max-year", type=int, default=2026, help="Latest season to scrape")
     parser.add_argument(
         "--discipline",
-        type=str,
+        choices=["lead", "boulder", "speed"],
         default="lead",
-        choices=["lead", "boulder"],
         help="Discipline to scrape (default: lead)",
     )
     args = parser.parse_args()
@@ -35,7 +34,7 @@ def main() -> None:
             discipline=args.discipline,
         )
 
-    print(f"\nScrape complete:")
+    print("\nScrape complete:")
     print(f"  Discipline:      {args.discipline}")
     print(f"  Seasons scraped: {report.seasons_scraped}")
     print(f"  Events scraped:  {report.events_scraped}")
