@@ -105,9 +105,7 @@ def _build_proj_inputs_batched(
             Rating.discipline == disc_enum,
         )
     ).all()
-    athletes_by_id: dict[int, tuple[Athlete, Rating]] = {
-        a.id: (a, r) for a, r in rows
-    }
+    athletes_by_id: dict[int, tuple[Athlete, Rating]] = {a.id: (a, r) for a, r in rows}
 
     # Fallback: fetch athletes that have no rating for this discipline.
     ids_missing_rating = [aid for aid in athlete_ids if aid not in athletes_by_id]
