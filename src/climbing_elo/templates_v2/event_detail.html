@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}{{ event.name }} &mdash; Climbing ELO{% endblock %}
+
+{% block head %}
+<style>
+  .page-head{padding:80px 0 32px;border-bottom:1px solid var(--line)}
+  .page-head h1{font-size:clamp(28px,3.6vw,40px);line-height:1.1;letter-spacing:-0.025em;font-weight:600}
+  .page-head h1 em{font-style:italic;font-weight:400}
+  .page-head .crumbs{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:20px;font-weight:500}
+  .page-head .crumbs a:hover{color:var(--ink)}
+  .ev-meta{
+    display:flex;align-items:center;gap:14px;margin-top:18px;
+    font-size:11px;color:var(--dim);letter-spacing:0.12em;text-transform:uppercase;
+  }
+  .ev-meta .sep{width:4px;height:4px;border-radius:50%;background:var(--line-2)}
+  .ev-actions{margin-top:22px;display:flex;gap:24px;flex-wrap:wrap;font-size:13.5px}
+  .ev-actions a{color:var(--ink);border-bottom:1px solid var(--line-2);padding-bottom:3px;transition:border-color .15s}
+  .ev-actions a:hover{border-bottom-color:var(--ink)}
+
+  .ev-section{padding:32px 0 88px}
+
+  .round-block{margin-bottom:36px}
+  .round-head{
+    display:flex;align-items:baseline;gap:14px;margin-bottom:14px;
+    padding-bottom:10px;border-bottom:1px solid var(--line);
+  }
+  .round-head .ttl{font-size:18px;font-weight:600;letter-spacing:-0.01em}
+  .round-head .gender{font-size:11px;color:var(--dim);letter-spacing:0.16em;text-transform:uppercase;font-weight:500}
+  .round-head .count{margin-left:auto;font-size:11px;color:var(--dim);letter-spacing:0.08em}
+
+  table.results{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.results thead th{
+    text-align:left;padding:12px 14px;
+    font-size:10.5px;font-weight:500;color:var(--dim);
+    letter-spacing:0.14em;text-transform:uppercase;
+    border-bottom:1px solid var(--line);
+  }
+  table.results tbody tr{border-bottom:1px solid var(--line);transition:background .15s}
+  table.results tbody tr:last-child{border-bottom:none}
+  table.results tbody tr:hover{background:var(--paper-2)}
+  table.results tbody td{padding:12px 14px;vertical-align:middle}
+
+  td.rk{font-size:12.5px;color:var(--dim);width:48px;font-variant-numeric:tabular-nums}
+  td.rk.top{color:var(--ink)}
+  td.ath{font-weight:500}
+  td.ath a{transition:color .15s}
+  td.ath a:hover{color:var(--dim)}
+  td.ath .nat{color:var(--dim);font-size:12px;margin-left:10px;letter-spacing:0.06em;font-weight:400}
+  td.score{font-variant-numeric:tabular-nums;color:var(--ink-2)}
+  td.mu{font-variant-numeric:tabular-nums;text-align:right;color:var(--ink-2)}
+  td.delta{font-variant-numeric:tabular-nums;text-align:right;width:80px}
+  td.delta .badge{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;font-weight:500}
+  td.delta .badge.up{color:var(--ink)}
+  td.delta .badge.dn{color:var(--ink-2)}
+  td.delta .badge.flat{color:var(--dim)}
+  td.delta .badge .arr{font-size:9px;line-height:1}
+
+  td.brk a{color:var(--ink-2);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--line-2);padding-bottom:1px;transition:border-color .15s,color .15s}
+  td.brk a:hover{color:var(--ink);border-bottom-color:var(--ink)}
+</style>
+{% endblock %}
+
+{% block body %}
+<main>
+  <section class="page-head">
+    <div class="crumbs reveal"><a href="/v2/">Home</a> / <a href="/v2/events">Events</a> / {{ event.name }}</div>
+    <h1 class="reveal d2">{{ event.name }} <em>({{ event.season }})</em></h1>
+    <div class="ev-meta reveal d3">
+      <span>{{ event.tier }}</span>
+      <span class="sep"></span>
+      <span>{{ event.discipline_label }}</span>
+      <span class="sep"></span>
+      <span>{{ event.date }}</span>
+    </div>
+    <div class="ev-actions reveal d3">
+      <a href="/v2/live/{{ event.id }}">Live view &rarr;</a>
+    </div>
+  </section>
+
+  <section class="ev-section">
+    {%- if not rounds -%}
+    <div class="card" style="padding:48px;text-align:center;color:var(--dim)">
+      No rounds recorded for this event yet.
+    </div>
+    {%- endif -%}
+
+    {%- for rnd in rounds -%}
+    <div class="round-block reveal">
+      <div class="round-head">
+        <span class="ttl">{{ rnd.round_type }}</span>
+        <span class="gender">{{ rnd.gender_label }}</span>
+        <span class="count">{{ rnd.results | length }} athletes</span>
+      </div>
+      <div class="card">
+        <table class="results">
+          <thead><tr>
+            <th>#</th>
+            <th>Athlete</th>
+            <th>Score</th>
+            <th style="text-align:right">&mu; before</th>
+            <th style="text-align:right">&mu; after</th>
+            <th style="text-align:right">&Delta;</th>
+            <th></th>
+          </tr></thead>
+          <tbody>
+            {%- for r in rnd.results -%}
+            <tr>
+              <td class="rk{% if r.rank and r.rank <= 3 %} top{% endif %}">{% if r.rank %}{{ '%02d' % r.rank }}{% else %}&mdash;{% endif %}</td>
+              <td class="ath">
+                <a href="/v2/athletes/{{ r.athlete_id }}">{{ r.name }}</a>
+                <span class="nat">{{ r.nationality }}</span>
+              </td>
+              <td class="score">{{ r.raw_score }}</td>
+              <td class="mu">{% if r.mu_before is not none %}{{ r.mu_before }}{% else %}&mdash;{% endif %}</td>
+              <td class="mu">{% if r.mu_after is not none %}{{ r.mu_after }}{% else %}&mdash;{% endif %}</td>
+              <td class="delta">
+                {%- if r.delta is not none -%}
+                <span class="badge {% if r.delta > 0 %}up{% elif r.delta < 0 %}dn{% else %}flat{% endif %}">
+                  <span class="arr">{% if r.delta > 0 %}&#9650;{% elif r.delta < 0 %}&#9660;{% else %}&ndash;{% endif %}</span>
+                  {% if r.delta > 0 %}+{% endif %}{{ r.delta }}
+                </span>
+                {%- else -%}
+                <span style="color:var(--dim)">&mdash;</span>
+                {%- endif -%}
+              </td>
+              <td class="brk">
+                {%- if r.delta is not none -%}
+                <a href="/v2/breakdown/{{ r.athlete_id }}/{{ event.id }}">Why</a>
+                {%- endif -%}
+              </td>
+            </tr>
+            {%- endfor -%}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {%- endfor -%}
+  </section>
+</main>
+{% endblock %}
