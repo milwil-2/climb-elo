@@ -7,6 +7,20 @@ probabilities.
 Performance model: each athlete's performance in a single event is drawn from
 N(mu, sigma). Higher score = better finish. Ties are broken randomly (extremely
 rare with continuous draws).
+
+Note on the σ in N(μ, σ)
+------------------------
+
+Following issue #51, the σ value in the Rating column is the Glicko-2 rating
+deviation (φ, expressed on the display scale ≈ 50-350). It represents *rating
+uncertainty* — how much we don't know about the underlying skill — and not
+*performance variance* — how much skill varies game-to-game. These are
+different quantities, but for projections they are correlated enough in
+practice (uncertain athletes produce wider posterior performance
+distributions) that reusing one source of truth is preferred over maintaining
+a separate ``performance_sigma`` field. This is decision 3 of issue #51's
+implementation; a follow-up issue tracks introducing a dedicated performance-σ
+if calibration analysis shows it's needed.
 """
 
 from __future__ import annotations
