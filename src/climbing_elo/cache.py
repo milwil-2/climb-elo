@@ -110,3 +110,12 @@ class TTLCache:
 #: TTL=1 hour — acceptable staleness for a predictions page that is refreshed
 #: by the scraper at most a few times per day.
 predictions_cache: TTLCache = TTLCache(ttl_seconds=3600)
+
+#: Cache for likely-competitor roster lookups (Issue #33).
+#:
+#: Key format: ``"roster:{discipline.value}:{season}:{gender.value}"``
+#: TTL=1 hour — roster membership changes only when new event results are
+#: ingested (which happens via the scraper, at most a few times per day).
+#: Call ``likely_roster_cache.clear()`` after a scrape for immediate freshness,
+#: or run ``uv run python scripts/clear_cache.py``.
+likely_roster_cache: TTLCache = TTLCache(ttl_seconds=3600)
