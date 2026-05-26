@@ -191,6 +191,93 @@
         color: #505870;
         margin-top: 0.2rem;
     }
+
+    /* Hub entry-point cards */
+    .hub-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.25rem;
+        margin-bottom: 2.5rem;
+    }
+    @media (max-width: 700px) {
+        .hub-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+    .hub-card {
+        background: #1a1d28;
+        border: 1px solid #2a2d3a;
+        border-radius: 10px;
+        padding: 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+        text-decoration: none;
+        transition: border-color 0.2s ease;
+        position: relative;
+    }
+    .hub-card:hover {
+        border-color: #7c8aff;
+    }
+    .hub-card-disabled {
+        pointer-events: none;
+        opacity: 0.6;
+    }
+    .hub-card-icon {
+        font-size: 0.9rem;
+        font-weight: 800;
+        color: #7c8aff;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        font-style: normal;
+    }
+    .hub-card-title {
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #fff;
+        line-height: 1.3;
+    }
+    .hub-card-desc {
+        font-size: 0.85rem;
+        color: #808890;
+        line-height: 1.5;
+    }
+    .hub-card-cta {
+        margin-top: 0.5rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: #7c8aff;
+    }
+    .coming-soon-badge {
+        position: absolute;
+        top: 1rem;
+        right: 1rem;
+        background: #252840;
+        color: #7c8aff;
+        font-size: 0.68rem;
+        font-weight: 700;
+        padding: 0.15rem 0.5rem;
+        border-radius: 3px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+    .hub-section-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: #505870;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 0.75rem;
+    }
+    .events-section-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: #505870;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 1rem;
+        padding-top: 0.25rem;
+    }
 </style>
 {% endblock %}
 
@@ -199,6 +286,25 @@
     <h1>Predictions</h1>
     <span class="page-subtitle">Monte Carlo ELO-based outcome forecasts for upcoming events</span>
 </div>
+
+<p class="hub-section-label">Prediction modes</p>
+<div class="hub-grid">
+    <a href="/projections/new" class="hub-card">
+        <span class="hub-card-icon">N</span>
+        <div class="hub-card-title">Custom Projection</div>
+        <div class="hub-card-desc">Pick any number of athletes and run a Monte Carlo simulation.</div>
+        <div class="hub-card-cta">Build a projection &rarr;</div>
+    </a>
+    <div class="hub-card hub-card-disabled" title="Head-to-Head comparison is coming soon">
+        <span class="coming-soon-badge">Coming soon</span>
+        <span class="hub-card-icon">vs</span>
+        <div class="hub-card-title">Head-to-Head Comparison</div>
+        <div class="hub-card-desc">Compare any two athletes head-to-head with win probability and historical context.</div>
+        <div class="hub-card-cta">Compare athletes &rarr;</div>
+    </div>
+</div>
+
+<p class="events-section-label">Upcoming events</p>
 
 {% set any_events = grouped | selectattr("has_data") | list %}
 
