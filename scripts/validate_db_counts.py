@@ -110,9 +110,9 @@ def get_counts(
                 Event.season,
                 Event.discipline,
                 func.count(Event.id).label("event_count"),
-                func.coalesce(
-                    func.sum(results_per_event.c.result_count), 0
-                ).label("result_count"),
+                func.coalesce(func.sum(results_per_event.c.result_count), 0).label(
+                    "result_count"
+                ),
             )
             .outerjoin(results_per_event, results_per_event.c.event_id == Event.id)
             .group_by(Event.season, Event.discipline)
@@ -144,7 +144,9 @@ def _print_table(rows: list[dict]) -> None:
 
     # Column widths
     col_season = max(6, *(len(str(r["season"])) for r in rows))
-    col_disc = max(10, *(len(_DISC_LABEL.get(r["discipline"], r["discipline"])) for r in rows))
+    col_disc = max(
+        10, *(len(_DISC_LABEL.get(r["discipline"], r["discipline"])) for r in rows)
+    )
     col_events = max(6, *(len(str(r["events"])) for r in rows))
     col_results = max(7, *(len(str(r["results"])) for r in rows))
 

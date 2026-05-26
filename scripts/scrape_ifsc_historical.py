@@ -70,9 +70,7 @@ def _parse_args() -> argparse.Namespace:
         "--discipline",
         choices=list(_ALL_DISCIPLINES) + ["all"],
         default="all",
-        help=(
-            "Discipline to scrape: lead, boulder, speed, or all (default: all)."
-        ),
+        help=("Discipline to scrape: lead, boulder, speed, or all (default: all)."),
     )
     parser.add_argument(
         "--delay-ms",
@@ -140,7 +138,9 @@ def _run_scrape(
 
         # Summary table
         print("\n=== Historical scrape summary ===")
-        print(f"{'Discipline':<12} {'Seasons':>8} {'Events':>8} {'Results':>10} {'Athletes':>10}")
+        print(
+            f"{'Discipline':<12} {'Seasons':>8} {'Events':>8} {'Results':>10} {'Athletes':>10}"
+        )
         print("-" * 52)
         for disc, r in totals.items():
             print(
@@ -150,9 +150,7 @@ def _run_scrape(
         total_events = sum(r.events_scraped for r in totals.values())
         total_results = sum(r.results_created for r in totals.values())
         print("-" * 52)
-        print(
-            f"{'TOTAL':<12} {'':>8} {total_events:>8} {total_results:>10}"
-        )
+        print(f"{'TOTAL':<12} {'':>8} {total_events:>8} {total_results:>10}")
 
     finally:
         ifsc_api.REQUEST_DELAY = original_delay
