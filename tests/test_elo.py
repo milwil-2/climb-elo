@@ -7,14 +7,16 @@ from datetime import date
 from climbing_elo.engine.elo import (
     DEFAULT_MU,
     DEFAULT_SIGMA,
+    BOULDER_MARGIN_MAX_GAP,
     AthleteRating,
     AthleteResult,
     apply_time_decay,
     calculate_round_updates,
+    compute_boulder_margin_multiplier,
     compute_margin_multiplier,
     expected_score,
 )
-from climbing_elo.models import EventTier, RoundType
+from climbing_elo.models import Discipline, EventTier, RoundType
 
 
 def test_expected_score_equal_ratings():
@@ -214,3 +216,75 @@ def test_single_athlete_no_updates():
         results, ratings, EventTier.WORLD_CUP, RoundType.FINAL, date(2024, 6, 1)
     )
     assert len(updates) == 0
+
+
+# ---------------------------------------------------------------------------
+# Boulder margin weighting tests
+# ---------------------------------------------------------------------------
+
+def test_boulder_margin_no_scores():
+    """Boulder multiplier returns 1.0 when scores are absent."""
+    assert compute_boulder_margin_multiplier(None, None) == 1.0
+    assert compute_boulder_margin_multiplier(None, 4000.0) == 1.0
+    assert compute_boulder_margin_multiplier(3000.0, None) == 1.0
+
+
+def test_boulder_margin_same_score():
+    """Identical scores produce a 1.0 multiplier."""
+    score = 4 * 1000 + 4 * 100 - 6 * 10 - 6  # 4T4z 6 6 → 3934.0
+    assert compute_boulder_margin_multiplier(float(score), float(score)) == 1.0
+
+
+def test_boulder_margin_one_top_gap():
+    """A one-top gap (≈1000 points) should give ≈1.9× multiplier, capped at 2.0."""
+    # Athlete A: 4T4z 4 4 → 4*1000 + 4*100 - 4*10 - 4 = 3956
+    score_a = 4 * 1000 + 4 * 100 - 4 * 10 - 4
+    # Athlete B: 3T4z 3 4 → 3*1000 + 4*100 - 3*10 - 4 = 2966
+    score_b = 3 * 1000 + 4 * 100 - 3 * 10 - 4
+    mult = compute_boulder_margin_multiplier(float(score_a), float(score_b))
+    # Gap = 990, max_gap = 1000 → 1 + 990/1000 = 1.99
+    assert mult > 1.5
+    assert mult <= 2.0
+
+
+def test_boulder_margin_capped_at_2():
+    """Very large Boulder score gap is capped at MARGIN_CAP (2.0)."""
+    # 5 tops vs 0 tops — huge gap
+    mult = compute_boulder_margin_multiplier(5000.0, 0.0)
+    assert mult == 2.0
+
+
+def test_boulder_margin_uses_boulder_max_gap():
+    """Boulder max_gap is much larger than Lead max_gap to match score scale."""
+    assert BOULDER_MARGIN_MAX_GAP >= 500.0  # sanity: at least 500 vs Lead's 20
+
+
+def test_boulder_round_updates_zero_sum():
+    """Boulder rating changes must still sum to zero."""
+    # Scores: tops * 1000 + zones * 100 - top_att * 10 - zone_att
+    results = [
+        AthleteResult(athlete_id=1, rank=1, score_normalized=4 * 1000 + 4 * 100 - 4 * 10 - 4),
+        AthleteResult(athlete_id=2, rank=2, score_normalized=3 * 1000 + 4 * 100 - 5 * 10 - 4),
+        AthleteResult(athlete_id=3, rank=3, score_normalized=2 * 1000 + 3 * 100 - 8 * 10 - 6),
+        AthleteResult(athlete_id=4, rank=4, score_normalized=1 * 1000 + 2 * 100 - 3 * 10 - 2),
+    ]
+    ratings = {
+        i: AthleteRating(athlete_id=i, mu=1500, n_events=10, provisional=False)
+        for i in range(1, 5)
+    }
+    updates = calculate_round_updates(
+        results, ratings, EventTier.WORLD_CUP, RoundType.FINAL, date(2024, 6, 1),
+        discipline=Discipline.BOULDER,
+    )
+    total_delta = sum(u.mu_after - u.mu_before for u in updates)
+    assert abs(total_delta) < 0.0001
+
+
+def test_boulder_vs_lead_margin_scale():
+    """Boulder margin multiplier should be smaller than Lead for same raw gap."""
+    # A gap of 50 points
+    # Lead: 1 + 50/20 = 3.5 → capped at 2.0
+    lead_mult = compute_margin_multiplier(50.0, 0.0, max_gap=20.0)
+    # Boulder: 1 + 50/1000 = 1.05
+    boulder_mult = compute_boulder_margin_multiplier(50.0, 0.0)
+    assert boulder_mult < lead_mult
