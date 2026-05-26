@@ -89,6 +89,26 @@ Interactive docs: `http://localhost:8000/docs` — OpenAPI schema: `/openapi.jso
 
 Source files: `api/v1_routes.py` (endpoints), `api/schemas.py` (Pydantic response models).
 
+## Daily Snapshots
+
+Daily snapshots of the DB are stored as GitHub Release artifacts on the `db-snapshots` release. The `.github/workflows/snapshot.yml` workflow runs at 03:00 UTC, scrapes recent events, runs backfill + combined ratings, and uploads a gzip-compressed snapshot + SHA-256 sidecar. Retention: 30 daily + 12 monthly (1st of month) + 5 yearly (Jan 1).
+
+```bash
+uv run python scripts/snapshot_db.py                          # create local snapshot
+uv run python scripts/restore_snapshot.py                     # restore latest (backs up existing DB to .bak)
+uv run python scripts/restore_snapshot.py --date 2026-06-01   # restore specific date
+```
+
+`snapshots/` is gitignored. Restore requires `gh` CLI authenticated.
+
+## Monitoring
+
+`.github/workflows/health-check.yml` runs `scripts/health_check_cli.py` every 30 min against `ifsc.results.info/api/v1/`. On 3+ consecutive failures it auto-creates (or comments on) an issue labeled `health-check-alert`. Set the `DISCORD_WEBHOOK_URL` repo secret for optional Discord pings (rate-limited to 1/hour). Webhook target is allowlisted to Discord hosts only.
+
+## Caching
+
+The `/predictions` page caches per-event Monte Carlo results via the in-memory `TTLCache` at `src/climbing_elo/cache.py` (1-hour TTL). Cache key includes a fingerprint of athletes + ratings, so stale ratings don't silently persist. Call `predictions_cache.clear()` after a scrape for immediate freshness, or run `uv run python scripts/clear_cache.py`. Multi-worker deploys get per-worker caches (acceptable for read-only data).
+
 ## Testing
 
-Tests use an in-memory SQLite database (`conftest.py:db_session`). Fixtures `sample_event` and `eight_athletes` provide pre-built test data. `test_elo.py` validates pairwise math including zero-sum invariant across all 3 disciplines. `test_backfill.py` runs a 3-event integration test and checks reproducibility. `test_api.py` covers all v1 REST endpoints. `test_projections.py` covers Monte Carlo invariants. `test_combined.py` covers the Boulder+Lead aggregate.
+Tests use an in-memory SQLite database (`conftest.py:db_session`). Fixtures `sample_event` and `eight_athletes` provide pre-built test data. `test_elo.py` validates pairwise math (zero-sum invariant across all 3 disciplines). `test_backfill.py` runs a 3-event integration test and checks reproducibility. `test_api.py` covers all v1 REST endpoints. `test_projections.py` covers Monte Carlo invariants. `test_combined.py` covers the Boulder+Lead aggregate. `test_scraper_upcoming.py` covers upcoming-event filter logic. `test_snapshot.py` covers snapshot/restore round-trips. `test_health_check.py` covers CLI exit codes + Discord rate-limiting. `test_cache.py` covers TTLCache thread-safety + expiry.
