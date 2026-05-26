@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}API &mdash; Climbing ELO{% endblock %}
+
+{% block head %}
+<style>
+  .page-head{padding:80px 0 32px;border-bottom:1px solid var(--line)}
+  .page-head h1{font-size:clamp(34px,4.4vw,46px);line-height:1.1;letter-spacing:-0.025em;font-weight:600}
+  .page-head h1 em{font-style:italic;font-weight:400}
+  .page-head .crumbs{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:20px;font-weight:500}
+  .page-head .lead{margin-top:22px;max-width:560px;color:var(--ink-2);font-size:15.5px;line-height:1.6}
+
+  .api-page{padding:32px 0 88px}
+  .endpoint-list{margin-top:24px}
+  .endpoint{
+    display:grid;grid-template-columns:60px 1fr auto;gap:18px;align-items:center;
+    padding:18px 0;border-bottom:1px solid var(--line);background:transparent;
+    transition:background .15s;
+  }
+  .endpoint:hover{background:var(--paper-2)}
+  .endpoint .method{
+    font-size:11px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;
+    padding:0;background:transparent;color:var(--dim);text-align:left;
+  }
+  .endpoint .method.post{color:var(--ink)}
+  .endpoint .path{font-size:14px;color:var(--ink);font-weight:500}
+  .endpoint .desc{font-size:13px;color:var(--ink-2);margin-top:4px;line-height:1.55}
+  .endpoint .status{font-size:11px;color:var(--ink-2);display:flex;align-items:center;gap:6px;letter-spacing:0.06em}
+  .endpoint .status .dot{width:5px;height:5px;border-radius:50%;background:var(--ink)}
+
+  .code-block{
+    background:var(--paper-2);color:var(--ink);padding:20px 22px;border:1px solid var(--line);
+    font-size:12.5px;line-height:1.7;
+    overflow-x:auto;margin-top:18px;
+    font-family:'Manrope',sans-serif;
+    font-feature-settings:"tnum" 1, "lnum" 1;
+  }
+  .code-block .k{color:var(--ink-2)}
+  .code-block .s{color:var(--ink)}
+  .code-block .n{color:var(--ink)}
+  .code-block .c{color:var(--dim);font-style:italic}
+
+  .api-cols{display:grid;grid-template-columns:1.4fr 1fr;gap:32px;margin-top:32px}
+  @media (max-width:920px){.api-cols{grid-template-columns:1fr}}
+</style>
+{% endblock %}
+
+{% block body %}
+<main>
+  <section class="page-head">
+    <div class="crumbs reveal"><a href="/v2/">Home</a> / API</div>
+    <h1 class="reveal d2">Read-only,<br/><em>no auth</em>.</h1>
+    <p class="lead reveal d3">
+      Public REST API. CORS is open, no credentials. Interactive docs at
+      <a href="/docs" style="color:var(--ink)">/docs</a>,
+      OpenAPI schema at <a href="/openapi.json" style="color:var(--ink)">/openapi.json</a>.
+    </p>
+  </section>
+
+  <div class="api-page">
+    <div class="api-cols">
+      <div>
+        <div class="eyebrow"><span class="dash"></span>Endpoints</div>
+        <div class="endpoint-list">
+          {%- for ep in endpoints -%}
+          <div class="endpoint">
+            <span class="method{% if ep.method == 'POST' %} post{% endif %}">{{ ep.method }}</span>
+            <div>
+              <div class="path">{{ ep.path }}</div>
+              <div class="desc">{{ ep.desc }}</div>
+            </div>
+            <span class="status"><span class="dot"></span>{{ ep.status }}</span>
+          </div>
+          {%- endfor -%}
+        </div>
+      </div>
+
+      <div>
+        <div class="eyebrow"><span class="dash"></span>Example</div>
+        <p style="color:var(--ink-2);font-size:14px;line-height:1.55;margin-top:10px">
+          Fetch the top-10 Boulder men. No auth header, no rate limit you'll hit.
+        </p>
+        <div class="code-block">
+          <div><span class="c"># shell</span></div>
+          <div>curl <span class="s">'https://climbing-elo.app/api/v1/leaderboard?discipline=boulder&amp;gender=M&amp;limit=10'</span></div>
+          <br/>
+          <div><span class="c"># response</span></div>
+          <div>{</div>
+          <div>&nbsp;&nbsp;<span class="k">"discipline"</span>: <span class="s">"boulder"</span>,</div>
+          <div>&nbsp;&nbsp;<span class="k">"gender"</span>: <span class="s">"M"</span>,</div>
+          <div>&nbsp;&nbsp;<span class="k">"total"</span>: <span class="n">120</span>,</div>
+          <div>&nbsp;&nbsp;<span class="k">"items"</span>: [</div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;{ <span class="k">"rank"</span>: <span class="n">1</span>, <span class="k">"name"</span>: <span class="s">"..."</span>, <span class="k">"mu"</span>: <span class="n">1847</span>, <span class="k">"sigma"</span>: <span class="n">62</span> },</div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="c">// ...</span></div>
+          <div>&nbsp;&nbsp;]</div>
+          <div>}</div>
+        </div>
+
+        <div class="eyebrow" style="margin-top:32px"><span class="dash"></span>POST /api/v1/projections</div>
+        <p style="color:var(--ink-2);font-size:14px;line-height:1.55;margin-top:10px">
+          Run Monte Carlo for a custom set of athletes. Results cached 1h.
+        </p>
+        <div class="code-block">
+          <div>curl -X POST <span class="s">'.../api/v1/projections'</span> \</div>
+          <div>&nbsp;&nbsp;-H <span class="s">'Content-Type: application/json'</span> \</div>
+          <div>&nbsp;&nbsp;-d <span class="s">'{"discipline":"lead","athlete_ids":[1,2,3]}'</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+{% endblock %}

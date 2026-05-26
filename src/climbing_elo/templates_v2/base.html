@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{% block title %}Climbing ELO{% endblock %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% block head %}{% endblock %}
+</head>
+<body>
+
+<!-- ── Sticky nav ─────────────────────────────────────────────────────── -->
+<header class="nav">
+  <div class="nav-inner">
+    <a href="/v2/" class="brand">
+      <span class="brand-mark"></span>
+      Climbing ELO
+    </a>
+    <nav>
+      <ul>
+        <li><a href="/v2/leaderboard"{% if active_page == 'leaderboard' %} style="color:var(--ink)"{% endif %}>Leaderboard</a></li>
+        <li><a href="/v2/athletes"{% if active_page == 'athletes' %} style="color:var(--ink)"{% endif %}>Athletes</a></li>
+        <li><a href="/v2/projections"{% if active_page == 'projections' %} style="color:var(--ink)"{% endif %}>Projections</a></li>
+        <li><a href="/v2/head-to-head"{% if active_page == 'h2h' %} style="color:var(--ink)"{% endif %}>Head-to-head</a></li>
+        <li><a href="/v2/api"{% if active_page == 'api' %} style="color:var(--ink)"{% endif %}>API</a></li>
+      </ul>
+    </nav>
+    {% if live_event %}
+    <div class="nav-cta">
+      <span class="pulse"></span>
+      <span>{{ live_event.name }} · Live</span>
+    </div>
+    {% else %}
+    <div class="nav-cta" style="visibility:hidden">
+      <span class="pulse"></span>
+      <span>–</span>
+    </div>
+    {% endif %}
+  </div>
+</header>
+
+<!-- ── Ticker ────────────────────────────────────────────────────────── -->
+<div class="ticker">
+  <div class="ticker-track">
+    {%- set ns = namespace(items=[]) -%}
+    {%- if live_event -%}
+      {%- set ns.items = ns.items + [{'kind':'live','name': live_event.name}] -%}
+    {%- endif -%}
+    {%- for item in ticker_items -%}
+      {%- set ns.items = ns.items + [item] -%}
+    {%- endfor -%}
+    {%- for repeat in range(2) -%}
+      {%- for item in ns.items -%}
+        {%- if item.kind == 'live' -%}
+          <span class="ticker-item"><span class="live-dot"></span><span class="tag">Live</span><span class="nm">{{ item.name }}</span></span>
+        {%- elif item.kind == 'delta' -%}
+          <span class="ticker-item"><span class="nm">{{ item.name }}</span><span class="delta{% if item.delta < 0 %} dn{% endif %}">{% if item.delta > 0 %}+{% endif %}{{ item.delta | int }}</span></span>
+        {%- elif item.kind == 'upcoming' -%}
+          <span class="ticker-item"><span class="tag">{{ item.tag }}</span><span class="nm">{{ item.name }}</span></span>
+        {%- endif -%}
+        <span class="ticker-sep">·</span>
+      {%- endfor -%}
+    {%- endfor -%}
+  </div>
+</div>
+
+{% block body %}{% endblock %}
+
+<!-- ── Footer ────────────────────────────────────────────────────────── -->
+<footer>
+  <div class="foot-inner">
+    <div>
+      <div class="brand" style="margin-bottom:14px">
+        <span class="brand-mark"></span>
+        Climbing ELO
+      </div>
+      <p class="foot-blurb">
+        A field-quality-aware rating system for IFSC competition climbing.
+        <em>Open data, open methodology.</em>
+      </p>
+    </div>
+    <div>
+      <h5>Data</h5>
+      <ul>
+        <li><a href="/v2/leaderboard">Leaderboard</a></li>
+        <li><a href="/v2/athletes">Athletes</a></li>
+        <li><a href="/v2/projections">Projections</a></li>
+        <li><a href="/v2/head-to-head">Head-to-head</a></li>
+      </ul>
+    </div>
+    <div>
+      <h5>API</h5>
+      <ul>
+        <li><a href="/v2/api">/api/v1/leaderboard</a></li>
+        <li><a href="/v2/api">/api/v1/projections</a></li>
+        <li><a href="/v2/api">/live/{event_id}/stream</a></li>
+        <li><a href="/docs">OpenAPI schema</a></li>
+      </ul>
+    </div>
+    <div>
+      <h5>About</h5>
+      <ul>
+        <li><a href="#">Methodology</a></li>
+        <li><a href="#">Backtest report</a></li>
+        <li><a href="#">GitHub</a></li>
+        <li><a href="#">Snapshot archive</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="foot-base">
+    <span>&copy; 2026 &middot; Climbing ELO</span>
+    <span>Data: ifsc.results.info &middot; 2012 &ndash; present</span>
+    <span>v0.2 &middot; Monochrome dashboard</span>
+  </div>
+</footer>
+
+<!-- ── Reveal on scroll ──────────────────────────────────────────────── -->
+<script>
+(function() {
+  var io = new IntersectionObserver(function(entries) {
+    entries.forEach(function(e) {
+      if (e.isIntersecting) {
+        e.target.classList.add('in');
+        io.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+  document.querySelectorAll('.reveal').forEach(function(el) { io.observe(el); });
+})();
+</script>
+
+{% block scripts %}{% endblock %}
+
+</body>
+</html>
