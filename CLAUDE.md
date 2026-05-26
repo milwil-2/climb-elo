@@ -49,7 +49,7 @@ All competition data is fetched from `ifsc.results.info` — the legacy IFSC res
 
 **Backfill** (`engine/backfill.py`) processes all events chronologically, computing ELO updates per round (qualification → semi → final). Each round calls `calculate_round_updates()` from `engine/elo.py`, which decomposes the multi-athlete finishing order into all pairwise contests using Plackett-Luce. The critical normalization is `pair_k = base_k / (n - 1)` — without this, deltas scale with field size. Rating changes across a round sum to zero. Commits are per-event (atomic). The `n_events` counter increments once per event, not per round.
 
-**Serve** (`api/routes.py`) is a FastAPI + Jinja2 dashboard. HTML routes: `/` (leaderboard), `/athletes/{id}` (profile with Chart.js rating-over-time), `/events` and `/events/{id}` (results with pre/post μ), `/breakdown/{athlete_id}/{event_id}` (pairwise contributing-pairs table), `/projections/{event_id}` (Monte Carlo outcome projections), `/projections/new` (manual projection form). The public REST API lives under `/api/v1/` (see below).
+**Serve** (`api/routes.py`) is a FastAPI + Jinja2 dashboard. HTML routes: `/` (leaderboard), `/athletes/{id}` (profile with Chart.js rating-over-time), `/events` and `/events/{id}` (results with pre/post μ), `/breakdown/{athlete_id}/{event_id}` (pairwise contributing-pairs table), `/projections/{event_id}` (Monte Carlo outcome projections), `/projections/new` (manual projection form), `/predictions` (upcoming events hub), `/head-to-head` (athlete selection form), `/head-to-head/{a_id}/{b_id}?discipline=lead` (head-to-head result page with analytic win probability, shared-event count, and dual rating-history chart). The public REST API lives under `/api/v1/` (see below).
 
 ## Data Model
 

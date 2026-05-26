@@ -1,0 +1,356 @@
+{% extends "base.html" %}
+{% block title %}Head-to-Head — Climbing ELO{% endblock %}
+
+{% block head %}
+<style>
+    .page-header {
+        display: flex;
+        align-items: baseline;
+        gap: 1rem;
+        margin-bottom: 2rem;
+    }
+    .page-header h1 { margin: 0; }
+    .page-subtitle { font-size: 0.85rem; color: #606880; }
+
+    .form-card {
+        background: #1a1d28;
+        border: 1px solid #2a2d3a;
+        border-radius: 10px;
+        padding: 1.75rem 2rem;
+        margin-bottom: 1.5rem;
+        max-width: 760px;
+    }
+
+    .form-section-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: #505870;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 1.1rem;
+    }
+
+    .discipline-row {
+        margin-bottom: 1.5rem;
+    }
+
+    .form-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+    }
+    .form-group label {
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #808890;
+    }
+    select.form-select {
+        background: #0f1117;
+        color: #e0e0e0;
+        border: 1px solid #2a2d3a;
+        border-radius: 5px;
+        padding: 0.45rem 0.75rem;
+        font-size: 0.9rem;
+        outline: none;
+        cursor: pointer;
+        min-width: 200px;
+    }
+    select.form-select:focus { border-color: #7c8aff; }
+    select.form-select option { background: #1a1d28; }
+
+    .athletes-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.25rem;
+        margin-bottom: 1.5rem;
+    }
+    @media (max-width: 600px) {
+        .athletes-grid { grid-template-columns: 1fr; }
+    }
+
+    .athlete-slot {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+    .athlete-slot-label {
+        font-size: 0.8rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #808890;
+    }
+    .athlete-slot-label .slot-accent {
+        color: #7c8aff;
+    }
+    .athlete-search-input {
+        width: 100%;
+        padding: 0.45rem 0.75rem;
+        background: #0f1117;
+        color: #e0e0e0;
+        border: 1px solid #2a2d3a;
+        border-radius: 5px;
+        font-size: 0.9rem;
+        outline: none;
+    }
+    .athlete-search-input:focus { border-color: #7c8aff; }
+    .athlete-dropdown {
+        width: 100%;
+        max-height: 200px;
+        overflow-y: auto;
+        background: #0f1117;
+        border: 1px solid #2a2d3a;
+        border-radius: 5px;
+        display: none;
+        position: absolute;
+        z-index: 100;
+        margin-top: 2px;
+    }
+    .athlete-dropdown.open { display: block; }
+    .athlete-dropdown-item {
+        padding: 0.4rem 0.75rem;
+        cursor: pointer;
+        font-size: 0.88rem;
+        color: #d0d0e0;
+        border-bottom: 1px solid #1a1d28;
+    }
+    .athlete-dropdown-item:hover,
+    .athlete-dropdown-item.selected { background: #252840; color: #7c8aff; }
+    .athlete-slot-wrap { position: relative; }
+    .athlete-selected-display {
+        background: #252840;
+        border: 1px solid #3a3f6a;
+        border-radius: 5px;
+        padding: 0.45rem 0.75rem;
+        font-size: 0.88rem;
+        color: #c0c8ff;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+    }
+    .athlete-clear-btn {
+        background: none;
+        border: none;
+        color: #6070a0;
+        cursor: pointer;
+        font-size: 1rem;
+        line-height: 1;
+        padding: 0;
+        flex-shrink: 0;
+    }
+    .athlete-clear-btn:hover { color: #f87171; }
+
+    .vs-divider {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.85rem;
+        font-weight: 800;
+        color: #505870;
+        letter-spacing: 0.08em;
+    }
+
+    .submit-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        background: #7c8aff;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        padding: 0.6rem 1.6rem;
+        font-size: 0.9rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+    .submit-btn:hover { background: #6070e8; }
+    .submit-btn:disabled { background: #2a2d4a; color: #505580; cursor: not-allowed; }
+
+    .back-link {
+        display: inline-block;
+        margin-bottom: 1.25rem;
+        font-size: 0.82rem;
+        color: #606880;
+        text-decoration: none;
+    }
+    .back-link:hover { color: #7c8aff; }
+</style>
+{% endblock %}
+
+{% block content %}
+<a href="/predictions" class="back-link">&larr; Back to Predictions</a>
+
+<div class="page-header">
+    <h1>Head-to-Head</h1>
+    <span class="page-subtitle">Compare two athletes with ELO-based win probability</span>
+</div>
+
+<div class="form-card">
+    <p class="form-section-label">Select athletes and discipline</p>
+
+    <div class="discipline-row">
+        <div class="form-group">
+            <label for="discipline-select">Discipline</label>
+            <select id="discipline-select" class="form-select">
+                {% for d in disciplines %}
+                <option value="{{ d.key }}">{{ d.label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+
+    <div class="athletes-grid">
+        <!-- Athlete A -->
+        <div class="athlete-slot">
+            <div class="athlete-slot-label"><span class="slot-accent">A</span> &mdash; Athlete A</div>
+            <div class="athlete-slot-wrap" id="slot-a">
+                <input
+                    type="text"
+                    class="athlete-search-input"
+                    id="search-a"
+                    placeholder="Search athlete A..."
+                    autocomplete="off"
+                >
+                <div class="athlete-dropdown" id="dropdown-a"></div>
+                <div class="athlete-selected-display" id="selected-a-display" style="display:none">
+                    <span id="selected-a-name"></span>
+                    <button type="button" class="athlete-clear-btn" id="clear-a" title="Clear">&times;</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- VS divider (desktop only) -->
+        <div class="vs-divider" id="vs-label" style="display:none">VS</div>
+
+        <!-- Athlete B -->
+        <div class="athlete-slot">
+            <div class="athlete-slot-label"><span class="slot-accent">B</span> &mdash; Athlete B</div>
+            <div class="athlete-slot-wrap" id="slot-b">
+                <input
+                    type="text"
+                    class="athlete-search-input"
+                    id="search-b"
+                    placeholder="Search athlete B..."
+                    autocomplete="off"
+                >
+                <div class="athlete-dropdown" id="dropdown-b"></div>
+                <div class="athlete-selected-display" id="selected-b-display" style="display:none">
+                    <span id="selected-b-name"></span>
+                    <button type="button" class="athlete-clear-btn" id="clear-b" title="Clear">&times;</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button type="button" class="submit-btn" id="compare-btn" disabled>
+        Compare &rarr;
+    </button>
+</div>
+
+<!-- Pre-load athlete data from server -->
+<script>
+const ALL_ATHLETES = {{ athletes | tojson }};
+</script>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Autocomplete engine ──────────────────────────────────────────────────────
+
+function makeAutocomplete(slotId, searchId, dropdownId, displayId, nameSpanId, clearBtnId, onChange) {
+    const searchEl = document.getElementById(searchId);
+    const dropdownEl = document.getElementById(dropdownId);
+    const displayEl = document.getElementById(displayId);
+    const nameSpanEl = document.getElementById(nameSpanId);
+    const clearBtn = document.getElementById(clearBtnId);
+
+    let selectedId = null;
+    let selectedName = null;
+    let filtered = [];
+
+    function renderDropdown(items) {
+        dropdownEl.innerHTML = '';
+        items.slice(0, 40).forEach(a => {
+            const div = document.createElement('div');
+            div.className = 'athlete-dropdown-item';
+            div.textContent = `${a.name} (${a.gender})`;
+            div.dataset.id = a.id;
+            div.dataset.name = a.name;
+            div.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                selectAthlete(a.id, a.name);
+            });
+            dropdownEl.appendChild(div);
+        });
+        dropdownEl.classList.toggle('open', items.length > 0 && document.activeElement === searchEl);
+    }
+
+    function selectAthlete(id, name) {
+        selectedId = id;
+        selectedName = name;
+        searchEl.style.display = 'none';
+        dropdownEl.classList.remove('open');
+        nameSpanEl.textContent = name;
+        displayEl.style.display = 'flex';
+        onChange(id, name);
+    }
+
+    function clearSelection() {
+        selectedId = null;
+        selectedName = null;
+        searchEl.value = '';
+        searchEl.style.display = '';
+        displayEl.style.display = 'none';
+        onChange(null, null);
+    }
+
+    searchEl.addEventListener('focus', () => {
+        const q = searchEl.value.toLowerCase();
+        filtered = ALL_ATHLETES.filter(a => a.name.toLowerCase().includes(q));
+        renderDropdown(filtered);
+    });
+
+    searchEl.addEventListener('input', () => {
+        const q = searchEl.value.toLowerCase();
+        filtered = ALL_ATHLETES.filter(a => a.name.toLowerCase().includes(q));
+        renderDropdown(filtered);
+    });
+
+    searchEl.addEventListener('blur', () => {
+        setTimeout(() => dropdownEl.classList.remove('open'), 150);
+    });
+
+    clearBtn.addEventListener('click', clearSelection);
+
+    return {
+        getId: () => selectedId,
+    };
+}
+
+// ── Slots state ──────────────────────────────────────────────────────────────
+let idA = null, idB = null;
+
+const slotA = makeAutocomplete('slot-a', 'search-a', 'dropdown-a', 'selected-a-display', 'selected-a-name', 'clear-a', (id, name) => {
+    idA = id;
+    updateBtn();
+});
+const slotB = makeAutocomplete('slot-b', 'search-b', 'dropdown-b', 'selected-b-display', 'selected-b-name', 'clear-b', (id, name) => {
+    idB = id;
+    updateBtn();
+});
+
+function updateBtn() {
+    document.getElementById('compare-btn').disabled = !(idA && idB && idA !== idB);
+}
+
+document.getElementById('compare-btn').addEventListener('click', () => {
+    if (!idA || !idB || idA === idB) return;
+    const disc = document.getElementById('discipline-select').value;
+    window.location.href = `/head-to-head/${idA}/${idB}?discipline=${disc}`;
+});
+</script>
+{% endblock %}

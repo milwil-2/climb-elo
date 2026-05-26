@@ -1,0 +1,432 @@
+{% extends "base.html" %}
+{% block title %}{{ athlete_a.name }} vs {{ athlete_b.name }} — Climbing ELO{% endblock %}
+
+{% block head %}
+<style>
+    .page-header {
+        display: flex;
+        align-items: baseline;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    .page-header h1 { margin: 0; font-size: 1.4rem; }
+    .disc-badge {
+        display: inline-block;
+        padding: 0.15rem 0.55rem;
+        border-radius: 4px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        background: #252840;
+        color: #7c8aff;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .back-link {
+        display: inline-block;
+        margin-bottom: 1.25rem;
+        font-size: 0.82rem;
+        color: #606880;
+        text-decoration: none;
+    }
+    .back-link:hover { color: #7c8aff; }
+
+    /* Discipline switcher */
+    .disc-switcher {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.75rem;
+        flex-wrap: wrap;
+    }
+    .disc-btn {
+        padding: 0.35rem 0.9rem;
+        border-radius: 5px;
+        border: 1px solid #2a2d3a;
+        background: transparent;
+        color: #808890;
+        font-size: 0.82rem;
+        font-weight: 600;
+        cursor: pointer;
+        text-decoration: none;
+        transition: all 0.15s;
+    }
+    .disc-btn:hover { border-color: #7c8aff; color: #7c8aff; }
+    .disc-btn.active { background: #7c8aff; color: #fff; border-color: #7c8aff; }
+
+    /* Athletes columns */
+    .athletes-row {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 1rem;
+        align-items: start;
+        margin-bottom: 1.75rem;
+    }
+    @media (max-width: 650px) {
+        .athletes-row {
+            grid-template-columns: 1fr;
+        }
+        .vs-center { display: none; }
+    }
+
+    .athlete-card {
+        background: #1a1d28;
+        border: 1px solid #2a2d3a;
+        border-radius: 10px;
+        padding: 1.25rem 1.5rem;
+    }
+    .athlete-card.card-a { border-top: 3px solid #7c8aff; }
+    .athlete-card.card-b { border-top: 3px solid #ff8c7c; }
+
+    .athlete-card-name {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: #fff;
+        margin-bottom: 0.2rem;
+        text-decoration: none;
+    }
+    .athlete-card-name:hover { text-decoration: underline; color: #7c8aff; }
+    .athlete-card.card-b .athlete-card-name:hover { color: #ff8c7c; }
+    .athlete-nat {
+        font-size: 0.8rem;
+        color: #606880;
+        margin-bottom: 0.75rem;
+    }
+
+    .stat-row {
+        display: flex;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        margin-top: 0.5rem;
+    }
+    .stat { text-align: left; }
+    .stat-value { font-size: 1.3rem; font-weight: 700; color: #fff; }
+    .stat-label { font-size: 0.72rem; color: #808890; text-transform: uppercase; letter-spacing: 0.04em; }
+
+    .vs-center {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding-top: 2.5rem;
+        font-size: 0.9rem;
+        font-weight: 800;
+        color: #505870;
+        letter-spacing: 0.08em;
+    }
+
+    /* Win-probability bar */
+    .prob-section {
+        background: #1a1d28;
+        border: 1px solid #2a2d3a;
+        border-radius: 10px;
+        padding: 1.5rem;
+        margin-bottom: 1.75rem;
+    }
+    .prob-section-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: #505870;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 1rem;
+    }
+    .prob-bar-outer {
+        display: flex;
+        height: 2.5rem;
+        border-radius: 6px;
+        overflow: hidden;
+        margin-bottom: 0.6rem;
+    }
+    .prob-bar-a {
+        background: #7c8aff;
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        padding-left: 0.75rem;
+        transition: width 0.4s ease;
+        min-width: 2.5rem;
+    }
+    .prob-bar-b {
+        background: #ff8c7c;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        padding-right: 0.75rem;
+        transition: width 0.4s ease;
+        min-width: 2.5rem;
+    }
+    .prob-bar-pct {
+        font-size: 0.85rem;
+        font-weight: 700;
+        color: #fff;
+        white-space: nowrap;
+    }
+    .prob-labels {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.8rem;
+        color: #808890;
+    }
+    .prob-label-name { font-weight: 600; color: #c0c0c0; }
+
+    /* Past meetings */
+    .meetings-row {
+        margin-top: 0.75rem;
+        font-size: 0.83rem;
+        color: #808890;
+    }
+    .meetings-row a { color: #7c8aff; text-decoration: none; }
+    .meetings-row a:hover { text-decoration: underline; }
+    .meetings-count { font-weight: 700; color: #e0e0e0; }
+
+    /* Chart section */
+    .chart-section {
+        background: #1a1d28;
+        border: 1px solid #2a2d3a;
+        border-radius: 10px;
+        padding: 1.5rem;
+        margin-bottom: 1.75rem;
+    }
+    .chart-section-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: #505870;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 1rem;
+    }
+    .chart-legend {
+        display: flex;
+        gap: 1.5rem;
+        margin-bottom: 0.75rem;
+        flex-wrap: wrap;
+    }
+    .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.82rem;
+        color: #c0c0c0;
+    }
+    .legend-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+    .legend-dot-a { background: #7c8aff; }
+    .legend-dot-b { background: #ff8c7c; }
+
+    .chart-empty {
+        text-align: center;
+        padding: 3rem 1rem;
+        color: #505870;
+        font-size: 0.88rem;
+    }
+
+    .share-section {
+        font-size: 0.8rem;
+        color: #505870;
+        margin-top: 0.5rem;
+    }
+    .share-section a {
+        color: #7c8aff;
+        text-decoration: none;
+    }
+    .share-section a:hover { text-decoration: underline; }
+</style>
+{% endblock %}
+
+{% block content %}
+<a href="/head-to-head" class="back-link">&larr; Change athletes</a>
+
+<div class="page-header">
+    <h1>{{ athlete_a.name }} <span style="color:#505870;font-weight:400">vs</span> {{ athlete_b.name }}</h1>
+    <span class="disc-badge">{{ discipline_label }}</span>
+</div>
+
+<!-- Discipline switcher -->
+<div class="disc-switcher">
+    {% for d in disciplines %}
+    <a
+        href="/head-to-head/{{ athlete_a.id }}/{{ athlete_b.id }}?discipline={{ d.key }}"
+        class="disc-btn{% if d.key == discipline_key %} active{% endif %}"
+    >{{ d.label }}</a>
+    {% endfor %}
+</div>
+
+<!-- Athletes side-by-side -->
+<div class="athletes-row">
+    <div class="athlete-card card-a">
+        <a href="/athletes/{{ athlete_a.id }}" class="athlete-card-name">{{ athlete_a.name }}</a>
+        <div class="athlete-nat">{{ athlete_a.nationality }}{% if athlete_a.gender %} &middot; {{ athlete_a.gender }}{% endif %}</div>
+        <div class="stat-row">
+            <div class="stat">
+                <div class="stat-value">{{ athlete_a.mu }}</div>
+                <div class="stat-label">Rating (&mu;)</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{{ athlete_a.sigma }}</div>
+                <div class="stat-label">Uncertainty (&sigma;)</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{{ athlete_a.n_events }}</div>
+                <div class="stat-label">Events</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="vs-center">VS</div>
+
+    <div class="athlete-card card-b">
+        <a href="/athletes/{{ athlete_b.id }}" class="athlete-card-name">{{ athlete_b.name }}</a>
+        <div class="athlete-nat">{{ athlete_b.nationality }}{% if athlete_b.gender %} &middot; {{ athlete_b.gender }}{% endif %}</div>
+        <div class="stat-row">
+            <div class="stat">
+                <div class="stat-value">{{ athlete_b.mu }}</div>
+                <div class="stat-label">Rating (&mu;)</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{{ athlete_b.sigma }}</div>
+                <div class="stat-label">Uncertainty (&sigma;)</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{{ athlete_b.n_events }}</div>
+                <div class="stat-label">Events</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Win probability bar -->
+<div class="prob-section">
+    <p class="prob-section-label">Win probability</p>
+    <div class="prob-bar-outer">
+        <div class="prob-bar-a" style="width:{{ win_a }}%">
+            <span class="prob-bar-pct">{{ win_a }}%</span>
+        </div>
+        <div class="prob-bar-b" style="width:{{ win_b }}%">
+            <span class="prob-bar-pct">{{ win_b }}%</span>
+        </div>
+    </div>
+    <div class="prob-labels">
+        <span class="prob-label-name">{{ athlete_a.name }}</span>
+        <span class="prob-label-name">{{ athlete_b.name }}</span>
+    </div>
+
+    <div class="meetings-row">
+        Past meetings (shared events):
+        <span class="meetings-count">{{ past_meetings }}</span>
+        {% if most_recent_shared_event %}
+        &mdash; most recent:
+        <a href="/events/{{ most_recent_shared_event.id }}">
+            {{ most_recent_shared_event.name }} ({{ most_recent_shared_event.season }})
+        </a>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Rating history chart -->
+<div class="chart-section">
+    <p class="chart-section-label">Rating history &mdash; {{ discipline_label }}</p>
+    <div class="chart-legend">
+        <div class="legend-item">
+            <div class="legend-dot legend-dot-a"></div>
+            <span>{{ athlete_a.name }}</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-dot legend-dot-b"></div>
+            <span>{{ athlete_b.name }}</span>
+        </div>
+    </div>
+
+    {% if chart_labels == "[]" %}
+    <div class="chart-empty">No rating history found for this discipline.</div>
+    {% else %}
+    <div class="chart-container">
+        <canvas id="h2h-chart"></canvas>
+    </div>
+    {% endif %}
+</div>
+
+<div class="share-section">
+    Shareable link: <a href="/head-to-head/{{ athlete_a.id }}/{{ athlete_b.id }}?discipline={{ discipline_key }}">
+        /head-to-head/{{ athlete_a.id }}/{{ athlete_b.id }}?discipline={{ discipline_key }}
+    </a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if chart_labels != "[]" %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+    const labels = {{ chart_labels | safe }};
+    const muA    = {{ chart_mu_a | safe }};
+    const muB    = {{ chart_mu_b | safe }};
+
+    const ctx = document.getElementById('h2h-chart');
+    if (!ctx) return;
+
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: {{ athlete_a.name | tojson }},
+                    data: muA,
+                    borderColor: '#7c8aff',
+                    backgroundColor: 'rgba(124,138,255,0.08)',
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    tension: 0.2,
+                    spanGaps: true,
+                },
+                {
+                    label: {{ athlete_b.name | tojson }},
+                    data: muB,
+                    borderColor: '#ff8c7c',
+                    backgroundColor: 'rgba(255,140,124,0.08)',
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    tension: 0.2,
+                    spanGaps: true,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#1a1d28',
+                    borderColor: '#2a2d3a',
+                    borderWidth: 1,
+                    titleColor: '#808890',
+                    bodyColor: '#e0e0e0',
+                },
+            },
+            scales: {
+                x: {
+                    ticks: {
+                        color: '#505870',
+                        maxRotation: 45,
+                        autoSkip: true,
+                        maxTicksLimit: 12,
+                        font: { size: 10 },
+                    },
+                    grid: { color: '#1e2130' },
+                },
+                y: {
+                    ticks: { color: '#505870', font: { size: 11 } },
+                    grid: { color: '#1e2130' },
+                },
+            },
+        },
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}
