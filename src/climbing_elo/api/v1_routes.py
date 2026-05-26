@@ -816,8 +816,16 @@ async def predictions_upcoming(
     For events with registered athletes (stored via the scraper), projections use
     those athletes.  For events without a registered list, the endpoint falls back
     to a *likely-competitor roster* derived from season attendance patterns (same
-    logic as the /predictions HTML page).  The ``from_likely_roster`` flag on each
-    entry indicates which source was used.
+    logic as the /predictions HTML page).
+
+    **Roster source flag**: each entry in ``predictions`` carries a
+    ``from_likely_roster: bool`` field.  When ``true``, the IFSC start-list for
+    that event has not been published yet and the roster was estimated from the
+    athletes who competed in ≥ 60 % of this season's finished World Cup events
+    (early-season fallback: top-64 by current μ when fewer than 3 events have
+    finished).  Consumers should surface this flag prominently so users know the
+    athlete list is a forecast, not an official registration.  The HTML dashboard
+    shows a "Predicted roster · registrations unavailable" badge in this case.
 
     **Filters**:
     - ``discipline``: lead, boulder, or speed (boulder_lead excluded — no upcoming

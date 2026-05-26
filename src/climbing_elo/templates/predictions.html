@@ -191,6 +191,28 @@
         color: #505870;
         margin-top: 0.2rem;
     }
+    .roster-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.3rem 0.65rem 0.3rem 0.5rem;
+        border-radius: 4px;
+        background: #2a2200;
+        border: 1px solid #5a4a10;
+        font-size: 0.72rem;
+        color: #fbbf24;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        margin-top: 0.5rem;
+        width: fit-content;
+    }
+    .roster-badge-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: #fbbf24;
+        flex-shrink: 0;
+    }
 
     /* Hub entry-point cards */
     .hub-grid {
@@ -337,7 +359,12 @@
             </div>
 
             {% if ev.predictions %}
-            {% if ev.from_likely_roster %}<div class="hub-note" style="font-size: 0.75rem; color: #808890; margin-top: 0.5rem;">Predicted roster based on season attendance</div>{% endif %}
+            {% if ev.from_likely_roster %}
+            <div class="roster-badge">
+                <span class="roster-badge-dot"></span>
+                Predicted roster &middot; registrations unavailable
+            </div>
+            {% endif %}
             <div class="predictions-block">
                 {% for gp in ev.predictions.genders %}
                 <div class="gender-label">{{ gp.gender }} — {{ gp.total_athletes }} athlete{{ 's' if gp.total_athletes != 1 else '' }}</div>
