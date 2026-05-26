@@ -41,12 +41,18 @@ def main() -> None:
         action="store_true",
         help="Scrape all three disciplines (lead, boulder, speed)",
     )
+    def _bounded_seasons_ahead(value: str) -> int:
+        n = int(value)
+        if n < 0 or n > 5:
+            raise argparse.ArgumentTypeError("--seasons-ahead must be 0..5")
+        return n
+
     parser.add_argument(
         "--seasons-ahead",
-        type=int,
+        type=_bounded_seasons_ahead,
         default=2,
         metavar="N",
-        help="How many seasons beyond the current year to check (default: 2)",
+        help="How many seasons beyond the current year to check (0..5, default: 2)",
     )
     args = parser.parse_args()
 

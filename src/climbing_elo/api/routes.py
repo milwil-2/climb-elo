@@ -638,6 +638,7 @@ _PREDICTIONS_DISCIPLINES = [
 
 #: Cap on events per discipline shown on the predictions page to bound Monte Carlo work.
 _MAX_UPCOMING_PER_DISCIPLINE = 50
+_MAX_ATHLETES_PER_PROJECTION_CARD = 64
 
 
 @router.get("/predictions", response_class=HTMLResponse)
@@ -736,6 +737,15 @@ async def predictions(request: Request):
                                 sigma=sigma,
                                 name=athlete.name,
                             ))
+
+                        # Cap per-event athlete count for the landing page Monte Carlo,
+                        # so a 200-athlete qualification field doesn't make the page hang.
+                        # Sort by mu descending and take the top N — the predicted podium
+                        # comes from this group anyway.
+                        if len(proj_inputs) > _MAX_ATHLETES_PER_PROJECTION_CARD:
+                            proj_inputs = sorted(proj_inputs, key=lambda a: a.mu, reverse=True)[
+                                :_MAX_ATHLETES_PER_PROJECTION_CARD
+                            ]
 
                         probs = compute_podium_probabilities(proj_inputs, n_simulations=10_000)
 

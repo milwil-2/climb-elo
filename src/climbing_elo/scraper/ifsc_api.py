@@ -559,7 +559,7 @@ def scrape_upcoming_events(
                 log.warning("Reached MAX_UPCOMING_EVENTS=%d; stopping", MAX_UPCOMING_EVENTS)
                 return report
 
-            event_name = ev.get("event", "Unknown")
+            event_name = str(ev.get("event", "Unknown"))[:200]
 
             # Check whether any discipline d_cat for this event is upcoming
             has_upcoming_dcat = any(
