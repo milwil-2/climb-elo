@@ -1,0 +1,389 @@
+{% extends "base.html" %}
+{% block title %}Custom Projection — Climbing ELO{% endblock %}
+{% block head %}
+<style>
+    .form-card {
+        background: #1a1d28;
+        border: 1px solid #2a2d3a;
+        border-radius: 8px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+    }
+    .form-row {
+        display: flex;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        margin-bottom: 1.25rem;
+    }
+    .form-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+    }
+    .form-group label {
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #808890;
+    }
+    select.form-select {
+        background: #0f1117;
+        color: #e0e0e0;
+        border: 1px solid #2a2d3a;
+        border-radius: 5px;
+        padding: 0.45rem 0.75rem;
+        font-size: 0.9rem;
+        outline: none;
+        cursor: pointer;
+        min-width: 160px;
+    }
+    select.form-select:focus {
+        border-color: #7c8aff;
+    }
+    select.form-select option {
+        background: #1a1d28;
+    }
+    .athlete-select-wrap {
+        flex: 1;
+        min-width: 260px;
+    }
+    #athlete-search {
+        width: 100%;
+        padding: 0.45rem 0.75rem;
+        background: #0f1117;
+        color: #e0e0e0;
+        border: 1px solid #2a2d3a;
+        border-radius: 5px;
+        font-size: 0.9rem;
+        outline: none;
+        margin-bottom: 0.5rem;
+    }
+    #athlete-search:focus { border-color: #7c8aff; }
+    #athlete-list-select {
+        width: 100%;
+        height: 220px;
+        background: #0f1117;
+        color: #e0e0e0;
+        border: 1px solid #2a2d3a;
+        border-radius: 5px;
+        font-size: 0.85rem;
+        padding: 0.25rem;
+        outline: none;
+    }
+    #athlete-list-select:focus { border-color: #7c8aff; }
+    #athlete-list-select option {
+        padding: 0.3rem 0.5rem;
+        border-radius: 3px;
+        cursor: pointer;
+    }
+    #athlete-list-select option:checked {
+        background: #7c8aff;
+        color: #fff;
+    }
+    .selection-hint {
+        font-size: 0.76rem;
+        color: #505560;
+        margin-top: 0.3rem;
+    }
+    .selected-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        min-height: 2rem;
+        margin-top: 0.5rem;
+    }
+    .athlete-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        background: #2a2d4a;
+        border: 1px solid #3a3f6a;
+        border-radius: 20px;
+        padding: 0.15rem 0.6rem 0.15rem 0.5rem;
+        font-size: 0.8rem;
+        color: #c0c8ff;
+    }
+    .athlete-tag button {
+        background: none;
+        border: none;
+        color: #6070a0;
+        cursor: pointer;
+        padding: 0;
+        font-size: 0.9rem;
+        line-height: 1;
+    }
+    .athlete-tag button:hover { color: #f87171; }
+    .submit-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        background: #7c8aff;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        padding: 0.6rem 1.4rem;
+        font-size: 0.9rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+    .submit-btn:hover { background: #6070e8; }
+    .submit-btn:disabled { background: #2a2d4a; color: #505580; cursor: not-allowed; }
+    .error-card {
+        background: #1e1215;
+        border: 1px solid #5a2535;
+        border-radius: 8px;
+        padding: 1rem 1.5rem;
+        color: #f87171;
+        margin-bottom: 1rem;
+    }
+    /* Result section — reuses styles from projections.html */
+    .result-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 1rem;
+    }
+    .winner-card {
+        background: linear-gradient(135deg, #1a1d28 0%, #1e2138 100%);
+        border: 1px solid #3a3f5c;
+        border-radius: 8px;
+        padding: 1.1rem 1.5rem;
+        margin-bottom: 1.25rem;
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+    .winner-trophy { font-size: 1.8rem; line-height: 1; }
+    .winner-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #808890; margin-bottom: 0.2rem; }
+    .winner-name { font-size: 1.2rem; font-weight: 700; color: #fff; }
+    .prob-bar-wrap { display: flex; align-items: center; gap: 0.5rem; }
+    .prob-bar { height: 6px; border-radius: 3px; background: #7c8aff; min-width: 2px; flex-shrink: 0; }
+    .prob-text { font-size: 0.85rem; color: #c0c8ff; white-space: nowrap; }
+    .rank-badge {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 1.8rem; height: 1.8rem; border-radius: 50%;
+        font-size: 0.8rem; font-weight: 700;
+    }
+    .rank-1 { background: #b8860b; color: #fff; }
+    .rank-2 { background: #708090; color: #fff; }
+    .rank-3 { background: #7c4f2a; color: #fff; }
+    .rank-other { background: #1e2130; color: #808890; }
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .note-text { font-size: 0.78rem; color: #505560; margin-top: 0.75rem; }
+    /* Hidden inputs container */
+    #hidden-inputs { display: none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>Custom Projection</h1>
+<p style="color:#808890;margin-bottom:1.25rem;">Select a discipline and athletes to project finish probabilities via Monte Carlo simulation.</p>
+
+{% if error %}
+<div class="error-card">{{ error }}</div>
+{% endif %}
+
+<div class="form-card">
+    <form method="post" action="/projections/new" id="proj-form">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="discipline-select">Discipline</label>
+                <select name="discipline" id="discipline-select" class="form-select">
+                    {% for d in disciplines %}
+                    <option value="{{ d.key }}"
+                        {% if selected_discipline and selected_discipline == d.key %}selected{% endif %}>
+                        {{ d.label }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group athlete-select-wrap">
+                <label>Athletes <span id="sel-count" style="color:#7c8aff;font-weight:700">0</span> selected</label>
+                <input type="text" id="athlete-search" placeholder="Search athletes..." autocomplete="off">
+                <select id="athlete-list-select" multiple size="10">
+                    {% for a in athletes %}
+                    <option value="{{ a.id }}"
+                        data-name="{{ a.name }}"
+                        {% if selected_athlete_ids and a.id in selected_athlete_ids %}selected{% endif %}>
+                        {{ a.name }} ({{ a.gender }})
+                    </option>
+                    {% endfor %}
+                </select>
+                <div class="selection-hint">Hold Ctrl / Cmd to select multiple athletes</div>
+                <div class="selected-tags" id="selected-tags"></div>
+                <!-- Hidden form inputs are injected here by JS before submit -->
+                <div id="hidden-inputs"></div>
+            </div>
+        </div>
+        <button type="submit" class="submit-btn" id="submit-btn" disabled>
+            Run projection
+        </button>
+    </form>
+</div>
+
+{% if result %}
+<div class="result-section">
+    <div class="result-header">
+        <h2 style="margin:0;color:#c0c0c0">Results &mdash; {{ result.discipline }}</h2>
+    </div>
+
+    {% set top_row = result.rows|first %}
+    {% if top_row %}
+    <div class="winner-card">
+        <div class="winner-trophy">&#127942;</div>
+        <div>
+            <div class="winner-label">Predicted winner</div>
+            <div class="winner-name">{{ top_row.name }}</div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="table-scroll">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:3rem">#</th>
+                <th>Athlete</th>
+                <th>Rating</th>
+                <th>&sigma;</th>
+                <th>Win %</th>
+                <th>Podium %</th>
+                <th>Top-8 %</th>
+                <th>Exp. Rank</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in result.rows %}
+            <tr>
+                <td>
+                    <span class="rank-badge {% if row.proj_rank == 1 %}rank-1{% elif row.proj_rank == 2 %}rank-2{% elif row.proj_rank == 3 %}rank-3{% else %}rank-other{% endif %}">
+                        {{ row.proj_rank }}
+                    </span>
+                </td>
+                <td><a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a></td>
+                <td><strong>{{ row.mu }}</strong></td>
+                <td style="color:#808890">{{ row.sigma }}</td>
+                <td>
+                    <div class="prob-bar-wrap">
+                        <div class="prob-bar" style="width:{{ [row.win_raw * 200, 100]|min }}px"></div>
+                        <span class="prob-text">{{ row.win }}</span>
+                    </div>
+                </td>
+                <td>
+                    <div class="prob-bar-wrap">
+                        <div class="prob-bar" style="width:{{ [row.podium_raw * 100, 100]|min }}px;opacity:0.65"></div>
+                        <span class="prob-text">{{ row.podium }}</span>
+                    </div>
+                </td>
+                <td style="color:#a0a8c0">{{ row.top_8 }}</td>
+                <td style="color:#808890">{{ "%.1f"|format(row.expected_rank) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    <p class="note-text">
+        Probabilities estimated via 10,000 Monte Carlo simulations drawing performance
+        from N(&mu;, &sigma;) for each athlete. Athletes with no rating for the selected
+        discipline are assigned default values (&mu;=1500, &sigma;=350).
+    </p>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Pre-selected athletes from server ───────────────────────────────────────
+const preSelected = new Set([
+    {% if selected_athlete_ids %}
+    {% for aid in selected_athlete_ids %}{{ aid }},{% endfor %}
+    {% endif %}
+]);
+
+// ── State ────────────────────────────────────────────────────────────────────
+const listEl = document.getElementById('athlete-list-select');
+const searchEl = document.getElementById('athlete-search');
+const tagsEl = document.getElementById('selected-tags');
+const hiddenEl = document.getElementById('hidden-inputs');
+const countEl = document.getElementById('sel-count');
+const submitBtn = document.getElementById('submit-btn');
+
+// name → id mapping (for quick tag creation)
+const allOptions = Array.from(listEl.options).map(o => ({
+    id: parseInt(o.value),
+    name: o.dataset.name || o.text.replace(/\s*\(.\)$/, ''),
+    text: o.text,
+}));
+
+// Track selected IDs
+const selectedIds = new Set(preSelected);
+
+function syncUI() {
+    // Sync the <select> element selections
+    Array.from(listEl.options).forEach(o => {
+        o.selected = selectedIds.has(parseInt(o.value));
+    });
+
+    // Rebuild tags
+    tagsEl.innerHTML = '';
+    selectedIds.forEach(id => {
+        const info = allOptions.find(a => a.id === id);
+        if (!info) return;
+        const tag = document.createElement('span');
+        tag.className = 'athlete-tag';
+        tag.innerHTML = `${info.name} <button type="button" data-id="${id}" title="Remove">&times;</button>`;
+        tag.querySelector('button').addEventListener('click', () => {
+            selectedIds.delete(id);
+            syncUI();
+        });
+        tagsEl.appendChild(tag);
+    });
+
+    // Rebuild hidden inputs
+    hiddenEl.innerHTML = '';
+    selectedIds.forEach(id => {
+        const inp = document.createElement('input');
+        inp.type = 'hidden';
+        inp.name = 'athlete_ids';
+        inp.value = id;
+        hiddenEl.appendChild(inp);
+    });
+
+    countEl.textContent = selectedIds.size;
+    submitBtn.disabled = selectedIds.size < 2;
+}
+
+// Initialize from pre-selected
+syncUI();
+
+// Handle multi-select changes (click/ctrl-click)
+listEl.addEventListener('change', () => {
+    Array.from(listEl.options).forEach(o => {
+        const id = parseInt(o.value);
+        if (o.selected) selectedIds.add(id);
+        // Note: we don't auto-remove on deselect — user must use the × tag
+    });
+    syncUI();
+});
+
+// Filter list by search
+searchEl.addEventListener('input', () => {
+    const q = searchEl.value.toLowerCase();
+    Array.from(listEl.options).forEach(o => {
+        o.style.display = o.text.toLowerCase().includes(q) ? '' : 'none';
+    });
+});
+
+// Prevent default form submit; inject hidden inputs first
+document.getElementById('proj-form').addEventListener('submit', function(e) {
+    if (selectedIds.size < 2) {
+        e.preventDefault();
+        return;
+    }
+    // hidden inputs already injected by syncUI
+});
+</script>
+{% endblock %}

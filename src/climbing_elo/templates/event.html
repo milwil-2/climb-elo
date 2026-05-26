@@ -2,7 +2,12 @@
 {% block title %}{{ event.name }} — Climbing ELO{% endblock %}
 {% block content %}
 <h1>{{ event.name }} ({{ event.season }})</h1>
-<p style="color: #808890; margin-bottom: 1rem;">{{ event.tier }}</p>
+<p style="color: #808890; margin-bottom: 0.5rem;">{{ event.tier }}</p>
+<p style="margin-bottom: 1.25rem;">
+    <a href="/projections/{{ event.id }}" style="color:#7c8aff;font-size:0.88rem;text-decoration:none;">
+        &#127942; View projections &rarr;
+    </a>
+</p>
 
 {% for rnd in rounds %}
 <h2>{{ rnd.round_type }} — {{ rnd.gender }}</h2>
