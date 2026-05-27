@@ -203,7 +203,8 @@ def test_cold_start_loser_drops_quickly_under_glicko2():
 def _has_compatible_prod_data() -> bool:
     """Return True only if the prod DB is present *and* uses the current
     Discipline enum codes (short single-letter values). Older snapshots used
-    full enum names like "BOULDER" and silently break the backfill."""
+    full enum names like "BOULDER" and silently break the backfill.
+    Also requires the post-#90 ``rating_history.kind`` column."""
     if not PROD_DB_PATH.exists():
         return False
     if not (FIXTURE_DIR / "2026-boulder-M.json").exists():
@@ -217,7 +218,18 @@ def _has_compatible_prod_data() -> bool:
             ).fetchall()
             codes = {r[0] for r in rows}
             # Current schema uses single-letter codes — old snapshots use words.
-            return bool(codes) and codes.issubset({"B", "L", "S", "BL"})
+            if not (codes and codes.issubset({"B", "L", "S", "BL"})):
+                return False
+            # Issue #90 added rating_history.kind. Older snapshots lack it.
+            cols = {
+                r[1]
+                for r in conn.execute(
+                    text("PRAGMA table_info(rating_history)")
+                ).fetchall()
+            }
+            if "kind" not in cols:
+                return False
+            return True
     except Exception:
         return False
 

@@ -6,6 +6,7 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     Enum,
     Float,
@@ -197,12 +198,23 @@ class RatingHistory(Base):
     sigma_before: Mapped[float] = mapped_column(Float, nullable=False)
     sigma_after: Mapped[float] = mapped_column(Float, nullable=False)
     contributing_pairs: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Issue #90 — Tournament Participation Bonus (Gap 1 from #88).
+    # Discriminator: 'pair' = standard pairwise round update (legacy
+    # behaviour). 'tpb' = synthetic, event-level tier-weighted bonus whose
+    # round_id points at the event's FINAL round. The unique constraint
+    # includes ``kind`` so a pair row and a tpb row can coexist for the same
+    # (athlete, final round) without colliding.
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="pair")
 
     athlete: Mapped[Athlete] = relationship(back_populates="rating_history")
     event: Mapped[Event] = relationship(back_populates="rating_history")
 
     __table_args__ = (
         UniqueConstraint(
-            "athlete_id", "round_id", name="uq_rating_history_athlete_round"
+            "athlete_id",
+            "round_id",
+            "kind",
+            name="uq_rating_history_athlete_round_kind",
         ),
+        CheckConstraint("kind IN ('pair', 'tpb')", name="rating_history_kind_check"),
     )

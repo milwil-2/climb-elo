@@ -4,7 +4,7 @@ name: Scrape IFSC → Supabase
 #   1. Pulls the upcoming-events calendar (so /predictions stays populated).
 #   2. Pulls recent finished results for the current and previous season.
 #   3. Runs the ELO backfill for each discipline (ratings get re-computed from
-#      any new results — idempotent thanks to uq_rating_history_athlete_round).
+#      any new results — idempotent thanks to uq_rating_history_athlete_round_kind).
 #   4. Refreshes the combined Boulder+Lead ratings.
 #
 # Schedule: daily at 04:00 UTC. World Cup events happen on weekends during the

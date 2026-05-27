@@ -50,6 +50,18 @@
   td.num.delta-dn{color:var(--ink-2)}
 
   .empty{padding:48px;text-align:center;color:var(--dim);font-size:13px}
+
+  .tpb-block{margin-top:48px;padding-top:32px;border-top:1px dashed var(--line)}
+  .tpb-block .tpb-head{display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:14px}
+  .tpb-block .tpb-head .ttl{font-size:18px;font-weight:600;letter-spacing:-0.01em}
+  .tpb-block .tpb-head .sub{font-size:11px;color:var(--dim);letter-spacing:0.14em;text-transform:uppercase}
+  .tpb-block .tpb-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;font-variant-numeric:tabular-nums}
+  .tpb-block .tpb-cell{padding:14px 16px;border:1px solid var(--line)}
+  .tpb-block .tpb-cell .l{display:block;font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:6px;font-weight:500}
+  .tpb-block .tpb-cell .v{font-size:20px;font-weight:600;letter-spacing:-0.01em;color:var(--ink)}
+  .tpb-block .tpb-cell .v.up{color:var(--ink)}
+  .tpb-block .tpb-cell .v.dn{color:var(--ink-2)}
+  .tpb-block .tpb-note{margin-top:14px;font-size:12.5px;color:var(--ink-2);line-height:1.55;max-width:640px}
 </style>
 {% endblock %}
 
@@ -128,6 +140,40 @@
       </div>
     </div>
     {%- endfor -%}
+
+    {%- if tpb -%}
+    <div class="tpb-block reveal">
+      <div class="tpb-head">
+        <span class="ttl">Tournament Participation Bonus</span>
+        <span class="sub">{{ tpb.tier }} &middot; Rank {{ tpb.rank }}</span>
+      </div>
+      <div class="tpb-grid">
+        <div class="tpb-cell">
+          <span class="l">Gross bonus</span>
+          <span class="v">+{{ tpb.gross_bonus }}</span>
+        </div>
+        <div class="tpb-cell">
+          <span class="l">Field debit</span>
+          <span class="v">&minus;{{ tpb.debit }}</span>
+        </div>
+        <div class="tpb-cell">
+          <span class="l">Net &Delta;&mu;</span>
+          <span class="v {% if tpb.delta > 0 %}up{% elif tpb.delta < 0 %}dn{% endif %}">
+            {% if tpb.delta > 0 %}+{% endif %}{{ tpb.delta }}
+          </span>
+        </div>
+        <div class="tpb-cell">
+          <span class="l">After</span>
+          <span class="v">{{ tpb.mu_after }}</span>
+        </div>
+      </div>
+      <p class="tpb-note">
+        Tier-weighted credit awarded to the top finishers of each event, then
+        debited uniformly across the field so the event sum is zero. Bigger
+        bonuses live at higher tiers (Olympics &gt; World Championship &gt; World Cup &gt; Continental).
+      </p>
+    </div>
+    {%- endif -%}
   </section>
 </main>
 {% endblock %}
