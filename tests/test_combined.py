@@ -32,16 +32,27 @@ from compute_combined_ratings import (  # noqa: E402
     load_combined_weights,
 )
 from fit_combined_weights import (  # noqa: E402
+    BASELINE_V_SIGMA_BOULDER,
+    BASELINE_V_SIGMA_LEAD,
     BASELINE_W_BOULDER,
     BASELINE_W_LEAD,
+    DEFAULT_CV_FOLDS,
     CombinedEntry,
     CombinedFold,
+    CVResult,
     FitMetrics,
     RatingSnapshot,
+    _kfold_splits,
+    brier_top3,
     combined_mu,
+    combined_sigma,
     decide_ship,
+    fit_mu_weights,
+    fit_sigma_weights,
     grid_search,
+    kfold_cv,
     score_candidate,
+    scipy_search,
 )
 
 
@@ -570,6 +581,469 @@ class TestLearnedWeightsAppliedInProduction:
         assert result == pytest.approx(1700.0**0.7 * 1800.0**0.3)
         # And it should NOT equal the geometric mean.
         assert result != pytest.approx(math.sqrt(mu_b * mu_l), abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# scipy optimiser (#76)
+# ---------------------------------------------------------------------------
+
+
+def _lead_predicts_setup():
+    """Lead-only signal + lead-only ground truth — shared scenario for the
+    scipy / grid convergence comparison."""
+    year = 2024
+    mus = {
+        10: (1500.0, 1900.0),
+        11: (1500.0, 1800.0),
+        12: (1500.0, 1700.0),
+        13: (1500.0, 1600.0),
+        14: (1500.0, 1500.0),
+        15: (1500.0, 1400.0),
+        16: (1500.0, 1300.0),
+    }
+    fold = _make_fold(
+        year,
+        Gender.M,
+        [
+            (10, 3, 1),
+            (11, 3, 2),
+            (12, 3, 3),
+            (13, 3, 4),
+            (14, 3, 5),
+            (15, 3, 6),
+            (16, 3, 7),
+        ],
+    )
+    snapshots = _snapshots_from_mus(year, mus, sigma=80.0)
+    return [fold], snapshots
+
+
+class TestScipyOptimizer:
+    """scipy.optimize.minimize_scalar must locate the same μ-weight optimum
+    as the grid sweep (within tolerance) and remain consistent with the
+    fit_mu_weights dispatcher."""
+
+    def test_scipy_returns_weights_summing_to_one(self):
+        folds, snapshots = _lead_predicts_setup()
+        (w_lead, w_boulder), metrics, _ = scipy_search(
+            folds, snapshots, n_simulations=2000
+        )
+        assert 0.0 - 1e-6 <= w_lead <= 1.0 + 1e-6
+        assert w_lead + w_boulder == pytest.approx(1.0, abs=1e-6)
+        assert not math.isnan(metrics.log_loss)
+
+    def test_scipy_matches_grid_on_lead_only(self):
+        """When the truth is lead-only, both optimisers should land on
+        w_lead ≈ 1.0 (within scipy's xatol)."""
+        folds, snapshots = _lead_predicts_setup()
+        (w_lead_grid, _), _, _ = grid_search(
+            folds, snapshots, step=0.1, n_simulations=2000
+        )
+        (w_lead_scipy, _), _, _ = scipy_search(folds, snapshots, n_simulations=2000)
+        # Both must agree about which side of the unit interval is optimal.
+        # We don't require pinpoint agreement (grid is 0.1-coarse, scipy is
+        # ~1e-3-fine), only that they live in the same neighbourhood.
+        assert abs(w_lead_grid - w_lead_scipy) <= 0.15
+
+    def test_scipy_evaluations_recorded(self):
+        """The optimiser exposes every (w_lead, w_boulder, metrics) it
+        sampled — useful for inspecting convergence."""
+        folds, snapshots = _lead_predicts_setup()
+        _, _, evals = scipy_search(folds, snapshots, n_simulations=1000)
+        assert len(evals) > 0
+        for w_l, w_b, _ in evals:
+            assert w_l + w_b == pytest.approx(1.0, abs=1e-6)
+
+    def test_dispatcher_supports_both_methods(self):
+        folds, snapshots = _lead_predicts_setup()
+        grid_result = fit_mu_weights(
+            folds, snapshots, method="grid", step=0.25, n_simulations=1000
+        )
+        scipy_result = fit_mu_weights(
+            folds, snapshots, method="scipy", n_simulations=1000
+        )
+        # Both shapes match: ((w_l, w_b), metrics, evals)
+        assert len(grid_result) == 3
+        assert len(scipy_result) == 3
+
+    def test_dispatcher_rejects_unknown_method(self):
+        folds, snapshots = _lead_predicts_setup()
+        with pytest.raises(ValueError):
+            fit_mu_weights(folds, snapshots, method="bayesian")
+
+
+# ---------------------------------------------------------------------------
+# K-fold cross-validation (#77)
+# ---------------------------------------------------------------------------
+
+
+class TestKFoldSplits:
+    """``_kfold_splits`` underlies the CV runner."""
+
+    def test_partitions_indices_disjointly(self):
+        splits = _kfold_splits(10, k=5)
+        assert len(splits) == 5
+        seen_test: list[int] = []
+        for train, test in splits:
+            assert set(train).isdisjoint(set(test))
+            assert sorted(train + test) == list(range(10))
+            seen_test.extend(test)
+        # Every index appears in exactly one test fold.
+        assert sorted(seen_test) == list(range(10))
+
+    def test_uneven_split_handled(self):
+        # 7 items / k=3 → sizes (3, 2, 2)
+        splits = _kfold_splits(7, k=3)
+        sizes = [len(test) for _, test in splits]
+        assert sizes == [3, 2, 2]
+
+    def test_k_larger_than_n_degrades_to_loocv(self):
+        splits = _kfold_splits(3, k=10)
+        # Capped to 3 folds; each test fold is a single index.
+        assert len(splits) == 3
+        for _, test in splits:
+            assert len(test) == 1
+
+    def test_invalid_k_raises(self):
+        with pytest.raises(ValueError):
+            _kfold_splits(5, k=1)
+
+
+class TestKFoldCV:
+    """k-fold CV must produce per-fold metrics, mean and std."""
+
+    def _multi_fold_snapshots(self):
+        """Build 5 synthetic folds across 5 different years — enough for 5-fold CV."""
+        years = [2020, 2021, 2022, 2023, 2024]
+        folds = []
+        snapshots: dict = {}
+        for y in years:
+            mus = {100 + y + i: (1500.0 + i * 50, 1700.0 - i * 20) for i in range(7)}
+            entries = [(100 + y + i, (i % 3) + 1, ((i + 2) % 3) + 1) for i in range(7)]
+            folds.append(_make_fold(y, Gender.M, entries))
+            snap = _snapshots_from_mus(y, mus)
+            snapshots[y] = snap[y]
+        return folds, snapshots
+
+    def test_kfold_returns_one_metric_per_fold(self):
+        folds, snapshots = self._multi_fold_snapshots()
+        result = kfold_cv(
+            folds,
+            snapshots,
+            BASELINE_W_LEAD,
+            BASELINE_W_BOULDER,
+            k=5,
+            n_simulations=500,
+        )
+        assert isinstance(result, CVResult)
+        assert len(result.per_fold_metrics) == 5
+
+    def test_kfold_mean_std_are_finite(self):
+        folds, snapshots = self._multi_fold_snapshots()
+        result = kfold_cv(
+            folds,
+            snapshots,
+            0.5,
+            0.5,
+            k=5,
+            n_simulations=500,
+        )
+        assert not math.isnan(result.log_loss_mean)
+        # std must be non-negative; 0.0 only if pstdev was given a single
+        # value (fine — graceful degenerate behaviour).
+        assert result.log_loss_std >= 0.0
+
+    def test_kfold_std_is_reasonable_on_synthetic_data(self):
+        """Across folds with similar structure, std should be a sensible
+        positive fraction of the mean — not 0, not gigantic."""
+        folds, snapshots = self._multi_fold_snapshots()
+        result = kfold_cv(
+            folds,
+            snapshots,
+            0.5,
+            0.5,
+            k=5,
+            n_simulations=1000,
+        )
+        # Mean must be > 0 (log loss can't be negative).
+        assert result.log_loss_mean > 0
+        # std should not exceed the mean by orders of magnitude.
+        assert result.log_loss_std < result.log_loss_mean * 5.0
+
+    def test_cv_mean_used_by_ship_rule(self):
+        """The ship rule treats whatever metrics it's given as the truth —
+        the CLI passes CV means; the rule itself doesn't care about CV vs
+        single-pass. Verify a hand-crafted CV mean drives the decision."""
+        # CV-mean metrics with improvement.
+        cv_learned = FitMetrics(log_loss=0.45, rank_corr=0.82)
+        cv_baseline = FitMetrics(log_loss=0.55, rank_corr=0.80)
+        ship, _ = decide_ship(cv_learned, cv_baseline, (0.7, 0.3))
+        assert ship
+        # Now a CV-mean that regresses → ship rule says no even though the
+        # single-pass numbers would have shipped.
+        cv_regressed = FitMetrics(log_loss=0.58, rank_corr=0.82)
+        ship2, _ = decide_ship(cv_regressed, cv_baseline, (0.7, 0.3))
+        assert not ship2
+
+    def test_default_k_is_five(self):
+        """Per the docstring + CLI default."""
+        assert DEFAULT_CV_FOLDS == 5
+
+    def test_empty_folds_yield_empty_cv_result(self):
+        result = kfold_cv([], {}, 0.5, 0.5, k=5)
+        assert len(result.per_fold_metrics) == 0
+        assert math.isnan(result.log_loss_mean)
+        assert result.log_loss_std == 0.0
+
+
+# ---------------------------------------------------------------------------
+# σ-weight learning (#78)
+# ---------------------------------------------------------------------------
+
+
+class TestCombinedSigmaWeighted:
+    """``combined_sigma`` collapses to RMS at equal weights."""
+
+    def test_equal_sigma_weights_match_rms(self):
+        """v_lead = v_boulder = 0.5 must equal the historical RMS formula."""
+        for s_l, s_b in [(80.0, 120.0), (50.0, 50.0), (200.0, 100.0)]:
+            weighted = combined_sigma(s_l, s_b, 0.5, 0.5)
+            rms = math.sqrt((s_l**2 + s_b**2) / 2.0)
+            assert weighted == pytest.approx(rms, rel=1e-9)
+
+    def test_lead_dominant_pulls_toward_lead_sigma(self):
+        # If v_lead >> v_boulder, combined σ approaches σ_lead.
+        s_l, s_b = 200.0, 50.0
+        weighted = combined_sigma(s_l, s_b, 0.99, 0.01)
+        assert abs(weighted - 200.0) < abs(weighted - 50.0)
+
+    def test_zero_total_weights_raises(self):
+        with pytest.raises(ValueError):
+            combined_sigma(100.0, 100.0, 0.0, 0.0)
+
+    def test_default_weights_are_rms_baseline(self):
+        assert BASELINE_V_SIGMA_LEAD == 0.5
+        assert BASELINE_V_SIGMA_BOULDER == 0.5
+
+
+class TestSigmaWeights:
+    """σ-weight optimisation should favour the more predictive discipline."""
+
+    def _make_predictive_lead_sigma(self):
+        """Construct synthetic folds where Lead σ matches actual outcome
+        spread more tightly than Boulder σ.
+
+        Lead has a clean, narrow σ across all athletes (high signal).
+        Boulder has very wide σ for everyone (noisy). Ground truth follows
+        mu_lead → so lead is more predictive and lead σ should better
+        capture residual uncertainty."""
+        years = [2022, 2023, 2024]
+        folds = []
+        snapshots: dict = {}
+        for y in years:
+            mus = {2000 + y + i: (1500.0, 1900.0 - i * 50) for i in range(7)}
+            # Build the snapshots manually to give per-discipline σ control.
+            boulder_snap = {
+                aid: RatingSnapshot(mu=mu_b, sigma=300.0)  # Wide / noisy boulder σ.
+                for aid, (mu_b, _) in mus.items()
+            }
+            lead_snap = {
+                aid: RatingSnapshot(mu=mu_l, sigma=60.0)  # Tight / informative lead σ.
+                for aid, (_, mu_l) in mus.items()
+            }
+            snapshots[y] = {
+                Discipline.BOULDER: boulder_snap,
+                Discipline.LEAD: lead_snap,
+            }
+            # Ground truth: lead-rank ordering.
+            entries = [(2000 + y + i, (i % 3) + 1, i + 1) for i in range(7)]
+            folds.append(_make_fold(y, Gender.M, entries))
+        return folds, snapshots
+
+    def test_brier_top3_is_finite(self):
+        folds, snapshots = self._make_predictive_lead_sigma()
+        # Use lead-leaning μ since lead is the predictive signal.
+        b = brier_top3(folds, snapshots, 0.9, 0.1, 0.5, 0.5, n_simulations=2000)
+        assert not math.isnan(b)
+        assert 0.0 <= b <= 1.0
+
+    def test_brier_top3_empty_folds_is_nan(self):
+        b = brier_top3([], {}, 0.5, 0.5, 0.5, 0.5)
+        assert math.isnan(b)
+
+    def test_sigma_fit_returns_normalised_weights(self):
+        folds, snapshots = self._make_predictive_lead_sigma()
+        (v_l, v_b), brier = fit_sigma_weights(
+            folds, snapshots, 0.9, 0.1, n_simulations=1500
+        )
+        assert v_l + v_b == pytest.approx(1.0, abs=1e-6)
+        assert 0.0 - 1e-6 <= v_l <= 1.0 + 1e-6
+        assert not math.isnan(brier)
+
+    def test_sigma_fit_favours_predictive_discipline(self):
+        """When Lead σ is more informative than Boulder σ, the optimiser
+        should NOT prefer the boulder-dominant corner — i.e. v_sigma_lead
+        should not collapse to 0. Lead-leaning (v_lead > v_boulder) is the
+        principled answer; we assert at minimum the non-collapse direction."""
+        folds, snapshots = self._make_predictive_lead_sigma()
+        (v_l, v_b), _ = fit_sigma_weights(
+            folds, snapshots, 0.9, 0.1, n_simulations=2000
+        )
+        # The wide-boulder corner (v_b ≈ 1) inflates uncertainty for every
+        # athlete — Brier should be worse there. Optimiser must avoid it.
+        assert v_l > 0.05, (
+            f"σ fit collapsed to boulder-only (v_l={v_l:.3f}); expected lead-leaning"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility (#76, #77, #78)
+# ---------------------------------------------------------------------------
+
+
+class TestBackwardCompat:
+    """The v1 learned-weights JSON (no σ / no CV fields) must keep loading
+    and behave exactly like the historical RMS + single-pass paths."""
+
+    def test_v1_payload_no_sigma_fields_falls_back_to_rms(self, tmp_path):
+        path = tmp_path / "v1.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "w_lead": 0.6,
+                    "w_boulder": 0.4,
+                    "log_loss": 0.5,
+                    "rank_corr": 0.85,
+                    "baseline_log_loss": 0.55,
+                    "baseline_rank_corr": 0.83,
+                    "n_folds": 12,
+                    "fit_date": "2026-05-26T00:00:00+00:00",
+                }
+            )
+        )
+        weights = load_combined_weights(path)
+        assert weights.source == "learned"
+        # σ fields default to RMS.
+        assert weights.sigma_source == "rms"
+        assert weights.w_sigma_lead == pytest.approx(DEFAULT_W_BOULDER)
+        assert weights.w_sigma_boulder == pytest.approx(DEFAULT_W_LEAD)
+
+    def test_v1_payload_uses_rms_in_compute_combined_sigma(self, tmp_path):
+        """A learned-μ-only payload must produce the same σ as the
+        legacy default-weights path."""
+        path = tmp_path / "v1.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "w_lead": 0.7,
+                    "w_boulder": 0.3,
+                    "log_loss": 0.4,
+                    "rank_corr": 0.85,
+                    "baseline_log_loss": 0.5,
+                    "baseline_rank_corr": 0.83,
+                    "fit_date": "2026-05-26T00:00:00+00:00",
+                }
+            )
+        )
+        weights = load_combined_weights(path)
+        sigma_b, sigma_l = 120.0, 80.0
+        with_weights = compute_combined_sigma(sigma_b, sigma_l, weights)
+        without_weights = compute_combined_sigma(sigma_b, sigma_l)
+        assert with_weights == pytest.approx(without_weights, rel=1e-9)
+
+    def test_v2_payload_with_sigma_fields_loads_learned(self, tmp_path):
+        path = tmp_path / "v2.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "w_lead": 0.65,
+                    "w_boulder": 0.35,
+                    "log_loss": 0.45,
+                    "rank_corr": 0.84,
+                    "baseline_log_loss": 0.5,
+                    "baseline_rank_corr": 0.83,
+                    "w_sigma_lead": 0.7,
+                    "w_sigma_boulder": 0.3,
+                    "sigma_calibration_metric": 0.18,
+                    "cv_method": "kfold",
+                    "cv_folds": 5,
+                    "cv_log_loss_mean": 0.46,
+                    "cv_log_loss_std": 0.03,
+                    "fit_date": "2026-05-26T00:00:00+00:00",
+                }
+            )
+        )
+        weights = load_combined_weights(path)
+        assert weights.source == "learned"
+        assert weights.sigma_source == "learned"
+        assert weights.w_sigma_lead == pytest.approx(0.7)
+        assert weights.w_sigma_boulder == pytest.approx(0.3)
+
+    def test_v2_sigma_weights_change_compute_combined_sigma_output(self, tmp_path):
+        path = tmp_path / "v2.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "w_lead": 0.5,
+                    "w_boulder": 0.5,
+                    "w_sigma_lead": 0.9,
+                    "w_sigma_boulder": 0.1,
+                    "log_loss": 0.5,
+                    "rank_corr": 0.8,
+                    "baseline_log_loss": 0.55,
+                    "baseline_rank_corr": 0.79,
+                    "fit_date": "2026-05-26T00:00:00+00:00",
+                }
+            )
+        )
+        weights = load_combined_weights(path)
+        sigma_b, sigma_l = 200.0, 50.0
+        with_weights = compute_combined_sigma(sigma_b, sigma_l, weights)
+        rms = compute_combined_sigma(sigma_b, sigma_l)
+        # Lead-dominant σ weights pull toward sigma_lead → must differ from RMS.
+        assert with_weights != pytest.approx(rms, abs=0.5)
+
+    def test_malformed_sigma_fields_fall_back_to_rms(self, tmp_path):
+        path = tmp_path / "bad-sigma.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "w_lead": 0.6,
+                    "w_boulder": 0.4,
+                    "w_sigma_lead": "not-a-number",
+                    "w_sigma_boulder": 0.5,
+                    "log_loss": 0.5,
+                    "rank_corr": 0.8,
+                    "baseline_log_loss": 0.55,
+                    "baseline_rank_corr": 0.79,
+                    "fit_date": "2026-05-26T00:00:00+00:00",
+                }
+            )
+        )
+        weights = load_combined_weights(path)
+        # μ weights still load; σ falls back to RMS.
+        assert weights.source == "learned"
+        assert weights.sigma_source == "rms"
+
+    def test_negative_sigma_weights_fall_back_to_rms(self, tmp_path):
+        path = tmp_path / "neg-sigma.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "w_lead": 0.6,
+                    "w_boulder": 0.4,
+                    "w_sigma_lead": -0.1,
+                    "w_sigma_boulder": 1.1,
+                    "log_loss": 0.5,
+                    "rank_corr": 0.8,
+                    "baseline_log_loss": 0.55,
+                    "baseline_rank_corr": 0.79,
+                    "fit_date": "2026-05-26T00:00:00+00:00",
+                }
+            )
+        )
+        weights = load_combined_weights(path)
+        assert weights.sigma_source == "rms"
 
 
 # Suppress unused-import warnings — keeping these imported tightens the
