@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date
-from typing import Optional
+from datetime import date, timedelta
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from climbing_elo.api.limiter import limiter
 
 from climbing_elo.cache import predictions_cache
 from climbing_elo.database import get_session_factory
+from climbing_elo.engine.activity import (
+    INACTIVE_THRESHOLD_MONTHS,
+    RETIRED_THRESHOLD_YEARS,
+)
 from climbing_elo.engine.likely_roster import likely_competitors
 from climbing_elo.engine.projections import (
     AthleteProjectionInput,
@@ -180,6 +184,14 @@ async def leaderboard(
         "lead", description="Discipline: lead, boulder, speed, boulder_lead / combined"
     ),
     gender: str = Query("M", description="Gender: M or F"),
+    view: Literal["active", "all", "legacy"] = Query(
+        "active",
+        description=(
+            "Activity filter: `active` (default — last 12 months), "
+            "`all` (smart all-time list, excludes likely-retired athletes), "
+            "or `legacy` (no filter — pre-#91 behaviour)."
+        ),
+    ),
     limit: int = Query(50, ge=1, le=100, description="Number of results (1–100)"),
     offset: int = Query(0, ge=0, le=10000, description="Pagination offset (max 10000)"),
 ) -> LeaderboardResponse:
@@ -187,17 +199,36 @@ async def leaderboard(
     Return paginated ELO leaderboard for the requested discipline and gender.
 
     Athletes are ranked by descending μ (mean rating).
+
+    **view**: Default changed from `legacy` (all athletes) to `active` (last
+    12-months competitors) on 2026-05-26 per #91. Pass `view=all` for the
+    smart all-time list (hides athletes classified by
+    ``engine.activity.is_likely_retired_simple`` — i.e. either manually
+    flagged via ``Athlete.retired_at`` or >3 years since their last event),
+    `view=legacy` for the pre-#91 behaviour.
     """
     disc = _resolve_discipline(discipline)
     gen = _resolve_gender(gender)
 
-    with _session() as session:
-        base_stmt = (
-            select(Rating, Athlete)
-            .join(Athlete, Rating.athlete_id == Athlete.id)
-            .where(Rating.discipline == disc, Athlete.gender == gen)
-        )
+    today = date.today()
+    base_stmt = (
+        select(Rating, Athlete)
+        .join(Athlete, Rating.athlete_id == Athlete.id)
+        .where(Rating.discipline == disc, Athlete.gender == gen)
+    )
 
+    if view == "active":
+        cutoff = today - timedelta(days=int(INACTIVE_THRESHOLD_MONTHS * 30.4375))
+        base_stmt = base_stmt.where(Rating.last_event_at >= cutoff)
+    elif view == "all":
+        cutoff = today - timedelta(days=int(RETIRED_THRESHOLD_YEARS * 365.25))
+        base_stmt = base_stmt.where(
+            Athlete.retired_at.is_(None),
+            or_(Rating.last_event_at.is_(None), Rating.last_event_at >= cutoff),
+        )
+    # else: "legacy" — no filter.
+
+    with _session() as session:
         total: int = session.execute(
             select(func.count()).select_from(base_stmt.subquery())
         ).scalar_one()

@@ -412,3 +412,164 @@ def test_profile_route_404_for_unknown_athlete(profile_client):
     """A nonexistent athlete returns 404."""
     r = profile_client.get("/athletes/999999")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /leaderboard — dual view (Issue #91)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def leaderboard_db_path(tmp_path_factory):
+    return tmp_path_factory.mktemp("leaderboard_db") / "test.db"
+
+
+@pytest.fixture(scope="module")
+def leaderboard_factory(leaderboard_db_path):
+    """Seed a DB with four athletes that exercise every #91 view branch.
+
+    - ``Active Ace``: competed last month → present in active + all + legacy.
+    - ``On Break``:   last competed 18 months ago → absent from active,
+      present in all + legacy.
+    - ``Long Gone``:  last competed 5 years ago (no manual flag) → absent
+      from active + all, present in legacy.
+    - ``Flagged``:    competed recently but ``retired_at`` set → absent from
+      all, present in legacy and in active (active filter does not consult
+      ``retired_at``).
+    """
+    from datetime import timedelta
+
+    engine = create_engine(f"sqlite:///{leaderboard_db_path}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    session = factory()
+
+    today = date.today()
+
+    athletes = [
+        ("Active Ace", None, today - timedelta(days=30), 2100.0),
+        ("On Break", None, today - timedelta(days=540), 2050.0),  # ~18 mo
+        ("Long Gone", None, today - timedelta(days=int(5 * 365.25)), 2000.0),
+        ("Flagged", today - timedelta(days=10), today - timedelta(days=15), 1950.0),
+    ]
+    name_to_id: dict[str, int] = {}
+    for name, retired, _, _ in athletes:
+        a = Athlete(
+            name=name,
+            gender=Gender.M,
+            nationality="USA",
+            retired_at=retired,
+        )
+        session.add(a)
+        session.flush()
+        name_to_id[name] = a.id
+
+    for name, _, last_event, mu in athletes:
+        session.add(
+            Rating(
+                athlete_id=name_to_id[name],
+                discipline=Discipline.LEAD,
+                mu=mu,
+                sigma=110.0,
+                n_events=10,
+                provisional=False,
+                last_event_at=last_event,
+            )
+        )
+    session.commit()
+    session.close()
+    return factory
+
+
+@pytest.fixture(scope="module")
+def leaderboard_client(leaderboard_db_path, leaderboard_factory):
+    original_session = _routes._session
+    original_get_engine = _db.get_engine
+
+    def patched_session():
+        return leaderboard_factory()
+
+    def patched_get_engine(db_path=None):
+        return create_engine(f"sqlite:///{leaderboard_db_path}")
+
+    _routes._session = patched_session  # type: ignore[assignment]
+    _db.get_engine = patched_get_engine  # type: ignore[assignment]
+
+    app = create_app()
+    tc = TestClient(app)
+    yield tc
+
+    _db.get_engine = original_get_engine
+    _routes._session = original_session
+
+
+def test_leaderboard_default_view_is_active(leaderboard_client):
+    """No ``view`` query param → only active-window athletes are shown."""
+    r = leaderboard_client.get("/leaderboard?disc=L&gender=M")
+    assert r.status_code == 200, r.text[:500]
+    html = r.text
+    # Active Ace must be present; On Break and Long Gone must be hidden.
+    assert "Active Ace" in html
+    assert "On Break" not in html
+    assert "Long Gone" not in html
+
+
+def test_leaderboard_view_all_shows_more_than_active(leaderboard_client):
+    """``view=all`` includes on-break athletes but still hides retirees."""
+    r_active = leaderboard_client.get("/leaderboard?disc=L&gender=M&view=active")
+    r_all = leaderboard_client.get("/leaderboard?disc=L&gender=M&view=all")
+    assert r_active.status_code == 200
+    assert r_all.status_code == 200
+
+    # On Break appears only in the all-time view.
+    assert "On Break" not in r_active.text
+    assert "On Break" in r_all.text
+    # Active Ace is present in both.
+    assert "Active Ace" in r_active.text
+    assert "Active Ace" in r_all.text
+    # Long Gone (>5y gap) is hidden in both views.
+    assert "Long Gone" not in r_active.text
+    assert "Long Gone" not in r_all.text
+    # Flagged athlete (manual retired_at) is absent from all-time.
+    assert "Flagged" not in r_all.text
+
+
+def test_leaderboard_view_legacy_shows_everyone(leaderboard_client):
+    """``view=legacy`` is the pre-#91 unfiltered behaviour."""
+    r = leaderboard_client.get("/leaderboard?disc=L&gender=M&view=legacy")
+    assert r.status_code == 200
+    html = r.text
+    for name in ("Active Ace", "On Break", "Long Gone", "Flagged"):
+        assert name in html, f"legacy view missing {name!r}"
+
+
+def test_leaderboard_view_invalid_falls_back_to_active(leaderboard_client):
+    """HTML route is forgiving: a bogus ``view`` value just defaults to active."""
+    r = leaderboard_client.get("/leaderboard?disc=L&gender=M&view=junk")
+    assert r.status_code == 200
+    # Same content as the default active view.
+    assert "Active Ace" in r.text
+    assert "On Break" not in r.text
+
+
+def test_leaderboard_all_view_renders_activity_badges(leaderboard_client):
+    """In all-time view, each row is tagged "Active" or "Inactive Xmo"."""
+    r = leaderboard_client.get("/leaderboard?disc=L&gender=M&view=all")
+    assert r.status_code == 200
+    html = r.text
+    assert "activity-badge" in html
+    # Active Ace got the "Active" tag
+    assert ">Active<" in html
+    # On Break got an Inactive label like "Inactive 17mo" or similar
+    assert "Inactive" in html
+
+
+def test_leaderboard_view_toggle_renders(leaderboard_client):
+    """The Active/All-time toggle links are present in the HTML."""
+    r = leaderboard_client.get("/leaderboard?disc=L&gender=M")
+    assert r.status_code == 200
+    html = r.text
+    assert "view=active" in html
+    assert "view=all" in html
+    # The default view's toggle has ``active`` class on the Active button.
+    assert 'view=active"\n         class="active"' in html or 'class="active"' in html

@@ -7,17 +7,21 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from climbing_elo.cache import likely_roster_cache, predictions_cache
 from climbing_elo.database import get_session_factory
+from climbing_elo.engine.activity import (
+    INACTIVE_THRESHOLD_MONTHS,
+    RETIRED_THRESHOLD_YEARS,
+)
 from climbing_elo.engine.elo import expected_score as _expected_score
 from climbing_elo.engine.likely_roster import likely_competitors
 from climbing_elo.engine.projections import (
@@ -167,15 +171,58 @@ def _build_proj_inputs_batched(
     return proj_inputs
 
 
-def _get_rankings_v2(session, gender: Gender, discipline: Discipline, limit: int = 200):
-    """Return a ranked list of athletes for a given discipline/gender."""
+#: Valid values for the leaderboard ``view`` query param (#91).
+LEADERBOARD_VIEWS: tuple[str, ...] = ("active", "all", "legacy")
+
+
+def _get_rankings_v2(
+    session,
+    gender: Gender,
+    discipline: Discipline,
+    limit: int = 200,
+    view: str = "active",
+    today: Optional[date] = None,
+):
+    """Return a ranked list of athletes for a given discipline/gender.
+
+    The ``view`` parameter (Issue #91) controls activity filtering:
+
+    - ``"active"`` (default): only athletes whose ``last_event_at`` falls
+      within the last :data:`INACTIVE_THRESHOLD_MONTHS` months.  Hides
+      ghost athletes whose σ inflated but whose μ never deflated.
+    - ``"all"``: every athlete that the ``is_likely_retired`` heuristic
+      does not flag.  In SQL this is ``retired_at IS NULL AND
+      (last_event_at IS NULL OR last_event_at >= today - 3 years)``.
+    - ``"legacy"``: no filter — the pre-#91 behaviour.  Kept for debug.
+
+    ``today`` may be pinned for deterministic tests; otherwise uses
+    :func:`date.today`.  Invalid ``view`` values fall back to ``"active"``
+    rather than raising — the HTML route is forgiving by design.
+    """
+    if today is None:
+        today = date.today()
+
     stmt = (
         select(Rating, Athlete)
         .join(Athlete, Rating.athlete_id == Athlete.id)
         .where(Rating.discipline == discipline, Athlete.gender == gender)
-        .order_by(Rating.mu.desc())
-        .limit(limit)
     )
+
+    if view == "active":
+        # 12-month window — INACTIVE_THRESHOLD_MONTHS * ~30 days. Using
+        # ``timedelta(days=365)`` keeps the filter portable across SQLite
+        # (no INTERVAL support) and Postgres.
+        cutoff = today - timedelta(days=int(INACTIVE_THRESHOLD_MONTHS * 30.4375))
+        stmt = stmt.where(Rating.last_event_at >= cutoff)
+    elif view == "all":
+        cutoff = today - timedelta(days=int(RETIRED_THRESHOLD_YEARS * 365.25))
+        stmt = stmt.where(
+            Athlete.retired_at.is_(None),
+            or_(Rating.last_event_at.is_(None), Rating.last_event_at >= cutoff),
+        )
+    # "legacy" (or anything else) — no extra filter.
+
+    stmt = stmt.order_by(Rating.mu.desc()).limit(limit)
     rows = session.execute(stmt).all()
     return [
         {
@@ -380,22 +427,45 @@ async def v2_leaderboard(
     request: Request,
     disc: str = Query(default="B"),
     gender: str = Query(default="M"),
+    view: str = Query(default="active"),
 ):
     t = _templates(request)
 
     disc_enum = _DISC_KEY_TO_ENUM.get(disc.upper(), Discipline.BOULDER)
     gender_enum = Gender.M if gender.upper() == "M" else Gender.F
+    # Default to "active" for any unrecognised value (#91).
+    view_norm = view.lower() if view else "active"
+    if view_norm not in LEADERBOARD_VIEWS:
+        view_norm = "active"
+
+    today = date.today()
+    # Months-of-inactivity badge cutoff for the "all" view (#91).
+    badge_active_cutoff = today - timedelta(
+        days=int(INACTIVE_THRESHOLD_MONTHS * 30.4375)
+    )
 
     with _session() as session:
-        rows = _get_rankings_v2(session, gender_enum, disc_enum, limit=20)
+        rows = _get_rankings_v2(
+            session, gender_enum, disc_enum, limit=20, view=view_norm, today=today
+        )
         ticker = _ticker_context(session)
 
-        # Add 90d delta to each row
+        # Add 90d delta + activity badge (only rendered in the "all" view).
         for row in rows:
             row["delta_90d"] = _get_90d_delta(session, row["id"], disc_enum)
+            last = row.get("last_event_at")
+            if last is None:
+                row["activity_label"] = None
+            elif last >= badge_active_cutoff:
+                row["activity_label"] = "Active"
+            else:
+                months = max(1, int((today - last).days / 30.4375))
+                row["activity_label"] = f"Inactive {months}mo"
 
-        # Summary stats
-        all_rows = _get_rankings_v2(session, gender_enum, disc_enum, limit=200)
+        # Summary stats — use the same view so counts reflect what users see.
+        all_rows = _get_rankings_v2(
+            session, gender_enum, disc_enum, limit=200, view=view_norm, today=today
+        )
         top_mu = all_rows[0]["mu"] if all_rows else 0
         mid_idx = len(all_rows) // 2
         median_mu = all_rows[mid_idx]["mu"] if all_rows else 0
@@ -410,6 +480,7 @@ async def v2_leaderboard(
         "disc_label": disc_label,
         "gender": gender_enum.value,
         "gender_label": gender_label,
+        "view": view_norm,
         "top_mu": top_mu,
         "median_mu": median_mu,
         "total_count": total_count,

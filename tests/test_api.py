@@ -44,7 +44,15 @@ def test_db_path(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def test_factory(test_db_path):
-    """Create and seed a persistent (file-based) SQLite DB for the module."""
+    """Create and seed a persistent (file-based) SQLite DB for the module.
+
+    Note (#91): ``last_event_at`` for the seeded ratings is anchored to
+    ``date.today()`` minus a few weeks so the default ``view=active`` filter
+    surfaces both Adam and Janja. Earlier this used a hard-coded 2024 date,
+    which left the leaderboard empty under the post-#91 default.
+    """
+    recent = date.today() - timedelta(days=30)
+
     engine = create_engine(f"sqlite:///{test_db_path}")
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
@@ -60,7 +68,9 @@ def test_factory(test_db_path):
     session.add_all([adam, janja])
     session.flush()
 
-    # -- Event
+    # -- Event (kept on the original 2024-06-01 date so existing tests that
+    # assert ``season == 2024`` keep working; only the rating ``last_event_at``
+    # is anchored to recent to satisfy the post-#91 active-view filter).
     event = Event(
         name="Innsbruck World Cup",
         tier=EventTier.WORLD_CUP,
@@ -96,7 +106,7 @@ def test_factory(test_db_path):
             sigma=120.0,
             n_events=10,
             provisional=False,
-            last_event_at=date(2024, 6, 1),
+            last_event_at=recent,
         )
     )
     session.add(
@@ -107,7 +117,7 @@ def test_factory(test_db_path):
             sigma=100.0,
             n_events=12,
             provisional=False,
-            last_event_at=date(2024, 6, 1),
+            last_event_at=recent,
         )
     )
     session.flush()
@@ -264,6 +274,172 @@ def test_leaderboard_discipline_aliases(client):
         assert r.status_code == 200, (
             f"alias '{alias}' returned {r.status_code}: {r.text}"
         )
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/leaderboard — view parameter (Issue #91)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def view_db_path(tmp_path_factory):
+    return tmp_path_factory.mktemp("view_db") / "test.db"
+
+
+@pytest.fixture(scope="module")
+def view_factory(view_db_path):
+    """Seed four athletes covering every #91 view branch (mirrors
+    ``leaderboard_factory`` in ``test_routes.py`` — kept separate so this test
+    module stays self-contained).
+
+    NOTE: ``view_client`` below is **function-scoped** (not module-scoped) so
+    its monkey-patches of ``_v1._session`` and ``_db.get_engine`` are restored
+    between tests. Otherwise the still-alive module-scoped patches would
+    clobber the ``client`` fixture's patches for the rest of the module,
+    breaking tests like ``test_athlete_detail_adam`` and the events suite.
+    """
+    engine = create_engine(f"sqlite:///{view_db_path}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    session = factory()
+
+    today = date.today()
+    athletes = [
+        # (name, retired_at, last_event_at, mu)
+        ("Recent Racer", None, today - timedelta(days=30), 2100.0),
+        ("Sabbatical Sam", None, today - timedelta(days=540), 2050.0),  # ~18 mo
+        ("Ancient Albert", None, today - timedelta(days=int(5 * 365.25)), 2000.0),
+        (
+            "Flagged Frank",
+            today - timedelta(days=10),
+            today - timedelta(days=15),
+            1950.0,
+        ),
+    ]
+    name_to_id: dict[str, int] = {}
+    for name, retired, _, _ in athletes:
+        a = Athlete(
+            name=name,
+            gender=Gender.M,
+            nationality="USA",
+            retired_at=retired,
+        )
+        session.add(a)
+        session.flush()
+        name_to_id[name] = a.id
+
+    for name, _, last_event, mu in athletes:
+        session.add(
+            Rating(
+                athlete_id=name_to_id[name],
+                discipline=Discipline.LEAD,
+                mu=mu,
+                sigma=110.0,
+                n_events=10,
+                provisional=False,
+                last_event_at=last_event,
+            )
+        )
+    session.commit()
+    session.close()
+    return factory
+
+
+@pytest.fixture(scope="function")
+def view_client(view_db_path, view_factory):
+    original_session = _v1._session
+    original_get_engine = _db.get_engine
+
+    def patched_session():
+        return view_factory()
+
+    def patched_get_engine(db_path=None):
+        return create_engine(f"sqlite:///{view_db_path}")
+
+    _v1._session = patched_session  # type: ignore[assignment]
+    _db.get_engine = patched_get_engine  # type: ignore[assignment]
+
+    app = create_app()
+    tc = TestClient(app)
+    yield tc
+
+    _db.get_engine = original_get_engine
+    _v1._session = original_session
+
+
+def _names(body: dict) -> list[str]:
+    return [item["name"] for item in body["items"]]
+
+
+def test_leaderboard_view_default_is_active(view_client):
+    """Default ``view=active`` returns only the recently-active athlete."""
+    r = view_client.get("/api/v1/leaderboard?discipline=lead&gender=M")
+    assert r.status_code == 200
+    body = r.json()
+    names = _names(body)
+    assert "Recent Racer" in names
+    # Flagged Frank competed recently (15 days ago) → still surfaces in
+    # ``active``; the retired_at flag only applies to the ``all`` view.
+    assert "Flagged Frank" in names
+    assert "Sabbatical Sam" not in names
+    assert "Ancient Albert" not in names
+
+
+def test_leaderboard_view_all_includes_on_break(view_client):
+    """``view=all`` adds Sabbatical Sam back but still hides Albert + Frank."""
+    r = view_client.get("/api/v1/leaderboard?discipline=lead&gender=M&view=all")
+    assert r.status_code == 200
+    names = _names(r.json())
+    assert "Recent Racer" in names
+    assert "Sabbatical Sam" in names
+    assert "Ancient Albert" not in names  # >5y gap → heuristic filters
+    assert "Flagged Frank" not in names  # retired_at set → manual filter
+
+
+def test_leaderboard_view_legacy_returns_everyone(view_client):
+    """``view=legacy`` is the pre-#91 unfiltered behaviour."""
+    r = view_client.get("/api/v1/leaderboard?discipline=lead&gender=M&view=legacy")
+    assert r.status_code == 200
+    names = _names(r.json())
+    assert set(names) == {
+        "Recent Racer",
+        "Sabbatical Sam",
+        "Ancient Albert",
+        "Flagged Frank",
+    }
+
+
+def test_leaderboard_view_counts_are_monotone(view_client):
+    """active ⊆ all ⊆ legacy (in terms of total athletes returned)."""
+    base = "/api/v1/leaderboard?discipline=lead&gender=M&limit=100"
+    active = view_client.get(f"{base}&view=active").json()["total"]
+    all_view = view_client.get(f"{base}&view=all").json()["total"]
+    legacy = view_client.get(f"{base}&view=legacy").json()["total"]
+    assert active <= all_view <= legacy
+    assert legacy == 4  # all seeded athletes
+    # In this fixture they happen to be: active=2, all=2, legacy=4
+    assert active == 2
+    assert all_view == 2
+
+
+def test_leaderboard_view_invalid_returns_422(view_client):
+    """An unknown ``view`` value yields a 422 with a useful error."""
+    r = view_client.get("/api/v1/leaderboard?discipline=lead&gender=M&view=junk")
+    assert r.status_code == 422
+    # FastAPI's Literal validation includes the bad value in the detail.
+    detail = r.json().get("detail")
+    assert detail is not None
+
+
+def test_leaderboard_view_active_explicit_matches_default(view_client):
+    """Explicit ``view=active`` returns the same items as the default."""
+    r_default = view_client.get("/api/v1/leaderboard?discipline=lead&gender=M")
+    r_active = view_client.get(
+        "/api/v1/leaderboard?discipline=lead&gender=M&view=active"
+    )
+    assert r_default.status_code == 200
+    assert r_active.status_code == 200
+    assert _names(r_default.json()) == _names(r_active.json())
 
 
 # ---------------------------------------------------------------------------
