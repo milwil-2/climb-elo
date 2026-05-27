@@ -40,14 +40,20 @@ from sqlalchemy.orm import Session
 
 from climbing_elo.database import get_engine
 from climbing_elo.engine.elo import (
-    BOULDER_MARGIN_MAX_GAP,
-    MARGIN_CAP,
-    MOV_RATING_SCALE,
-    MOV_SOFTENING,
-    SPEED_MAX_GAP_SECONDS,
+    DEFAULT_CONFIG,
     _gap_conditioning_factor,
 )
 from climbing_elo.models import Discipline, Event, RatingHistory, Round
+
+# This audit script reads MOV / margin constants for *reporting* — it does not
+# call into the engine, so it is fine to read from ``DEFAULT_CONFIG`` directly
+# rather than threading an EloConfig argument through.
+_CFG = DEFAULT_CONFIG
+MARGIN_CAP = _CFG.margin_cap
+BOULDER_MARGIN_MAX_GAP = _CFG.boulder_margin_max_gap
+SPEED_MAX_GAP_SECONDS = _CFG.speed_max_gap_seconds
+MOV_RATING_SCALE = _CFG.mov_rating_scale
+MOV_SOFTENING = _CFG.mov_softening
 
 
 def _legacy_multiplier(score_gap: float, max_gap: float) -> float:

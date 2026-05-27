@@ -60,12 +60,12 @@ from typing import Iterable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from climbing_elo.engine import elo as elo_mod
 from climbing_elo.engine.elo import (
     DEFAULT_MU,
     DEFAULT_SIGMA,
     AthleteRating,
     AthleteResult,
+    EloConfig,
     calculate_round_updates,
 )
 from climbing_elo.engine.evaluation import (
@@ -604,7 +604,15 @@ class StrippedEloEngine:
         return "stripped_elo"
 
     def _build_snapshot(self, discipline: Discipline) -> dict[int, AthleteRating]:
-        """Re-run backfill for ``discipline`` with stripped parameters."""
+        """Re-run backfill for ``discipline`` with stripped parameters.
+
+        Post-Issue #83 Target 3 we no longer monkey-patch ``elo_mod`` module
+        globals; instead we pass a custom :class:`EloConfig` to
+        :func:`calculate_round_updates`. This both (a) prevents leakage of
+        config state across tests and concurrent callers, and (b) gives the
+        next agent (#80 K-regrid sweep) a clean template for parameter
+        sweeps.
+        """
         cfg = self._config
         ratings: dict[int, AthleteRating] = {}
 
@@ -616,81 +624,76 @@ class StrippedEloEngine:
             ).scalars()
         )
 
-        # Monkey-patch the module constants for the duration of this rebuild.
-        # Post-#51 we only flip ``MARGIN_CAP`` and the σ floor/ceiling pair;
-        # the legacy ``PROVISIONAL_K_MULTIPLIER`` and ``SIGMA_CONVERGENCE_FACTOR``
-        # are no longer features of the production engine.
-        orig_margin_cap = elo_mod.MARGIN_CAP
-        orig_sigma_floor = elo_mod.SIGMA_FLOOR
-        orig_sigma_ceiling = elo_mod.SIGMA_CEILING
-        try:
-            elo_mod.MARGIN_CAP = cfg.margin_cap
-            elo_mod.SIGMA_FLOOR = cfg.sigma_floor
-            elo_mod.SIGMA_CEILING = cfg.sigma_ceiling
+        # Stripped EloConfig: production defaults except the three knobs
+        # we want to ablate. Note that ``sigma_floor == sigma_ceiling ==
+        # cfg.sigma_floor`` collapses Glicko-2's φ shrinkage step — every
+        # post-update σ snaps back to the floor.
+        elo_config = EloConfig(
+            margin_cap=cfg.margin_cap,
+            sigma_floor=cfg.sigma_floor,
+            sigma_ceiling=cfg.sigma_ceiling,
+        )
 
-            for event in events:
-                rounds = sorted(
-                    event.rounds, key=lambda r: _ROUND_ORDER.get(r.round_type, 0)
+        for event in events:
+            rounds = sorted(
+                event.rounds, key=lambda r: _ROUND_ORDER.get(r.round_type, 0)
+            )
+            seen_athletes: set[int] = set()
+            event_had_updates = False
+            for rnd in rounds:
+                results = list(
+                    self._session.execute(
+                        select(Result).where(Result.round_id == rnd.id)
+                    ).scalars()
                 )
-                seen_athletes: set[int] = set()
-                event_had_updates = False
-                for rnd in rounds:
-                    results = list(
-                        self._session.execute(
-                            select(Result).where(Result.round_id == rnd.id)
-                        ).scalars()
-                    )
-                    if not results:
-                        continue
-                    athlete_results: list[AthleteResult] = []
-                    for res in results:
-                        if res.athlete_id not in ratings:
-                            ratings[res.athlete_id] = AthleteRating(
-                                athlete_id=res.athlete_id,
-                                # σ frozen at floor — stripped of decay
-                                sigma=cfg.sigma_floor,
-                            )
-                        athlete_results.append(
-                            AthleteResult(
-                                athlete_id=res.athlete_id,
-                                rank=res.rank or 999,
-                                score_normalized=res.score_normalized,
-                                dnf=res.dnf,
-                                dns=res.dns,
-                            )
+                if not results:
+                    continue
+                athlete_results: list[AthleteResult] = []
+                for res in results:
+                    if res.athlete_id not in ratings:
+                        ratings[res.athlete_id] = AthleteRating(
+                            athlete_id=res.athlete_id,
+                            # σ frozen at floor — stripped of decay
+                            sigma=cfg.sigma_floor,
                         )
-                    updates = calculate_round_updates(
-                        athlete_results,
-                        ratings,
-                        event.tier,
-                        rnd.round_type,
-                        event.start_date,
-                        discipline=discipline,
+                    athlete_results.append(
+                        AthleteResult(
+                            athlete_id=res.athlete_id,
+                            rank=res.rank or 999,
+                            score_normalized=res.score_normalized,
+                            dnf=res.dnf,
+                            dns=res.dns,
+                        )
                     )
-                    for upd in updates:
-                        ar = ratings[upd.athlete_id]
-                        ar.mu = upd.mu_after
-                        # Stripped: σ stays at the floor.
-                        ar.sigma = cfg.sigma_floor
-                        if not res.dns:
-                            seen_athletes.add(upd.athlete_id)
-                    event_had_updates = bool(updates) or event_had_updates
+                updates = calculate_round_updates(
+                    athlete_results,
+                    ratings,
+                    event.tier,
+                    rnd.round_type,
+                    event.start_date,
+                    discipline=discipline,
+                    config=elo_config,
+                )
+                for upd in updates:
+                    ar = ratings[upd.athlete_id]
+                    ar.mu = upd.mu_after
+                    # Stripped: σ stays at the floor.
+                    ar.sigma = cfg.sigma_floor
+                    if not res.dns:
+                        seen_athletes.add(upd.athlete_id)
+                event_had_updates = bool(updates) or event_had_updates
 
-                if event_had_updates:
-                    # Increment n_events once per event (matches production).
-                    distinct = {
-                        r.athlete_id for rnd in rounds for r in rnd.results if not r.dns
-                    }
-                    for aid in distinct:
-                        if aid in ratings:
-                            ratings[aid].n_events += 1
-                            ratings[aid].last_event_at = event.start_date
-                            # Stripped: provisional doesn't matter (K mult = 1).
-                            ratings[aid].provisional = False
-        finally:
-            elo_mod.MARGIN_CAP = orig_margin_cap
-            elo_mod.SIGMA_FLOOR = orig_sigma_floor
-            elo_mod.SIGMA_CEILING = orig_sigma_ceiling
+            if event_had_updates:
+                # Increment n_events once per event (matches production).
+                distinct = {
+                    r.athlete_id for rnd in rounds for r in rnd.results if not r.dns
+                }
+                for aid in distinct:
+                    if aid in ratings:
+                        ratings[aid].n_events += 1
+                        ratings[aid].last_event_at = event.start_date
+                        # Stripped: provisional doesn't matter (K mult = 1).
+                        ratings[aid].provisional = False
 
         return ratings
 

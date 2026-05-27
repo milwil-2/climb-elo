@@ -2,8 +2,10 @@
 """Grid search to tune K-factor scaling and MARGIN_CAP.
 
 For each combination of hyperparameters:
-  1. Temporarily override the ELO module constants.
-  2. Clear ratings and run backfill on training events only.
+  1. Build a custom :class:`EloConfig` for the trial.
+  2. Clear ratings and run backfill on training events only (passing the
+     custom config via the new ``config=`` parameter on
+     :func:`calculate_round_updates` — Issue #83 Target 3).
   3. Evaluate podium hit-rate on holdout event finals.
 
 Prints all results sorted by ELO hit-rate, then outputs the best configuration.
@@ -12,21 +14,22 @@ NOTE
 ----
 Post-#51 (Glicko-2 RD integration) the ``PROVISIONAL_K_MULTIPLIER`` knob is
 retired — Glicko-2 handles cold start natively via high initial φ. A dedicated
-follow-up tracks a proper Glicko-2-era regrid sweep that also varies the
-GLICKO2_SIGMA_INACTIVITY / GLICKO2_TAU axes.
+follow-up (#80) tracks a proper Glicko-2-era regrid sweep that also varies the
+GLICKO2_SIGMA_INACTIVITY / GLICKO2_TAU axes; that sweep should be implemented
+against :class:`EloConfig` rather than monkey-patching module globals.
 """
 
-import copy
 import itertools
 import sys
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
 from sqlalchemy import delete, func, select
 
-import climbing_elo.engine.elo as elo_module
 from climbing_elo.database import init_db
 from climbing_elo.engine.backfill import run_backfill
+from climbing_elo.engine.elo import DEFAULT_CONFIG, EloConfig
 from climbing_elo.models import (
     Discipline,
     Event,
@@ -79,10 +82,20 @@ def scale_k_table(scale: float) -> dict:
     return scaled
 
 
+def build_config(k_scale: float, margin_cap: float) -> EloConfig:
+    """Build an :class:`EloConfig` for one grid-search trial."""
+    return replace(
+        DEFAULT_CONFIG,
+        margin_cap=margin_cap,
+        k_factor_table=scale_k_table(k_scale),
+    )
+
+
 def run_evaluation(
     session,
     holdout_events: list,
     cutoff_date: date,
+    config: EloConfig = DEFAULT_CONFIG,
 ) -> tuple[float, float]:
     """Run backfill on training data and evaluate holdout finals.
 
@@ -94,7 +107,7 @@ def run_evaluation(
     session.commit()
 
     # Run backfill on training only
-    run_backfill(session, Discipline.LEAD, end_date=cutoff_date)
+    run_backfill(session, Discipline.LEAD, end_date=cutoff_date, config=config)
 
     # Snapshot training-end ratings
     training_ratings: dict[int, float] = {}
@@ -208,14 +221,13 @@ def main() -> None:
         ):
             combo_num += 1
 
-            # Override module-level constants
-            elo_module.K_FACTOR_TABLE = scale_k_table(k_scale)
-            elo_module.MARGIN_CAP = margin_cap
+            # Build a custom EloConfig for this trial — no monkey-patching.
+            trial_config = build_config(k_scale, margin_cap)
             # prov_mult is a no-op post-#51; retained for log compat.
             _ = prov_mult
 
             elo_rate, baseline_rate = run_evaluation(
-                session, holdout_events, cutoff_date
+                session, holdout_events, cutoff_date, config=trial_config
             )
             delta = elo_rate - baseline_rate
 
@@ -238,9 +250,8 @@ def main() -> None:
                 f"Δ={delta:+.1f}pp [{status}]"
             )
 
-        # Restore defaults
-        elo_module.K_FACTOR_TABLE = copy.deepcopy(BASE_K_TABLE)
-        elo_module.MARGIN_CAP = 2.0
+        # No global state to restore — trials used per-trial EloConfig
+        # instances rather than monkey-patching module globals.
 
         # Sort by ELO hit-rate descending
         results_log.sort(key=lambda x: (-x["elo_rate"], -x["delta"]))
