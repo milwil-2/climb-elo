@@ -762,6 +762,83 @@ def scrape_upcoming_events(
     return report
 
 
+#: Top-level IFSC athlete profile fields we care about (Issue #86).
+#:
+#: ``photo_url``     — Hot-linked CDN URL. Most active athletes have one.
+#: ``height``        — Centimetres (integer or null).
+#: ``arm_span``      — Centimetres (integer or null).
+#: ``birthday``      — ``YYYY-MM-DD`` string or null. We only persist the year.
+#:
+#: IFSC has no ``weight_kg`` field — the column exists for future expansion but
+#: is left ``None`` here.
+def scrape_athlete_profile(
+    ifsc_athlete_id: int,
+    client: httpx.Client | None = None,
+) -> dict:
+    """Fetch one athlete's profile metadata from ``/api/v1/athletes/{id}``.
+
+    Returns a dict with any of the following keys (only present when the IFSC
+    API returns a non-null value):
+
+    - ``photo_url``      ``str``
+    - ``height_cm``      ``int``
+    - ``weight_kg``      ``int``  (always absent — IFSC does not publish weight)
+    - ``wingspan_cm``    ``int``
+    - ``year_of_birth``  ``int``
+
+    Returns ``{}`` on any failure (HTTP error, missing payload, non-dict
+    response) so the caller can blanket-update the row without special-casing.
+
+    Parameters
+    ----------
+    ifsc_athlete_id:
+        The IFSC ``athlete_id`` (e.g. ``13040`` for Sorato Anraku). This is
+        **not** our internal ``Athlete.id`` — callers must look up the IFSC ID
+        separately (typically via ``Result`` ingestion).
+    client:
+        Optional shared ``httpx.Client`` for connection reuse. When ``None``
+        a one-off client is created for this call.
+    """
+    own_client = client is None
+    if client is None:
+        client = httpx.Client(timeout=10)
+
+    try:
+        data = _api_get(client, f"/api/v1/athletes/{ifsc_athlete_id}")
+    finally:
+        if own_client:
+            client.close()
+
+    if not isinstance(data, dict):
+        return {}
+
+    out: dict = {}
+
+    photo_url = data.get("photo_url")
+    if isinstance(photo_url, str) and photo_url.strip():
+        out["photo_url"] = photo_url.strip()
+
+    height = data.get("height")
+    if isinstance(height, (int, float)) and height > 0:
+        out["height_cm"] = int(height)
+
+    arm_span = data.get("arm_span")
+    if isinstance(arm_span, (int, float)) and arm_span > 0:
+        out["wingspan_cm"] = int(arm_span)
+
+    # IFSC has no weight field; left absent so the caller doesn't overwrite
+    # any value sourced elsewhere.
+
+    birthday = data.get("birthday")
+    if isinstance(birthday, str) and len(birthday) >= 4:
+        try:
+            out["year_of_birth"] = int(birthday[:4])
+        except ValueError:
+            pass
+
+    return out
+
+
 def scrape_all_seasons(
     session: Session,
     min_year: int = 2006,

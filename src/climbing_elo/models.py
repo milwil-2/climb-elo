@@ -62,6 +62,14 @@ class Athlete(Base):
     gender: Mapped[Gender] = mapped_column(
         Enum(Gender, values_callable=_enum_values), nullable=False
     )
+    # Issue #86 — rich climber profile page.
+    # Photos are hot-linked from ifsc.results.info (Option A). Body metrics are
+    # populated only when IFSC publishes them; most rows remain NULL.
+    # See ``scripts/scrape_athlete_profiles.py`` for the (manual) refresh job.
+    photo_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    height_cm: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    weight_kg: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    wingspan_cm: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     results: Mapped[list[Result]] = relationship(back_populates="athlete")
     ratings: Mapped[list[Rating]] = relationship(back_populates="athlete")
