@@ -8,11 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from climbing_elo.engine.elo import (
+    DEFAULT_CONFIG,
     DEFAULT_MU,
     DEFAULT_SIGMA,
-    PROVISIONAL_THRESHOLD,
     AthleteRating,
     AthleteResult,
+    EloConfig,
     calculate_round_updates,
 )
 from climbing_elo.models import (
@@ -96,6 +97,7 @@ def run_backfill(
     discipline: Discipline = Discipline.LEAD,
     from_date: date | None = None,
     end_date: date | None = None,
+    config: EloConfig = DEFAULT_CONFIG,
 ) -> BackfillReport:
     """Run ELO backfill for all events in the given date range.
 
@@ -104,6 +106,10 @@ def run_backfill(
         discipline: Discipline to process.
         from_date: If set, only process events on or after this date.
         end_date: If set, only process events strictly before this date.
+        config: ELO engine configuration. Defaults to ``DEFAULT_CONFIG``;
+            pass a custom :class:`EloConfig` to run alternative K-factor /
+            MOV / Glicko-2 parameters (e.g. for #80 regrid sweeps) without
+            monkey-patching module globals.
     """
     report = BackfillReport()
 
@@ -166,6 +172,7 @@ def run_backfill(
                     rnd.round_type,
                     event.start_date,
                     discipline=discipline,
+                    config=config,
                 )
             except Exception as e:
                 msg = f"Error processing round {rnd.id} of event {event.id}: {e}"
@@ -250,7 +257,7 @@ def run_backfill(
                 if ar:
                     ar.n_events += 1
                     ar.last_event_at = event.start_date
-                    ar.provisional = ar.n_events < PROVISIONAL_THRESHOLD
+                    ar.provisional = ar.n_events < config.provisional_threshold
 
                     db_rating = session.execute(
                         select(Rating).where(

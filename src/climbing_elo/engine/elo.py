@@ -58,6 +58,7 @@ round) and are NOT zero-sum — Glicko-2 explicitly allows the round to
 
 from __future__ import annotations
 
+import copy
 import math
 import re
 from dataclasses import dataclass, field
@@ -66,84 +67,31 @@ from datetime import date
 from climbing_elo.models import Discipline, EventTier, RoundType
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants — initial / scalar defaults
 # ---------------------------------------------------------------------------
+#
+# These are the immutable defaults that seed :class:`EloConfig`. Top-level
+# constants like ``MARGIN_CAP``, ``MOV_RATING_SCALE``, ``K_FACTOR_TABLE`` are
+# kept further down as **back-compat re-exports** of ``DEFAULT_CONFIG`` fields;
+# new code should accept ``config: EloConfig`` and read from it instead of
+# importing the bare constants. The re-exports are pinned at import time and
+# are NOT a live view onto the active config — mutating them no longer changes
+# engine behaviour (see Issue #83 Target 3).
 
 DEFAULT_MU = 1500.0
 DEFAULT_SIGMA = 350.0  # display-scale RD for fresh athletes (high uncertainty)
-PROVISIONAL_THRESHOLD = (
-    3  # kept for UI badge only — Glicko-2 handles cold start via high φ
-)
 
 # Glicko-2 system constants (Glickman 2013).
 GLICKO2_SCALE = 173.7178  # display-scale ↔ internal-scale conversion
-GLICKO2_TAU = 0.5  # τ — recommended range [0.3, 1.2]; 0.5 is a moderate default
 GLICKO2_DEFAULT_VOLATILITY = 0.06  # σ in Glicko-2 internal units (held fixed)
-
-# Inactivity inflation: how fast φ grows during a competitive sabbatical.
-# Tuned so that an athlete at φ=0.5 (RD≈87, well-established) who skips
-# 12 months has their φ inflate to ~0.85 (RD≈148). That re-opens the
-# rating to evidence at roughly the same magnitude as the legacy 18-month
-# half-life decay did — but it now actually *acts* on the update.
-GLICKO2_SIGMA_INACTIVITY = 5.0
 GLICKO2_INACTIVITY_GRACE_DAYS = 30  # no inflation for activity gaps < 30 days
 GLICKO2_DAYS_PER_MONTH = 30.0
 
-SIGMA_FLOOR = 50.0  # display-scale RD floor (≈ φ=0.29; established athlete)
-SIGMA_CEILING = 350.0  # display-scale RD ceiling (≈ φ=2.01; cold start)
-PHI_FLOOR = SIGMA_FLOOR / GLICKO2_SCALE
-PHI_CEILING = SIGMA_CEILING / GLICKO2_SCALE
-
-MARGIN_CAP = 1.5  # MOV cap, retained from prior tuning
-
-# ---------------------------------------------------------------------------
-# Gap-conditioned MOV (Issue #53, 538-style)
-# ---------------------------------------------------------------------------
-#
-# The base MOV multiplier ``min(1 + gap/max_gap, MARGIN_CAP)`` is unconditioned
-# on the rating gap — an elite crushing a junior earns the same MOV bonus as
-# an elite crushing a peer. 538's NFL/NBA experience and Kovalchik (2020) on
-# ATP tennis both show this drives autocorrelation drift at the top.
-#
-# Fix: damp the MOV bonus when the *favourite* wins by Δμ:
-#   multiplier = base · MOV_SOFTENING / (max(Δμ, 0)/MOV_RATING_SCALE + MOV_SOFTENING)
-#
-# Asymmetric on purpose — an upset (Δμ < 0, underdog wins) keeps the full MOV
-# bonus, since a big-margin upset is genuinely high-information.
-#
-# Constants:
-# * ``MOV_RATING_SCALE = 400.0`` — chosen for the current production μ regime
-#   (top ≈ 2250, mean ≈ 1500, so Δμ in pairwise contests spans 0–750). At
-#   Δμ=400 the damping factor is 2.2/3.2 ≈ 0.69 (31% reduction); at Δμ=800
-#   it's 2.2/4.2 ≈ 0.52 (48% reduction). Matches 538's intent of "big bonuses
-#   for peer matchups, shrink for mismatches".  Grid-search refinement is a
-#   follow-up (#80 K-regrid pairs naturally with this).
-# * ``MOV_SOFTENING = 2.2`` — 538 default. Controls how fast the damping
-#   kicks in.  Lower → harsher damping; higher → milder.
-MOV_RATING_SCALE = 400.0
-MOV_SOFTENING = 2.2
-
-
-def _gap_conditioning_factor(rating_gap: float) -> float:
-    """538-style asymmetric damping factor for the MOV multiplier.
-
-    ``factor = MOV_SOFTENING / (max(rating_gap, 0)/MOV_RATING_SCALE + MOV_SOFTENING)``
-
-    Returns 1.0 when ``rating_gap <= 0`` (upset side — full MOV bonus retained)
-    and shrinks toward 0 as the favourite's rating advantage grows.
-    """
-    positive_gap = max(rating_gap, 0.0)
-    return MOV_SOFTENING / (positive_gap / MOV_RATING_SCALE + MOV_SOFTENING)
-
-
-# Speed-specific margin: max meaningful time gap in seconds.
-SPEED_MAX_GAP_SECONDS = 2.0
-
-# K-factor table. Halved from prior production values as a conservative
-# starting point — under variable effective-K each round will *average* close
-# to these numbers but vary by opponent-φ. A proper regrid sweep is filed as
-# a #51 follow-up issue.
-K_FACTOR_TABLE: dict[EventTier, dict[RoundType, float]] = {
+# Default K-factor table. Halved from prior production values as a
+# conservative starting point — under variable effective-K each round will
+# *average* close to these numbers but vary by opponent-φ. A proper regrid
+# sweep is filed as a #51 follow-up issue (#80).
+_DEFAULT_K_FACTORS: dict[EventTier, dict[RoundType, float]] = {
     EventTier.OLYMPICS: {
         RoundType.FINAL: 48.0,
         RoundType.SEMI: 36.0,
@@ -165,6 +113,157 @@ K_FACTOR_TABLE: dict[EventTier, dict[RoundType, float]] = {
         RoundType.QUALIFICATION: 9.0,
     },
 }
+
+
+def _default_k_factors() -> dict[EventTier, dict[RoundType, float]]:
+    """Return a deep copy of the default K-factor table.
+
+    Used as the ``default_factory`` for :class:`EloConfig` so each config
+    gets its own nested-dict instance and callers can mutate without
+    accidentally aliasing the module-level default.
+    """
+    return copy.deepcopy(_DEFAULT_K_FACTORS)
+
+
+# ---------------------------------------------------------------------------
+# EloConfig — single source of truth for tunable engine knobs (Issue #83 T3)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EloConfig:
+    """Immutable bag of all tunable knobs read by the ELO engine.
+
+    Pass a custom instance to :func:`calculate_round_updates` (and friends)
+    to run with alternative parameters — e.g. for K-factor regrid sweeps
+    (#80) — without monkey-patching module globals.
+
+    Fields
+    ------
+
+    Cold-start
+        * ``provisional_threshold`` — n_events below which an athlete is
+          flagged ``provisional`` for UI badge purposes only (Glicko-2
+          handles the cold-start update magnitude via high φ).
+
+    Margin-of-victory
+        * ``margin_cap`` — ceiling on the base MOV multiplier
+          ``min(1 + gap/max_gap, margin_cap)``.
+        * ``boulder_margin_max_gap`` — denominator for Boulder MOV.
+        * ``speed_max_gap_seconds`` — denominator for Speed MOV (lower-is-
+          better times).
+
+    Glicko-2 (Issue #51)
+        * ``glicko2_sigma_inactivity`` — Wiener-process σ that drives φ
+          inflation during competitive sabbaticals (display scale).
+        * ``glicko2_tau`` — system constant τ, recommended [0.3, 1.2];
+          0.5 is a moderate default. Currently unused by the simplified
+          closed-form φ update; reserved for the full volatility-σ refit.
+
+    σ clamping
+        * ``sigma_floor`` — display-scale RD floor (≈ φ=0.29; established
+          athlete).
+        * ``sigma_ceiling`` — display-scale RD ceiling (≈ φ=2.01; cold
+          start).
+
+    MOV gap-conditioning (Issue #53, 538-style)
+        * ``mov_rating_scale`` — Δμ at which the damping factor becomes
+          ``softening / (1 + softening)``.
+        * ``mov_softening`` — controls how fast damping kicks in; lower
+          values damp harsher.
+
+    K-factor table
+        * ``k_factor_table`` — nested dict
+          ``{EventTier: {RoundType: float}}``. Defaults to a fresh deep
+          copy of ``_DEFAULT_K_FACTORS``.
+    """
+
+    # Cold-start
+    provisional_threshold: int = 3
+
+    # Margin-of-victory
+    margin_cap: float = 1.5
+    boulder_margin_max_gap: float = 1000.0
+    speed_max_gap_seconds: float = 2.0
+
+    # Glicko-2
+    glicko2_sigma_inactivity: float = 5.0
+    glicko2_tau: float = 0.5
+
+    # σ clamping (display scale)
+    sigma_floor: float = 50.0
+    sigma_ceiling: float = 350.0
+
+    # MOV gap-conditioning (Issue #53)
+    mov_rating_scale: float = 400.0
+    mov_softening: float = 2.2
+
+    # K-factor table
+    k_factor_table: dict[EventTier, dict[RoundType, float]] = field(
+        default_factory=_default_k_factors
+    )
+
+
+DEFAULT_CONFIG = EloConfig()
+
+
+# ---------------------------------------------------------------------------
+# Back-compat re-exports (Issue #83 Target 3)
+# ---------------------------------------------------------------------------
+#
+# These exist so callers doing ``from climbing_elo.engine.elo import
+# MARGIN_CAP`` keep working. New code should accept ``config: EloConfig`` and
+# read fields from there. These constants are **pinned at import time** — they
+# are not a live view onto an active config. Mutating them does NOT change
+# engine behaviour any more (post-#83 Target 3). See ``EloConfig`` docstring.
+
+PROVISIONAL_THRESHOLD = DEFAULT_CONFIG.provisional_threshold
+MARGIN_CAP = DEFAULT_CONFIG.margin_cap
+BOULDER_MARGIN_MAX_GAP = DEFAULT_CONFIG.boulder_margin_max_gap
+SPEED_MAX_GAP_SECONDS = DEFAULT_CONFIG.speed_max_gap_seconds
+GLICKO2_SIGMA_INACTIVITY = DEFAULT_CONFIG.glicko2_sigma_inactivity
+GLICKO2_TAU = DEFAULT_CONFIG.glicko2_tau
+SIGMA_FLOOR = DEFAULT_CONFIG.sigma_floor
+SIGMA_CEILING = DEFAULT_CONFIG.sigma_ceiling
+MOV_RATING_SCALE = DEFAULT_CONFIG.mov_rating_scale
+MOV_SOFTENING = DEFAULT_CONFIG.mov_softening
+K_FACTOR_TABLE = DEFAULT_CONFIG.k_factor_table
+
+PHI_FLOOR = SIGMA_FLOOR / GLICKO2_SCALE
+PHI_CEILING = SIGMA_CEILING / GLICKO2_SCALE
+
+
+# ---------------------------------------------------------------------------
+# Gap-conditioned MOV (Issue #53, 538-style)
+# ---------------------------------------------------------------------------
+#
+# The base MOV multiplier ``min(1 + gap/max_gap, MARGIN_CAP)`` is unconditioned
+# on the rating gap — an elite crushing a junior earns the same MOV bonus as
+# an elite crushing a peer. 538's NFL/NBA experience and Kovalchik (2020) on
+# ATP tennis both show this drives autocorrelation drift at the top.
+#
+# Fix: damp the MOV bonus when the *favourite* wins by Δμ:
+#   multiplier = base · MOV_SOFTENING / (max(Δμ, 0)/MOV_RATING_SCALE + MOV_SOFTENING)
+#
+# Asymmetric on purpose — an upset (Δμ < 0, underdog wins) keeps the full MOV
+# bonus, since a big-margin upset is genuinely high-information.
+
+
+def _gap_conditioning_factor(
+    rating_gap: float, config: EloConfig = DEFAULT_CONFIG
+) -> float:
+    """538-style asymmetric damping factor for the MOV multiplier.
+
+    ``factor = softening / (max(rating_gap, 0)/rating_scale + softening)``
+
+    Returns 1.0 when ``rating_gap <= 0`` (upset side — full MOV bonus retained)
+    and shrinks toward 0 as the favourite's rating advantage grows. Reads
+    ``mov_softening`` and ``mov_rating_scale`` from *config*.
+    """
+    positive_gap = max(rating_gap, 0.0)
+    return config.mov_softening / (
+        positive_gap / config.mov_rating_scale + config.mov_softening
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -247,19 +346,22 @@ def glicko2_inflate_phi(
     sigma_display: float,
     last_event_at: date | None,
     current_date: date,
+    config: EloConfig = DEFAULT_CONFIG,
 ) -> float:
     """Inflate φ for inactivity per Glicko-2's Wiener-process model.
 
     Calendar-time semantics — months since last event (decision 1 in module
-    docstring). Returns the new display-scale RD, clamped at SIGMA_CEILING.
+    docstring). Returns the new display-scale RD, clamped at
+    ``config.sigma_ceiling``.
 
     Formula (internal units, then converted back):
         φ_new² = φ_old² + σ_inactivity² · months_inactive
 
-    where ``σ_inactivity = GLICKO2_SIGMA_INACTIVITY`` is on the internal
-    scale (≈ 0.029 RD-units per √month). With the chosen value of 5.0 (display
-    scale), a 12-month gap inflates a φ=0.5 athlete (RD≈87) to φ≈0.85 (RD≈148);
-    a fresh athlete at φ=2.014 (RD=350) stays clamped at the ceiling.
+    where ``σ_inactivity = config.glicko2_sigma_inactivity`` is on the internal
+    scale (≈ 0.029 RD-units per √month). With the default value of 5.0
+    (display scale), a 12-month gap inflates a φ=0.5 athlete (RD≈87) to φ≈0.85
+    (RD≈148); a fresh athlete at φ=2.014 (RD=350) stays clamped at the
+    ceiling.
     """
     if last_event_at is None or current_date <= last_event_at:
         return sigma_display
@@ -267,11 +369,12 @@ def glicko2_inflate_phi(
     if days_inactive <= GLICKO2_INACTIVITY_GRACE_DAYS:
         return sigma_display
     months_inactive = days_inactive / GLICKO2_DAYS_PER_MONTH
+    sigma_inactivity = config.glicko2_sigma_inactivity
     sigma_new = math.sqrt(
         sigma_display * sigma_display
-        + GLICKO2_SIGMA_INACTIVITY * GLICKO2_SIGMA_INACTIVITY * months_inactive
+        + sigma_inactivity * sigma_inactivity * months_inactive
     )
-    return min(sigma_new, SIGMA_CEILING)
+    return min(sigma_new, config.sigma_ceiling)
 
 
 # ---------------------------------------------------------------------------
@@ -294,8 +397,18 @@ def expected_score(mu_a: float, mu_b: float) -> float:
 # ---------------------------------------------------------------------------
 
 
-def get_k_factor(tier: EventTier, round_type: RoundType) -> float:
-    return K_FACTOR_TABLE[tier][round_type]
+def get_k_factor(
+    tier: EventTier,
+    round_type: RoundType,
+    config: EloConfig = DEFAULT_CONFIG,
+) -> float:
+    """Look up the base K-factor for a (tier, round) pair.
+
+    Reads ``config.k_factor_table``; pass a custom :class:`EloConfig` to swap
+    in an alternative K-factor schedule (e.g. for #80 regrid sweeps) without
+    monkey-patching module globals.
+    """
+    return config.k_factor_table[tier][round_type]
 
 
 def compute_margin_multiplier(
@@ -303,6 +416,7 @@ def compute_margin_multiplier(
     score_b: float | None,
     max_gap: float = 20.0,
     rating_gap: float = 0.0,
+    config: EloConfig = DEFAULT_CONFIG,
 ) -> float:
     """Lead-style margin multiplier with optional 538-style gap conditioning.
 
@@ -312,17 +426,16 @@ def compute_margin_multiplier(
     wins, the bonus is damped per :func:`_gap_conditioning_factor`. Upsets
     (rating_gap < 0) keep the full bonus.
 
-    Note: the MARGIN_CAP ceiling is enforced on the *base* multiplier; the
-    conditioning factor can only shrink it further, never above the cap.
+    Note: the ``config.margin_cap`` ceiling is enforced on the *base*
+    multiplier; the conditioning factor can only shrink it further, never
+    above the cap.
     """
     if score_a is None or score_b is None:
         return 1.0
     gap = abs(score_a - score_b)
-    base = min(1.0 + gap / max_gap, MARGIN_CAP)
-    return base * _gap_conditioning_factor(rating_gap)
+    base = min(1.0 + gap / max_gap, config.margin_cap)
+    return base * _gap_conditioning_factor(rating_gap, config)
 
-
-BOULDER_MARGIN_MAX_GAP = 1000.0
 
 # Regex for the old-format ordinal Boulder score: e.g. "1T2z 3 4" or "2T2 3B4"
 _OLD_BOULDER_RE = re.compile(
@@ -377,10 +490,18 @@ def compute_boulder_margin_multiplier(
     score_a: float | None,
     score_b: float | None,
     rating_gap: float = 0.0,
+    config: EloConfig = DEFAULT_CONFIG,
 ) -> float:
-    """Margin multiplier for Boulder discipline (538-style gap-conditioned)."""
+    """Margin multiplier for Boulder discipline (538-style gap-conditioned).
+
+    Reads ``boulder_margin_max_gap`` from *config*.
+    """
     return compute_margin_multiplier(
-        score_a, score_b, max_gap=BOULDER_MARGIN_MAX_GAP, rating_gap=rating_gap
+        score_a,
+        score_b,
+        max_gap=config.boulder_margin_max_gap,
+        rating_gap=rating_gap,
+        config=config,
     )
 
 
@@ -388,17 +509,19 @@ def compute_speed_margin_multiplier(
     winner_time: float | None,
     loser_time: float | None,
     rating_gap: float = 0.0,
+    config: EloConfig = DEFAULT_CONFIG,
 ) -> float:
     """Margin multiplier for Speed discipline (times in seconds, lower is better).
 
     Gap-conditioned in the same fashion as Lead/Boulder — favourite wins get
     damped, upsets keep the full bonus. See :func:`compute_margin_multiplier`.
+    Reads ``speed_max_gap_seconds`` and ``margin_cap`` from *config*.
     """
     if winner_time is None or loser_time is None:
         return 1.0
     gap = abs(loser_time - winner_time)
-    base = min(1.0 + gap / SPEED_MAX_GAP_SECONDS, MARGIN_CAP)
-    return base * _gap_conditioning_factor(rating_gap)
+    base = min(1.0 + gap / config.speed_max_gap_seconds, config.margin_cap)
+    return base * _gap_conditioning_factor(rating_gap, config)
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +536,7 @@ def calculate_round_updates(
     round_type: RoundType,
     event_date: date,
     discipline: Discipline = Discipline.LEAD,
+    config: EloConfig = DEFAULT_CONFIG,
 ) -> list[RatingUpdate]:
     """Compute per-athlete μ and φ updates for one round.
 
@@ -455,14 +579,14 @@ def calculate_round_updates(
     if len(active) < 2:
         return []
 
-    base_k = get_k_factor(event_tier, round_type)
+    base_k = get_k_factor(event_tier, round_type, config)
 
     # 1) Inflate φ for inactivity, store the inflated display-scale RDs.
     sigma_inflated: dict[int, float] = {}
     for res in active:
         rating = ratings.get(res.athlete_id, AthleteRating(athlete_id=res.athlete_id))
         sigma_inflated[res.athlete_id] = glicko2_inflate_phi(
-            rating.sigma, rating.last_event_at, event_date
+            rating.sigma, rating.last_event_at, event_date, config
         )
 
     deltas: dict[int, float] = {r.athlete_id: 0.0 for r in active}
@@ -512,18 +636,21 @@ def calculate_round_updates(
                     res_i.score_normalized,
                     res_j.score_normalized,
                     rating_gap=rating_gap,
+                    config=config,
                 )
             elif discipline == Discipline.BOULDER:
                 margin_mult = compute_boulder_margin_multiplier(
                     res_i.score_normalized,
                     res_j.score_normalized,
                     rating_gap=rating_gap,
+                    config=config,
                 )
             else:
                 margin_mult = compute_margin_multiplier(
                     res_i.score_normalized,
                     res_j.score_normalized,
                     rating_gap=rating_gap,
+                    config=config,
                 )
 
             # K_eff weights this pair by the opponent's certainty (g(φ_opp))
@@ -585,8 +712,11 @@ def calculate_round_updates(
         inv_phi_sq_new = 1.0 / (phi_internal * phi_internal) + v_inv
         phi_new = 1.0 / math.sqrt(inv_phi_sq_new)
         sigma_after_display = phi_new * GLICKO2_SCALE
-        # Clamp to display-scale floor/ceiling.
-        sigma_after = max(SIGMA_FLOOR, min(SIGMA_CEILING, sigma_after_display))
+        # Clamp to display-scale floor/ceiling (read from config so callers
+        # can ablate σ decay by setting floor == ceiling == DEFAULT_SIGMA).
+        sigma_after = max(
+            config.sigma_floor, min(config.sigma_ceiling, sigma_after_display)
+        )
 
         mu_after = mu_before + deltas[aid]
 
