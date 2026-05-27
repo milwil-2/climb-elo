@@ -143,6 +143,25 @@ Six SQLAlchemy models in `models.py`: Athlete → Event → Round → Result (co
 
 `Event.livestream_url` (added in #23) holds an optional YouTube URL for the live broadcast. Strictly validated against a `youtube.com` / `youtu.be` allowlist in `src/climbing_elo/live/livestream.py` before being rendered into a sandboxed iframe on `/live/{event_id}`. Populated manually per event — the IFSC API does not expose stream URLs.
 
+`Athlete.retired_at` (added 2026-05-26 in #91) is a nullable manual override for the dual-view leaderboard. See "Activity classification" below.
+
+### Activity classification
+
+Glicko-2's σ inflates during inactivity but μ does not decay, so 5-year-absent athletes used to sit on the leaderboard at their last μ. Issue #91 (Gap 2 from #88) introduces a query-layer fix — no re-backfill required.
+
+- **`Athlete.retired_at` (nullable DATE)** — manual override. Non-NULL ⇒ the athlete is unconditionally hidden from the `all` and `active` view filters of the All-time leaderboard. No automated source today; populated case-by-case from news / social signals.
+- **Pure-function classifier** `engine.activity.is_likely_retired_simple(last_event_at, retired_at, today=None, threshold_years=3.0) → bool`:
+  1. `retired_at` set → `True` (manual wins).
+  2. `last_event_at is None` → `False` (never-competed athletes aren't "retired" — different problem).
+  3. `(today - last_event_at) >= threshold_years` → `True`.
+  Module constants: `INACTIVE_THRESHOLD_MONTHS = 12` (for `active` view), `RETIRED_THRESHOLD_YEARS = 3.0` (for the heuristic).
+- **Three view modes** on `/leaderboard` (HTML) and `GET /api/v1/leaderboard?view=…`:
+  - `active` (**default since 2026-05-26**) — `WHERE last_event_at >= today − 12 months`.
+  - `all` — smart all-time list, `WHERE retired_at IS NULL AND (last_event_at IS NULL OR last_event_at >= today − 3 years)`.
+  - `legacy` — debug-only; no activity filter (the pre-#91 behaviour).
+- **Breaking change**: `GET /api/v1/leaderboard` default flipped from `legacy` → `active` on 2026-05-26 (#91). Pass `view=all` for the smart all-time list, `view=legacy` for the pre-#91 behaviour. The HTML route's default also flipped; invalid `view` values fall back to `active` (forgiving) on the HTML route, but yield a 422 on the API.
+- **Out of scope** (file follow-ups): age-aware refinement gated on `year_of_birth` coverage (waiting on #86), retirement-year tooltip, news-scraper to auto-populate `retired_at`, per-discipline thresholds (boulder peak is younger than lead).
+
 ## ELO Engine Specifics
 
 Glicko-2 RD–weighted ELO with 538-style gap-conditioned margin-of-victory. K-factor table tiered by EventTier × RoundType (Olympics Final = 48, World Cup Final = 32 — halved post-#51 as a conservative starting point for the Glicko-2 effective-K regime). Per-round effective K is `K_base · g(φ_opponent) · margin_mult`, so opponents with high uncertainty (cold start, post-sabbatical) contribute less. The legacy 2× provisional-K cliff is gone — cold start is now driven by Glicko-2's large initial φ (σ=350) and the closed-form φ shrinkage. σ decays during inactivity via Glicko-2's Wiener-process formula (`σ_inactivity=5.0`, 30-day grace), clamped to [50, 350]. MARGIN_CAP=1.5 remains as a backstop on the base multiplier; the new gap-conditioning (#53) damps favourite-side bonuses asymmetrically — `mult = base · 2.2/(max(Δμ,0)/400 + 2.2)` — so an elite crushing a junior earns less than a peer crushing a peer, while upsets keep the full bonus. Score normalization unchanged: Lead `"34+"`→34.5, `"TOP"`→999.0; Boulder `tops*1000 + zones*100 - top_att*10 - zone_att` (max_gap=1000) for pre-2025 events, decimal pass-through for 2025+ events; Speed in seconds (max_gap=2.0).
@@ -204,7 +223,7 @@ Interactive docs: `http://localhost:8000/docs` — OpenAPI schema: `/openapi.jso
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/disciplines` | List supported disciplines and codes |
-| GET | `/api/v1/leaderboard` | Paginated ELO rankings. Query: `discipline`, `gender`, `limit` (1–100), `offset` (0–10000) |
+| GET | `/api/v1/leaderboard` | Paginated ELO rankings. Query: `discipline`, `gender`, `view` (`active`/`all`/`legacy`, default `active` since 2026-05-26 — #91), `limit` (1–100), `offset` (0–10000) |
 | GET | `/api/v1/athletes/{id}` | Athlete profile with all discipline ratings and 20 most recent events |
 | GET | `/api/v1/athletes/{id}/history` | Rating-over-time history for charts. Query: `discipline` |
 | GET | `/api/v1/athletes/{id}/combined` | Athlete's combined (BOULDER_LEAD) rating plus boulder/lead breakdown. 404 if no combined rating |

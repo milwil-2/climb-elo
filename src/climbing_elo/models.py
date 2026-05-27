@@ -70,6 +70,10 @@ class Athlete(Base):
     height_cm: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     weight_kg: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     wingspan_cm: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Issue #91 — dual-view leaderboard. Manual override; when non-NULL,
+    # ``engine.activity.is_likely_retired_simple`` returns True regardless
+    # of ``last_event_at``. NULL by default; populated case-by-case.
+    retired_at: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
 
     results: Mapped[list[Result]] = relationship(back_populates="athlete")
     ratings: Mapped[list[Rating]] = relationship(back_populates="athlete")

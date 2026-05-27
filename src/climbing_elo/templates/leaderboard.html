@@ -33,6 +33,33 @@
     font-size:11px;color:var(--dim);letter-spacing:0.08em;
   }
   .summary-bar b{color:var(--ink);font-family:'Manrope',sans-serif;font-size:13px;font-weight:600;letter-spacing:0;margin-left:6px}
+
+  /* Active/All-time view toggle (#91). Uses the same pill-row primitive as
+     the discipline filter, kept visually distinct via a leading label. */
+  .view-toggle{display:flex;align-items:center;gap:10px;margin-top:10px}
+  .view-toggle .label{
+    font-size:10.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);
+  }
+  .view-toggle a{
+    padding:5px 12px;border-radius:0;border:1px solid var(--line-2);
+    font-size:12px;font-weight:500;letter-spacing:0.04em;text-decoration:none;
+    color:var(--ink-2);background:var(--paper);transition:all .15s;
+  }
+  .view-toggle a + a{margin-left:-1px}
+  .view-toggle a:hover{color:var(--ink);border-color:var(--ink-2)}
+  .view-toggle a.active{
+    background:var(--ink);color:var(--paper);border-color:var(--ink);
+  }
+
+  /* Activity badge ("Active" / "Inactive Xmo") rendered only in All-time
+     view next to each athlete name. */
+  .activity-badge{
+    display:inline-block;margin-left:8px;padding:1px 6px;
+    font-size:10px;letter-spacing:0.06em;text-transform:uppercase;
+    border:1px solid var(--line);border-radius:0;color:var(--dim);
+    vertical-align:middle;font-weight:500;
+  }
+  .activity-badge.is-active{color:var(--ink-2);border-color:var(--line-2)}
 </style>
 {% endblock %}
 
@@ -55,21 +82,29 @@
         <input type="text" id="lb-search" placeholder="Search by name or country code (e.g. JPN)" />
       </div>
       <div class="filters" style="margin:0">
-        <a href="/leaderboard?disc=B&gender={{ gender }}" class="pill{% if disc == 'B' %} active{% endif %}">Boulder</a>
-        <a href="/leaderboard?disc=L&gender={{ gender }}" class="pill{% if disc == 'L' %} active{% endif %}">Lead</a>
-        <a href="/leaderboard?disc=S&gender={{ gender }}" class="pill{% if disc == 'S' %} active{% endif %}">Speed</a>
-        <a href="/leaderboard?disc=BL&gender={{ gender }}" class="pill{% if disc == 'BL' %} active{% endif %}">Boulder + Lead</a>
+        <a href="/leaderboard?disc=B&gender={{ gender }}&view={{ view }}" class="pill{% if disc == 'B' %} active{% endif %}">Boulder</a>
+        <a href="/leaderboard?disc=L&gender={{ gender }}&view={{ view }}" class="pill{% if disc == 'L' %} active{% endif %}">Lead</a>
+        <a href="/leaderboard?disc=S&gender={{ gender }}&view={{ view }}" class="pill{% if disc == 'S' %} active{% endif %}">Speed</a>
+        <a href="/leaderboard?disc=BL&gender={{ gender }}&view={{ view }}" class="pill{% if disc == 'BL' %} active{% endif %}">Boulder + Lead</a>
       </div>
       <div class="toggle" style="display:flex;border:1px solid var(--line-2);border-radius:999px;padding:3px;background:var(--paper-2)">
-        <a href="/leaderboard?disc={{ disc }}&gender=M"
+        <a href="/leaderboard?disc={{ disc }}&gender=M&view={{ view }}"
            style="padding:6px 14px;border-radius:999px;font-size:12.5px;font-weight:500;text-decoration:none;
              background:{% if gender == 'M' %}var(--paper){% else %}transparent{% endif %};
              color:{% if gender == 'M' %}var(--ink){% else %}var(--ink-2){% endif %}">Men</a>
-        <a href="/leaderboard?disc={{ disc }}&gender=F"
+        <a href="/leaderboard?disc={{ disc }}&gender=F&view={{ view }}"
            style="padding:6px 14px;border-radius:999px;font-size:12.5px;font-weight:500;text-decoration:none;
              background:{% if gender == 'F' %}var(--paper){% else %}transparent{% endif %};
              color:{% if gender == 'F' %}var(--ink){% else %}var(--ink-2){% endif %}">Women</a>
       </div>
+    </div>
+
+    <div class="view-toggle reveal">
+      <span class="label">View</span>
+      <a href="/leaderboard?disc={{ disc }}&gender={{ gender }}&view=active"
+         class="{% if view == 'active' %}active{% endif %}">Active</a>
+      <a href="/leaderboard?disc={{ disc }}&gender={{ gender }}&view=all"
+         class="{% if view == 'all' %}active{% endif %}">All-time</a>
     </div>
 
     <div class="card reveal d2">
@@ -89,6 +124,9 @@
             <td class="athlete">
               {{ row.name }}
               <span class="nat">{{ row.nationality }}</span>
+              {%- if view == 'all' and row.activity_label -%}
+              <span class="activity-badge{% if row.activity_label == 'Active' %} is-active{% endif %}">{{ row.activity_label }}</span>
+              {%- endif -%}
             </td>
             <td class="disc num" style="font-size:12.5px">{{ row.year_of_birth or '—' }}</td>
             <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
