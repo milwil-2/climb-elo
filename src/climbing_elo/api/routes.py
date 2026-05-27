@@ -1467,6 +1467,7 @@ async def v2_breakdown(request: Request, athlete_id: int, event_id: int):
                 .where(
                     RatingHistory.athlete_id == athlete_id,
                     RatingHistory.event_id == event_id,
+                    RatingHistory.kind == "pair",
                 )
                 .order_by(Round.round_type)
             ).all()
@@ -1510,6 +1511,28 @@ async def v2_breakdown(request: Request, athlete_id: int, event_id: int):
                 }
             )
 
+        # Issue #90: load any Tournament Participation Bonus row for this
+        # athlete + event and surface it as a separate breakdown section.
+        tpb_row = session.execute(
+            select(RatingHistory).where(
+                RatingHistory.athlete_id == athlete_id,
+                RatingHistory.event_id == event_id,
+                RatingHistory.kind == "tpb",
+            )
+        ).scalar_one_or_none()
+        tpb_section = None
+        if tpb_row is not None:
+            payload = tpb_row.contributing_pairs or {}
+            tpb_section = {
+                "mu_before": round(tpb_row.mu_before, 1),
+                "mu_after": round(tpb_row.mu_after, 1),
+                "delta": round(tpb_row.mu_after - tpb_row.mu_before, 1),
+                "rank": payload.get("rank"),
+                "gross_bonus": round(payload.get("gross_bonus", 0.0), 2),
+                "debit": round(payload.get("debit", 0.0), 2),
+                "tier": payload.get("tier", "").replace("_", " ").title(),
+            }
+
         ticker = _ticker_context(session)
 
     ctx = {
@@ -1520,6 +1543,7 @@ async def v2_breakdown(request: Request, athlete_id: int, event_id: int):
             "season": event.season,
         },
         "rounds": rounds_breakdown,
+        "tpb": tpb_section,
         **ticker,
         **_nav_context("events"),
     }

@@ -215,17 +215,19 @@ class TestBackfillIdempotency:
         inspector = sa_inspect(engine)
         unique_constraints = inspector.get_unique_constraints("rating_history")
         constraint_names = [c["name"] for c in unique_constraints]
-        assert "uq_rating_history_athlete_round" in constraint_names, (
-            f"uq_rating_history_athlete_round not found in: {constraint_names}"
+        assert "uq_rating_history_athlete_round_kind" in constraint_names, (
+            f"uq_rating_history_athlete_round_kind not found in: {constraint_names}"
         )
 
-        # The count from the first run should be 3 (one per athlete × 1 round)
-        assert count_after_first == 3, (
-            f"Expected 3 RatingHistory rows after first backfill, got {count_after_first}"
+        # Per athlete: 1 pair row (final round) + 1 tpb row (event-level
+        # bonus, also keyed to the final round). 3 athletes × 2 rows = 6.
+        assert count_after_first == 6, (
+            f"Expected 6 RatingHistory rows (3 pair + 3 tpb) after first backfill, "
+            f"got {count_after_first}"
         )
 
     def test_rating_history_unique_constraint_present(self):
-        """The UNIQUE(athlete_id, round_id) constraint exists on the rating_history table."""
+        """The UNIQUE(athlete_id, round_id, kind) constraint exists on the rating_history table."""
         from sqlalchemy import inspect as sa_inspect
 
         session = _make_session()
@@ -233,8 +235,8 @@ class TestBackfillIdempotency:
         inspector = sa_inspect(engine)
         unique_constraints = inspector.get_unique_constraints("rating_history")
         constraint_names = [c["name"] for c in unique_constraints]
-        assert "uq_rating_history_athlete_round" in constraint_names, (
-            f"uq_rating_history_athlete_round missing; found: {constraint_names}"
+        assert "uq_rating_history_athlete_round_kind" in constraint_names, (
+            f"uq_rating_history_athlete_round_kind missing; found: {constraint_names}"
         )
 
     def test_event_unique_constraint_present(self):

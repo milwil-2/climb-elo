@@ -15,6 +15,7 @@ from climbing_elo.engine.elo import (
     AthleteResult,
     EloConfig,
     calculate_round_updates,
+    compute_tournament_participation_bonus,
 )
 from climbing_elo.models import (
     Discipline,
@@ -22,6 +23,7 @@ from climbing_elo.models import (
     Rating,
     RatingHistory,
     Result,
+    Round,
     RoundType,
 )
 
@@ -142,8 +144,16 @@ def run_backfill(
             # Idempotency guard: skip rounds that have already been rated.
             # On Postgres the ON CONFLICT DO NOTHING handles duplicates; on
             # SQLite (tests) we detect them here to avoid IntegrityError.
+            # We only check ``kind='pair'`` rows — TPB rows (one per FINAL
+            # round) are layered on after all rounds are processed; they
+            # must not block a partially-rated event from being completed.
             already_rated = session.execute(
-                select(RatingHistory).where(RatingHistory.round_id == rnd.id).limit(1)
+                select(RatingHistory)
+                .where(
+                    RatingHistory.round_id == rnd.id,
+                    RatingHistory.kind == "pair",
+                )
+                .limit(1)
             ).scalar_one_or_none()
             if already_rated is not None:
                 log.debug("Round %d already rated, skipping", rnd.id)
@@ -219,9 +229,10 @@ def run_backfill(
                             sigma_before=upd.sigma_before,
                             sigma_after=upd.sigma_after,
                             contributing_pairs=pairs_json,
+                            kind="pair",
                         )
                         .on_conflict_do_nothing(
-                            index_elements=["athlete_id", "round_id"]
+                            index_elements=["athlete_id", "round_id", "kind"]
                         )
                     )
                     session.execute(stmt)
@@ -236,6 +247,7 @@ def run_backfill(
                             sigma_before=upd.sigma_before,
                             sigma_after=upd.sigma_after,
                             contributing_pairs=pairs_json,
+                            kind="pair",
                         )
                     )
 
@@ -245,6 +257,10 @@ def run_backfill(
             event_had_updates = True
 
         if event_had_updates:
+            _apply_tpb_for_event(
+                session, event, rounds, discipline, ratings_cache, config
+            )
+
             seen_athletes: set[int] = set()
             for rnd in rounds:
                 for res in rnd.results:
@@ -279,3 +295,117 @@ def run_backfill(
             )
 
     return report
+
+
+def _apply_tpb_for_event(
+    session: Session,
+    event: Event,
+    rounds: list[Round],
+    discipline: Discipline,
+    ratings_cache: dict[int, AthleteRating],
+    config: EloConfig,
+) -> None:
+    """Apply the Tournament Participation Bonus to one event (Issue #90).
+
+    Pulls the FINAL round's results, computes a zero-sum tier-weighted bonus,
+    writes synthetic ``RatingHistory(kind='tpb')`` rows pointed at the final
+    round, and bumps each athlete's μ. No-op if no final round exists or if
+    a tpb row is already present (idempotent).
+    """
+    final_round = next((r for r in rounds if r.round_type == RoundType.FINAL), None)
+    if final_round is None:
+        return
+
+    already_applied = session.execute(
+        select(RatingHistory)
+        .where(
+            RatingHistory.round_id == final_round.id,
+            RatingHistory.kind == "tpb",
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if already_applied is not None:
+        return
+
+    final_results = list(
+        session.execute(
+            select(Result).where(Result.round_id == final_round.id)
+        ).scalars()
+    )
+    if not final_results:
+        return
+
+    athlete_results = [
+        AthleteResult(
+            athlete_id=res.athlete_id,
+            rank=res.rank or 999,
+            score_normalized=res.score_normalized,
+            dnf=res.dnf,
+            dns=res.dns,
+        )
+        for res in final_results
+    ]
+
+    contributions = compute_tournament_participation_bonus(
+        athlete_results, event.tier, config
+    )
+    if not contributions:
+        return
+
+    for contrib in contributions:
+        ar = ratings_cache.get(contrib.athlete_id)
+        if ar is None:
+            continue
+        mu_before = ar.mu
+        mu_after = mu_before + contrib.delta
+        ar.mu = mu_after
+
+        db_rating = session.execute(
+            select(Rating).where(
+                Rating.athlete_id == contrib.athlete_id,
+                Rating.discipline == discipline,
+            )
+        ).scalar_one()
+        db_rating.mu = mu_after
+
+        tpb_payload = {
+            "rank": contrib.rank,
+            "gross_bonus": contrib.gross_bonus,
+            "debit": contrib.debit,
+            "tier": event.tier.value,
+        }
+        if _is_postgres(session):
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            stmt = (
+                pg_insert(RatingHistory)
+                .values(
+                    athlete_id=contrib.athlete_id,
+                    event_id=event.id,
+                    round_id=final_round.id,
+                    mu_before=mu_before,
+                    mu_after=mu_after,
+                    sigma_before=ar.sigma,
+                    sigma_after=ar.sigma,
+                    contributing_pairs=tpb_payload,
+                    kind="tpb",
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["athlete_id", "round_id", "kind"]
+                )
+            )
+            session.execute(stmt)
+        else:
+            session.add(
+                RatingHistory(
+                    athlete_id=contrib.athlete_id,
+                    event_id=event.id,
+                    round_id=final_round.id,
+                    mu_before=mu_before,
+                    mu_after=mu_after,
+                    sigma_before=ar.sigma,
+                    sigma_after=ar.sigma,
+                    contributing_pairs=tpb_payload,
+                    kind="tpb",
+                )
+            )
