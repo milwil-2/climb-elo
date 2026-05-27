@@ -12,7 +12,7 @@ Production lives at **https://climb-elo.vercel.app**, served from Vercel with **
 - **Production deps**: `uv.lock` is the single source of truth — `@vercel/python` auto-detects it and runs `uv` to install pinned versions (build log shows `Using uv 0.10.11` → `Installing required dependencies from uv.lock...`). No `requirements.txt` exists; the previously hand-written one was removed in #72. Python version comes from `pyproject.toml` (`requires-python = ">=3.11"`).
 - **Required env vars** (set in Vercel project settings):
   - `DATABASE_URL` — Supabase **transaction pooler** (port 6543, IPv4). See "Connection strings" below.
-- **Local override**: when `DATABASE_URL` is unset, the app falls back to a local SQLite file (`climbing_elo.db`) — handy for offline dev.
+- **Local dev / scripts**: `DATABASE_URL` is **required everywhere** as of Issue #82 — there is no longer a silent SQLite fallback. Point it at the Supabase session pooler (port 5432) for local development. The previous "local SQLite if unset" behaviour was removed because it caused stale-schema drift (Issue #79).
 
 ## Commands
 
@@ -22,6 +22,8 @@ uv run pytest                           # run all tests
 uv run pytest tests/test_elo.py -k "test_zero_sum"  # run single test
 uv run uvicorn climbing_elo.api.app:app --reload     # dev server on :8000
 # Interactive docs at http://localhost:8000/docs
+
+# All scripts require DATABASE_URL (point at the Supabase session pooler for local dev).
 
 # Data pipeline (run in order)
 uv run python scripts/scrape_ifsc.py --min-year 2012 --max-year 2026
@@ -192,20 +194,11 @@ Source files: `api/v1_routes.py` (endpoints), `api/schemas.py` (Pydantic respons
 
 ## Data freshness in production
 
-Production data lives in **Supabase Postgres**. Two GitHub Actions workflows keep it (and a local archive) fresh:
+Production data lives in **Supabase Postgres**. One GitHub Actions workflow keeps it fresh:
 
 - **`.github/workflows/scrape-supabase.yml`** — runs daily at 04:00 UTC against the Supabase session pooler. Scrapes upcoming events + recent finished results, runs the ELO backfill (idempotent via `uq_rating_history_athlete_round`), and refreshes combined Boulder+Lead ratings. Workflow-dispatchable with an optional `historical_backfill` flag for the full 2012→present rescrape. Requires the `DATABASE_URL` repo secret (session pooler URL, port 5432).
-- **`.github/workflows/snapshot.yml`** — runs daily at 03:00 UTC and uploads a gzip-compressed SQLite snapshot + SHA-256 sidecar to the `db-snapshots` GitHub Release. **Archival only now** that Supabase is the production DB; kept as a recovery / forensic artifact and so local dev (`DATABASE_URL` unset) has a sensible starting point. Retention: 30 daily + 12 monthly (1st of month) + 5 yearly (Jan 1).
 
-Local snapshot helpers:
-
-```bash
-uv run python scripts/snapshot_db.py                          # create local snapshot
-uv run python scripts/restore_snapshot.py                     # restore latest (backs up existing DB to .bak)
-uv run python scripts/restore_snapshot.py --date 2026-06-01   # restore specific date
-```
-
-`snapshots/` is gitignored. Restore requires `gh` CLI authenticated.
+**Backups**: Supabase provides its own rolling backups (7-day on the free tier, PITR on paid). The previous in-repo snapshot workflow (`.github/workflows/snapshot.yml`) and `scripts/snapshot_db.py` / `scripts/restore_snapshot.py` helpers were removed in Issue #82 — they snapshotted an empty CI-local SQLite file and the `db-snapshots` GitHub Release contents were never usable for recovery.
 
 ## Caching
 
@@ -281,7 +274,7 @@ The live SSE endpoint (`/live/{event_id}/stream`) does NOT work on Vercel server
 
 ## Testing
 
-Tests use an in-memory SQLite database (`conftest.py:db_session`). Fixtures `sample_event` and `eight_athletes` provide pre-built test data. `test_elo.py` validates pairwise math (zero-sum invariant across all 3 disciplines). `test_backfill.py` runs a 3-event integration test and checks reproducibility. `test_api.py` covers all v1 REST endpoints. `test_projections.py` covers Monte Carlo invariants. `test_combined.py` covers the Boulder+Lead aggregate. `test_scraper_upcoming.py` covers upcoming-event filter logic. `test_snapshot.py` covers snapshot/restore round-trips. `test_health_check.py` covers CLI exit codes + Discord rate-limiting. `test_cache.py` covers TTLCache thread-safety + expiry. `test_likely_roster.py` covers the likely-competitor fallback logic. `test_live.py` covers the live poller + SSE (new result detection, dedup, finished-status auto-stop, EventBus pub/sub, file lock mutex, SSE 404/200/429). `test_baselines.py` + `test_external_rankings.py` cover the IFSC-official and AscentStats backtest baselines (recorded JSON fixtures in `tests/fixtures/external_rankings/`; live network tests are gated by `@pytest.mark.network`, deselected by default via `pyproject.toml`).
+Tests use an in-memory SQLite database (`conftest.py:db_session`). Fixtures `sample_event` and `eight_athletes` provide pre-built test data. `test_elo.py` validates pairwise math (zero-sum invariant across all 3 disciplines). `test_backfill.py` runs a 3-event integration test and checks reproducibility. `test_api.py` covers all v1 REST endpoints. `test_projections.py` covers Monte Carlo invariants. `test_combined.py` covers the Boulder+Lead aggregate. `test_scraper_upcoming.py` covers upcoming-event filter logic. `test_health_check.py` covers CLI exit codes + Discord rate-limiting. `test_cache.py` covers TTLCache thread-safety + expiry. `test_likely_roster.py` covers the likely-competitor fallback logic. `test_live.py` covers the live poller + SSE (new result detection, dedup, finished-status auto-stop, EventBus pub/sub, file lock mutex, SSE 404/200/429). `test_baselines.py` + `test_external_rankings.py` cover the IFSC-official and AscentStats backtest baselines (recorded JSON fixtures in `tests/fixtures/external_rankings/`; live network tests are gated by `@pytest.mark.network`, deselected by default via `pyproject.toml`).
 
 ## Issue & Project organization (GitHub)
 

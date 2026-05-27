@@ -1,8 +1,19 @@
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+import os
 
-from climbing_elo.models import (
+# Issue #82: the SQLite fallback in ``climbing_elo.database.get_engine`` is
+# gone. The test suite needs *something* for any test-module import that
+# eagerly instantiates the FastAPI app at module load (`api/app.py` calls
+# ``init_db()`` from ``create_app``). Point DATABASE_URL at a throwaway
+# in-memory SQLite when running under pytest so the import succeeds; the
+# individual tests still monkey-patch ``get_engine`` to use their own
+# seeded DBs where needed.
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+
+import pytest  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
+
+from climbing_elo.models import (  # noqa: E402
     Athlete,
     Base,
     Discipline,

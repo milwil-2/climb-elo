@@ -61,7 +61,7 @@ from typing import Any, Callable, Iterable, Protocol, runtime_checkable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from climbing_elo.database import DEFAULT_DB_PATH, get_session_factory, init_db
+from climbing_elo.database import get_session_factory, init_db
 from climbing_elo.engine.backfill import run_backfill
 from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
 from climbing_elo.engine.projections import (
@@ -598,8 +598,11 @@ class BacktestDataset:
     disciplines: tuple[Discipline, ...]
     n_simulations: int = 10_000
     rng_seed: int = 42
-    # Source DB to copy from. Defaults to the production DB.
-    source_db_path: Path = DEFAULT_DB_PATH
+    # Source SQLite DB to copy from. ``None`` means the runner is being driven
+    # via ``in_memory_session=`` (tests) and no file copy is needed. Production
+    # invocations (``scripts/run_backtest.py``) must pass an explicit path —
+    # the harness only works against a SQLite source it can ``shutil.copy``.
+    source_db_path: Path | None = None
 
 
 @dataclass
@@ -719,6 +722,12 @@ class BacktestRunner:
             return
 
         # --- State safety: copy the source DB to a private temp file. ---
+        if dataset.source_db_path is None:
+            raise ValueError(
+                "BacktestDataset.source_db_path must be set when running the "
+                "harness without in_memory_session. The backtest copies the "
+                "source DB into a temp file and only supports SQLite sources."
+            )
         self._tmpdir = Path(tempfile.mkdtemp(prefix="climbing_elo_backtest_"))
         self._pristine_copy = self._tmpdir / "pristine.db"
         self._working_copy = self._tmpdir / "working.db"
@@ -1142,9 +1151,12 @@ def render_markdown(report: BacktestReport) -> str:
 # ---------------------------------------------------------------------------
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
 def make_default_output_dir(root: Path | None = None) -> Path:
     """Return ``data/backtests/<utc-timestamp>/`` (creating parents)."""
-    root = root or (DEFAULT_DB_PATH.parent / "backtests")
+    root = root or (_PROJECT_ROOT / "data" / "backtests")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = root / stamp
     out.mkdir(parents=True, exist_ok=True)

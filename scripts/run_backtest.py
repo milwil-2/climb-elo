@@ -42,7 +42,6 @@ import argparse
 import logging
 import sys
 
-from climbing_elo.database import DEFAULT_DB_PATH
 from climbing_elo.engine.evaluation import (
     BACKTEST_VARIANTS,
     OOS_MODES,
@@ -146,8 +145,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--db",
-        default=str(DEFAULT_DB_PATH),
-        help="Path to source SQLite DB (read-only — a copy is used internally).",
+        required=True,
+        help=(
+            "Path to source SQLite DB (read-only — a copy is used internally). "
+            "The backtest harness only supports a SQLite source today; for "
+            "Postgres-backed data, snapshot to SQLite first."
+        ),
     )
     return p.parse_args(argv)
 

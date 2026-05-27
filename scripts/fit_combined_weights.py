@@ -94,7 +94,6 @@ from sqlalchemy.orm import Session
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from climbing_elo.database import (  # noqa: E402
-    DEFAULT_DB_PATH,
     get_session_factory,
     init_db,
 )
@@ -684,8 +683,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--source-db",
         type=Path,
-        default=DEFAULT_DB_PATH,
-        help="Path to the source SQLite DB (default: data/climbing_elo.db).",
+        required=True,
+        help=(
+            "Path to the source SQLite DB. The fitter copies the DB into a "
+            "temp file per fold year and runs backfill against the copy, so "
+            "only a local SQLite source is supported."
+        ),
     )
     p.add_argument(
         "--output",
