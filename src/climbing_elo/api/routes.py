@@ -30,6 +30,7 @@ from climbing_elo.models import (
     Athlete,
     Discipline,
     Event,
+    EventTier,
     Gender,
     Rating,
     RatingHistory,
@@ -455,6 +456,17 @@ async def v2_athletes_index(request: Request):
 
 @router.get("/athletes/{athlete_id}", response_class=HTMLResponse)
 async def v2_athlete_profile(request: Request, athlete_id: int):
+    """Render the rich athlete profile page (Issue #86).
+
+    Context sections (top to bottom in the template):
+      1. Header card        — photo + name + nationality + year_of_birth
+      2. Body metrics       — only fields that are non-NULL
+      3. Current ratings    — one row per non-null discipline (μ, σ, rank, n)
+      4. ELO graph          — Chart.js line per discipline + ±σ band + event markers
+      5. Recent changes     — last 5 events with Δμ + top-3 opponents
+      6. Combined breakdown — only rendered when athlete has a BOULDER_LEAD row
+      7. Full event history — collapsible per-season tables
+    """
     t = _templates(request)
 
     with _session() as session:
@@ -462,7 +474,9 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
         if not athlete:
             return HTMLResponse("Athlete not found", status_code=404)
 
-        # All ratings for this athlete
+        # ---------------------------------------------------------------
+        # 1. All ratings for this athlete
+        # ---------------------------------------------------------------
         ratings_rows = list(
             session.execute(
                 select(Rating).where(Rating.athlete_id == athlete_id)
@@ -470,72 +484,145 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
         )
         ratings_by_disc: dict[str, dict] = {}
         for r in ratings_rows:
-            key = {
-                Discipline.BOULDER: "B",
-                Discipline.LEAD: "L",
-                Discipline.SPEED: "S",
-                Discipline.BOULDER_LEAD: "BL",
-            }.get(r.discipline, r.discipline.value)
+            key = _DISC_ENUM_TO_KEY.get(r.discipline, r.discipline.value)
+
+            # Compute the athlete's rank in this discipline among same-gender
+            # athletes. Filtering by gender means we can compare apples-to-apples
+            # against the leaderboard rendered elsewhere.
+            rank_row = session.execute(
+                select(func.count())
+                .select_from(Rating)
+                .join(Athlete, Rating.athlete_id == Athlete.id)
+                .where(
+                    Rating.discipline == r.discipline,
+                    Athlete.gender == athlete.gender,
+                    Rating.mu > r.mu,
+                )
+            ).scalar_one()
             ratings_by_disc[key] = {
                 "mu": round(r.mu, 1),
                 "sigma": round(r.sigma, 1),
                 "n_events": r.n_events,
+                "rank": int(rank_row) + 1,
+                "provisional": r.provisional,
             }
 
-        # Primary rating = best by mu (prefer Lead then Boulder then Speed)
+        # Primary rating: prefer Lead > Boulder > Speed > BL (matches sidebar
+        # convention so the page makes sense even for speed specialists).
         pref_order = ["L", "B", "S", "BL"]
         primary_disc_key = next((k for k in pref_order if k in ratings_by_disc), None)
         primary_rating = ratings_by_disc.get(
-            primary_disc_key or "L", {"mu": None, "sigma": None}
+            primary_disc_key or "L",
+            {"mu": None, "sigma": None, "n_events": 0, "rank": None},
         )
-        primary_disc_label = _DISC_LABEL.get(
-            _DISC_KEY_TO_ENUM.get(primary_disc_key or "L", Discipline.LEAD), "Lead"
-        )
-
-        # Rating history for chart (use primary discipline)
         primary_disc_enum = _DISC_KEY_TO_ENUM.get(
             primary_disc_key or "L", Discipline.LEAD
         )
-        history_rows = list(
-            session.execute(
-                select(RatingHistory, Event)
-                .join(Event, RatingHistory.event_id == Event.id)
-                .where(
-                    RatingHistory.athlete_id == athlete_id,
-                    Event.discipline == primary_disc_enum,
-                )
-                .order_by(Event.start_date.asc())
-            ).all()
-        )
+        primary_disc_label = _DISC_LABEL.get(primary_disc_enum, "Lead")
 
-        # De-dup by event (keep last round per event)
-        event_last: dict[int, tuple] = {}
-        for rh, ev in history_rows:
-            event_last[ev.id] = (rh, ev)
+        # ---------------------------------------------------------------
+        # 2. Rating history per discipline — for the multi-series Chart.js
+        # ---------------------------------------------------------------
+        # Re-uses the same de-dup logic as /api/v1/athletes/{id}/history
+        # (keep one point per event = the latest round). We store the mu and
+        # sigma after the event so the template can render a ±σ band.
+        rating_history_by_discipline: dict[str, list[dict]] = {}
+        event_markers: list[dict] = []  # Olympics / WCh / WC finals
 
-        chart_labels = []
-        chart_mu = []
-        for rh, ev in event_last.values():
-            chart_labels.append(str(ev.start_date))
-            chart_mu.append(round(rh.mu_after, 1))
+        if ratings_by_disc:
+            disc_enums_with_rating = [
+                _DISC_KEY_TO_ENUM[k] for k in ratings_by_disc if k in _DISC_KEY_TO_ENUM
+            ]
 
-        # Recent events (last 5 across all disciplines)
+            all_history = list(
+                session.execute(
+                    select(RatingHistory, Event, Round)
+                    .join(Event, RatingHistory.event_id == Event.id)
+                    .join(Round, RatingHistory.round_id == Round.id)
+                    .where(
+                        RatingHistory.athlete_id == athlete_id,
+                        Event.discipline.in_(disc_enums_with_rating),
+                    )
+                    .order_by(Event.start_date.asc(), Round.round_type.asc())
+                ).all()
+            )
+
+            # Group by (discipline, event_id) and keep the *last* round's
+            # post-event state. Round.round_type sorts alphabetically:
+            # final < qualification < semi — not the wall-clock order. But the
+            # value we want is "the round that finalised the rating for this
+            # event", which by construction is the last one inserted. We use
+            # the latest by RatingHistory.id within an event.
+            per_disc_event: dict[
+                tuple[Discipline, int], tuple[RatingHistory, Event]
+            ] = {}
+            for rh, ev, _rnd in all_history:
+                key = (ev.discipline, ev.id)
+                prev = per_disc_event.get(key)
+                if prev is None or rh.id > prev[0].id:
+                    per_disc_event[key] = (rh, ev)
+
+            for disc_enum in disc_enums_with_rating:
+                disc_key = _DISC_ENUM_TO_KEY.get(disc_enum, disc_enum.value)
+                points: list[dict] = []
+                for (d_e, _eid), (rh, ev) in per_disc_event.items():
+                    if d_e != disc_enum:
+                        continue
+                    points.append(
+                        {
+                            "date": str(ev.start_date),
+                            "event_id": ev.id,
+                            "event_name": ev.name,
+                            "season": ev.season,
+                            "mu": round(rh.mu_after, 1),
+                            "sigma": round(rh.sigma_after, 1),
+                            "tier": ev.tier.value,
+                        }
+                    )
+                points.sort(key=lambda p: p["date"])
+                rating_history_by_discipline[disc_key] = points
+
+                # Major-event markers go in a separate dataset for the chart.
+                for p in points:
+                    if p["tier"] in (
+                        EventTier.OLYMPICS.value,
+                        EventTier.WORLD_CHAMPIONSHIP.value,
+                    ):
+                        event_markers.append(
+                            {
+                                "date": p["date"],
+                                "mu": p["mu"],
+                                "tier": p["tier"],
+                                "disc": disc_key,
+                                "event_name": p["event_name"],
+                            }
+                        )
+                    # World Cup Finals are events whose name contains "final",
+                    # but we don't have a per-event flag for that. Mark the
+                    # season-closing World Cup event instead.
+                # (No reliable per-event flag for "WC Final" — Olympics + WChs
+                # are enough to anchor the timeline.)
+
+        # ---------------------------------------------------------------
+        # 3. Recent changes — last 5 events across all disciplines, with the
+        #    top-3 opponents and pairwise Δμ contributions for context.
+        # ---------------------------------------------------------------
         recent_rh = list(
             session.execute(
                 select(RatingHistory, Event)
                 .join(Event, RatingHistory.event_id == Event.id)
                 .where(RatingHistory.athlete_id == athlete_id)
                 .order_by(Event.start_date.desc())
-                .limit(20)
+                .limit(40)
             ).all()
         )
         seen_ev: set[int] = set()
         recent_events = []
+
         for rh, ev in recent_rh:
             if ev.id in seen_ev:
                 continue
             seen_ev.add(ev.id)
-            # Best place in this event
             place_row = session.execute(
                 select(func.min(Result.rank))
                 .join(Round, Result.round_id == Round.id)
@@ -547,13 +634,56 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
                 )
             ).scalar_one_or_none()
 
-            delta = round(rh.mu_after - rh.mu_before, 1)
-            disc_display = {
-                Discipline.BOULDER: "Boulder",
-                Discipline.LEAD: "Lead",
-                Discipline.SPEED: "Speed",
-                Discipline.BOULDER_LEAD: "B+L",
-            }.get(ev.discipline, ev.discipline.value)
+            # Sum delta across all of this athlete's rounds in the event so
+            # the listed number matches what "Recent ELO changes" implies.
+            total_delta_row = session.execute(
+                select(
+                    func.sum(RatingHistory.mu_after - RatingHistory.mu_before)
+                ).where(
+                    RatingHistory.athlete_id == athlete_id,
+                    RatingHistory.event_id == ev.id,
+                )
+            ).scalar_one_or_none()
+            delta = round(float(total_delta_row or 0.0), 1)
+
+            disc_display = _DISC_LABEL.get(ev.discipline, ev.discipline.value)
+
+            # Top-3 opponents = pull pairs from the *last* (i.e. final) round's
+            # contributing_pairs, sorted by abs(delta), then resolve names.
+            last_round_rh = max(
+                (
+                    h
+                    for h, _e in recent_rh
+                    if _e.id == ev.id and (h.contributing_pairs or [])
+                ),
+                key=lambda h: h.id,
+                default=None,
+            )
+            opponents: list[dict] = []
+            if last_round_rh and last_round_rh.contributing_pairs:
+                pairs = sorted(
+                    last_round_rh.contributing_pairs,
+                    key=lambda p: abs(p.get("delta", 0.0)),
+                    reverse=True,
+                )[:3]
+                opponent_ids = [int(p["opponent_id"]) for p in pairs]
+                opp_map: dict[int, str] = {}
+                if opponent_ids:
+                    for opp in session.execute(
+                        select(Athlete).where(Athlete.id.in_(opponent_ids))
+                    ).scalars():
+                        opp_map[opp.id] = opp.name
+                for p in pairs:
+                    oid = int(p["opponent_id"])
+                    pair_delta = round(float(p.get("delta", 0.0)), 1)
+                    opponents.append(
+                        {
+                            "id": oid,
+                            "name": opp_map.get(oid, f"ID {oid}"),
+                            "delta": pair_delta,
+                            "result": p.get("result"),
+                        }
+                    )
 
             recent_events.append(
                 {
@@ -565,33 +695,143 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
                     "delta": delta,
                     "delta_sign": "+" if delta > 0 else ("−" if delta < 0 else ""),
                     "delta_abs": abs(delta),
+                    "opponents": opponents,
                 }
             )
             if len(recent_events) >= 5:
                 break
 
-        # Sidebar: top 14 athletes in primary discipline, same gender
+        # ---------------------------------------------------------------
+        # 4. Combined (B+L) breakdown — only when we have a BL rating.
+        # ---------------------------------------------------------------
+        combined_breakdown: dict | None = None
+        if (
+            "BL" in ratings_by_disc
+            and "B" in ratings_by_disc
+            and "L" in ratings_by_disc
+        ):
+            from scripts.compute_combined_ratings import load_combined_weights
+
+            weights = load_combined_weights()
+            if weights.source == "learned":
+                weights_used = (
+                    f"learned (w_L={weights.w_lead:.3f}, w_B={weights.w_boulder:.3f})"
+                )
+            else:
+                weights_used = "geometric_mean"
+            combined_breakdown = {
+                "boulder_mu": ratings_by_disc["B"]["mu"],
+                "lead_mu": ratings_by_disc["L"]["mu"],
+                "combined_mu": ratings_by_disc["BL"]["mu"],
+                "weights_used": weights_used,
+                "w_lead": round(weights.w_lead, 3),
+                "w_boulder": round(weights.w_boulder, 3),
+            }
+
+        # ---------------------------------------------------------------
+        # 5. Full event history — grouped by season → discipline.
+        # ---------------------------------------------------------------
+        all_events_rows = list(
+            session.execute(
+                select(RatingHistory, Event)
+                .join(Event, RatingHistory.event_id == Event.id)
+                .where(RatingHistory.athlete_id == athlete_id)
+                .order_by(Event.start_date.desc(), Event.id.desc())
+            ).all()
+        )
+
+        history_by_season: dict[int, list[dict]] = {}
+        seen_event_for_history: set[int] = set()
+
+        for rh, ev in all_events_rows:
+            if ev.id in seen_event_for_history:
+                continue
+            seen_event_for_history.add(ev.id)
+            place_row = session.execute(
+                select(func.min(Result.rank))
+                .join(Round, Result.round_id == Round.id)
+                .where(
+                    Round.event_id == ev.id,
+                    Result.athlete_id == athlete_id,
+                    Result.dns.is_(False),
+                    Result.rank.is_not(None),
+                )
+            ).scalar_one_or_none()
+            total_delta_row = session.execute(
+                select(
+                    func.sum(RatingHistory.mu_after - RatingHistory.mu_before)
+                ).where(
+                    RatingHistory.athlete_id == athlete_id,
+                    RatingHistory.event_id == ev.id,
+                )
+            ).scalar_one_or_none()
+            ev_delta = round(float(total_delta_row or 0.0), 1)
+
+            history_by_season.setdefault(ev.season, []).append(
+                {
+                    "event_id": ev.id,
+                    "event_name": ev.name,
+                    "date": str(ev.start_date),
+                    "discipline": _DISC_LABEL.get(ev.discipline, ev.discipline.value),
+                    "tier": ev.tier.value.replace("_", " ").title(),
+                    "place": place_row,
+                    "delta": ev_delta,
+                    "delta_sign": "+"
+                    if ev_delta > 0
+                    else ("−" if ev_delta < 0 else ""),
+                    "delta_abs": abs(ev_delta),
+                }
+            )
+
+        history_seasons_sorted = sorted(history_by_season.keys(), reverse=True)
+        full_history = [
+            {"season": s, "events": history_by_season[s]}
+            for s in history_seasons_sorted
+        ]
+
+        # ---------------------------------------------------------------
+        # 6. Sidebar (unchanged) + ticker
+        # ---------------------------------------------------------------
         sidebar_athletes = _get_rankings_v2(
             session, athlete.gender, primary_disc_enum, limit=14
         )
 
         ticker = _ticker_context(session)
 
-    ctx = {
-        "athlete": {
+        # Capture all athlete fields inside the session — accessing them after
+        # session close would trigger a DetachedInstanceError.
+        athlete_ctx = {
             "id": athlete.id,
             "name": athlete.name,
             "nationality": athlete.nationality or "—",
             "year_of_birth": athlete.year_of_birth,
             "gender": athlete.gender.value,
-        },
+            "photo_url": athlete.photo_url,
+            "height_cm": athlete.height_cm,
+            "weight_kg": athlete.weight_kg,
+            "wingspan_cm": athlete.wingspan_cm,
+        }
+
+    # Order ratings for the template in our preferred display order.
+    disciplines_ordered = [
+        (k, _DISC_LABEL.get(_DISC_KEY_TO_ENUM[k], k), ratings_by_disc[k])
+        for k in ("L", "B", "S", "BL")
+        if k in ratings_by_disc
+    ]
+
+    ctx = {
+        "athlete": athlete_ctx,
         "primary_rating": primary_rating,
         "primary_disc_label": primary_disc_label,
         "primary_disc_key": primary_disc_key or "L",
         "ratings_by_disc": ratings_by_disc,
-        "chart_labels": json.dumps(chart_labels),
-        "chart_mu": json.dumps(chart_mu),
+        "disciplines_ordered": disciplines_ordered,
+        "rating_history_by_discipline": rating_history_by_discipline,
+        "rating_history_json": json.dumps(rating_history_by_discipline),
+        "event_markers_json": json.dumps(event_markers),
         "recent_events": recent_events,
+        "combined_breakdown": combined_breakdown,
+        "full_history": full_history,
         "sidebar_athletes": sidebar_athletes,
         "current_athlete_id": athlete_id,
         **ticker,

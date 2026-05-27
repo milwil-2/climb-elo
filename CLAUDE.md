@@ -31,6 +31,10 @@ uv run python scripts/run_backfill.py
 uv run python scripts/run_backtest.py   # validates model beats baseline by ≥15pp
 uv run python scripts/compute_combined_ratings.py  # populate BOULDER_LEAD aggregate
 
+# Athlete profile refresh (manual / occasional — Issue #86)
+uv run python scripts/scrape_athlete_profiles.py        # photo_url + body metrics from IFSC
+uv run python scripts/scrape_athlete_profiles.py --athlete-id 5  # refresh one athlete only
+
 # Health-check monitoring
 uv run python scripts/health_check_cli.py             # ping API; exit 0/1
 uv run python scripts/health_check_cli.py --quiet     # no output (for cron)
@@ -126,6 +130,8 @@ Pain points we've already paid for, so don't re-learn them:
 ## Data Model
 
 Six SQLAlchemy models in `models.py`: Athlete → Event → Round → Result (competition data), Rating + RatingHistory (computed ratings). RatingHistory stores `contributing_pairs` as a JSON column for the breakdown view. Key enums: `EventTier` (olympics/world_championship/world_cup/continental), `RoundType` (qualification/semi/final), `Discipline` (L/B/S/BL).
+
+`Athlete.photo_url`, `height_cm`, `weight_kg`, `wingspan_cm` (added in #86) hold optional profile metadata for the rich `/athletes/{id}` page. All nullable — most rows are NULL until `scripts/scrape_athlete_profiles.py` runs. `photo_url` is hot-linked from `ifsc.results.info` (no Vercel Blob). `weight_kg` has no IFSC source today; column exists for future expansion.
 
 `Event.livestream_url` (added in #23) holds an optional YouTube URL for the live broadcast. Strictly validated against a `youtube.com` / `youtu.be` allowlist in `src/climbing_elo/live/livestream.py` before being rendered into a sandboxed iframe on `/live/{event_id}`. Populated manually per event — the IFSC API does not expose stream URLs.
 
