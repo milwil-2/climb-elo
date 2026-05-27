@@ -4,12 +4,22 @@ Covers :func:`climbing_elo.scraper.ifsc_api.scrape_athlete_profile` —
 the function that turns an IFSC ``/api/v1/athletes/{id}`` payload into the
 dict our updater uses to set ``photo_url`` / ``height_cm`` / ``wingspan_cm`` /
 ``year_of_birth`` on local ``Athlete`` rows.
+
+Issue #93 adds ``--only-missing`` / ``--force`` flag coverage for the
+``scripts/scrape_athlete_profiles.py`` driver in :class:`TestScriptFlags`.
 """
 
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from climbing_elo.models import Athlete, Base, Gender
 from climbing_elo.scraper.ifsc_api import scrape_athlete_profile
 
 
@@ -133,3 +143,195 @@ class TestScrapeAthleteProfile:
             out = scrape_athlete_profile(1, client=MagicMock())
         assert "weight_kg" not in out
         assert out["height_cm"] == 175
+
+
+# ---------------------------------------------------------------------------
+# Issue #93: CLI flag coverage for scripts/scrape_athlete_profiles.py
+# ---------------------------------------------------------------------------
+
+
+def _load_script_module():
+    """Import scripts/scrape_athlete_profiles.py as a module (not installed)."""
+    script_path = (
+        Path(__file__).resolve().parents[1] / "scripts" / "scrape_athlete_profiles.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "scrape_athlete_profiles", script_path
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def seeded_session_factory():
+    """In-memory DB with 5 athletes: 3 already have photo_url, 2 are missing.
+
+    Returned: ``(session_factory, expected_missing_names, all_names)``.
+    """
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    with factory() as s:
+        s.add_all(
+            [
+                Athlete(
+                    name="Has Photo One",
+                    gender=Gender.F,
+                    photo_url="https://example.com/1.jpg",
+                ),
+                Athlete(
+                    name="Has Photo Two",
+                    gender=Gender.M,
+                    photo_url="https://example.com/2.jpg",
+                ),
+                Athlete(
+                    name="Has Photo Three",
+                    gender=Gender.F,
+                    photo_url="https://example.com/3.jpg",
+                ),
+                Athlete(name="Missing One", gender=Gender.M, photo_url=None),
+                Athlete(name="Missing Two", gender=Gender.F, photo_url=None),
+            ]
+        )
+        s.commit()
+    missing = ["Missing One", "Missing Two"]
+    all_names = [
+        "Has Photo One",
+        "Has Photo Two",
+        "Has Photo Three",
+        "Missing One",
+        "Missing Two",
+    ]
+    return factory, missing, all_names
+
+
+class TestScriptFlags:
+    """``--only-missing`` / ``--force`` / no-flag semantics (Issue #93)."""
+
+    def test_no_flag_errors_out(self, seeded_session_factory, capsys):
+        """Without --only-missing or --force the script must refuse to run.
+
+        argparse's ``parser.error()`` exits with code 2 and writes to stderr.
+        """
+        factory, _, _ = seeded_session_factory
+        mod = _load_script_module()
+        with (
+            patch.object(mod, "init_db", return_value=factory),
+            patch("sys.argv", ["scrape_athlete_profiles.py"]),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            mod.main()
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "--only-missing" in captured.err
+        assert "--force" in captured.err
+
+    def test_only_missing_filters_to_null_photo_rows(self, seeded_session_factory):
+        """``--only-missing`` should queue exactly the 2 athletes whose
+        photo_url is NULL — the 3 with photos must be untouched.
+        """
+        factory, expected_missing, _ = seeded_session_factory
+        mod = _load_script_module()
+
+        # Map every queued athlete to a fake IFSC id so the discovery walk is
+        # a no-op (mocked) and every athlete looks scrapeable.
+        scraped: list[str] = []
+
+        def _fake_id_index(session, client, since_year, delay):
+            return {
+                ("Missing One", Gender.M): 100,
+                ("Missing Two", Gender.F): 200,
+                ("Has Photo One", Gender.F): 300,
+                ("Has Photo Two", Gender.M): 400,
+                ("Has Photo Three", Gender.F): 500,
+            }
+
+        def _fake_scrape(ifsc_id, client):
+            # Reverse-lookup the athlete by ifsc_id for assertion convenience.
+            name_by_id = {
+                100: "Missing One",
+                200: "Missing Two",
+                300: "Has Photo One",
+                400: "Has Photo Two",
+                500: "Has Photo Three",
+            }
+            scraped.append(name_by_id[ifsc_id])
+            return {"photo_url": f"https://example.com/new-{ifsc_id}.jpg"}
+
+        with (
+            patch.object(mod, "init_db", return_value=factory),
+            patch.object(mod, "_build_ifsc_id_index", _fake_id_index),
+            patch.object(mod, "scrape_athlete_profile", _fake_scrape),
+            patch.object(mod.time, "sleep", lambda *a, **kw: None),
+            patch(
+                "sys.argv",
+                ["scrape_athlete_profiles.py", "--only-missing", "--delay", "0"],
+            ),
+        ):
+            mod.main()
+
+        # Only the 2 NULL-photo athletes hit the API.
+        assert sorted(scraped) == sorted(expected_missing)
+
+    def test_force_scrapes_every_athlete(self, seeded_session_factory):
+        """``--force`` should hit the IFSC API for every athlete (5 of 5),
+        even those that already have a photo_url.
+        """
+        factory, _, all_names = seeded_session_factory
+        mod = _load_script_module()
+
+        scraped: list[str] = []
+
+        def _fake_id_index(session, client, since_year, delay):
+            return {
+                ("Missing One", Gender.M): 100,
+                ("Missing Two", Gender.F): 200,
+                ("Has Photo One", Gender.F): 300,
+                ("Has Photo Two", Gender.M): 400,
+                ("Has Photo Three", Gender.F): 500,
+            }
+
+        def _fake_scrape(ifsc_id, client):
+            name_by_id = {
+                100: "Missing One",
+                200: "Missing Two",
+                300: "Has Photo One",
+                400: "Has Photo Two",
+                500: "Has Photo Three",
+            }
+            scraped.append(name_by_id[ifsc_id])
+            return {"photo_url": f"https://example.com/new-{ifsc_id}.jpg"}
+
+        with (
+            patch.object(mod, "init_db", return_value=factory),
+            patch.object(mod, "_build_ifsc_id_index", _fake_id_index),
+            patch.object(mod, "scrape_athlete_profile", _fake_scrape),
+            patch.object(mod.time, "sleep", lambda *a, **kw: None),
+            patch(
+                "sys.argv",
+                ["scrape_athlete_profiles.py", "--force", "--delay", "0"],
+            ),
+        ):
+            mod.main()
+
+        assert sorted(scraped) == sorted(all_names)
+
+    def test_only_missing_and_force_are_mutually_exclusive(
+        self, seeded_session_factory, capsys
+    ):
+        """argparse should reject ``--only-missing --force`` together."""
+        mod = _load_script_module()
+        with (
+            patch(
+                "sys.argv",
+                ["scrape_athlete_profiles.py", "--only-missing", "--force"],
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            mod.main()
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert (
+            "not allowed with" in captured.err or "mutually exclusive" in captured.err
+        )

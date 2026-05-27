@@ -18,13 +18,17 @@ Idempotent — running again only refreshes rows whose IFSC payload has changed.
 
 Usage::
 
-    uv run python scripts/scrape_athlete_profiles.py                  # all athletes
-    uv run python scripts/scrape_athlete_profiles.py --limit 20       # first 20 only
-    uv run python scripts/scrape_athlete_profiles.py --athlete-id 5   # one specific row
-    uv run python scripts/scrape_athlete_profiles.py --since-year 2022  # only walk events from 2022+
+    uv run python scripts/scrape_athlete_profiles.py --only-missing   # skip athletes with photo_url set (daily cron)
+    uv run python scripts/scrape_athlete_profiles.py --force          # re-scrape every athlete (one-time refresh)
+    uv run python scripts/scrape_athlete_profiles.py --only-missing --limit 20  # first 20 missing only
+    uv run python scripts/scrape_athlete_profiles.py --athlete-id 5   # one specific row (implicit --force)
+    uv run python scripts/scrape_athlete_profiles.py --only-missing --since-year 2022  # only walk events from 2022+
 
-The script is intentionally rate-limited (``--delay``, default 0.5s) and reads
-sequentially. With ~2,700 athletes and 0.5s/request it takes ~25 min end-to-end.
+Either ``--only-missing`` or ``--force`` is required (no implicit default — write
+operations on prod should be explicit). The script is intentionally rate-limited
+(``--delay``, default 0.5s) and reads sequentially. With ~2,700 athletes and
+0.5s/request it takes ~25 min end-to-end on a full ``--force`` run; the daily
+``--only-missing`` cron is normally just the day's new athletes.
 """
 
 from __future__ import annotations
@@ -219,7 +223,28 @@ def main() -> None:
         default=REQUEST_DELAY,
         help=f"Seconds to sleep between API requests (default: {REQUEST_DELAY}).",
     )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--only-missing",
+        action="store_true",
+        help="Only scrape athletes whose photo_url is NULL. Cheap steady-state mode "
+        "for the daily workflow — once a row has a photo it's left alone.",
+    )
+    mode.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-scrape every athlete even if photo_url is already set. Use when "
+        "IFSC has updated photos and you want to refresh them all.",
+    )
     args = parser.parse_args()
+
+    # Explicit > implicit for write operations on prod. --athlete-id is its own
+    # explicit choice (the user named a single row), so it's exempt.
+    if not args.only_missing and not args.force and args.athlete_id is None:
+        parser.error(
+            "must pass one of --only-missing (skip rows with photo_url set) or "
+            "--force (re-scrape everything). Refusing to run without an explicit choice."
+        )
 
     SessionFactory = init_db()
 
@@ -232,10 +257,14 @@ def main() -> None:
                     sys.exit(1)
                 athletes = [target]
             else:
-                athletes = list(
-                    session.execute(
-                        select(Athlete).order_by(Athlete.id.asc())
-                    ).scalars()
+                stmt = select(Athlete).order_by(Athlete.id.asc())
+                if args.only_missing:
+                    stmt = stmt.where(Athlete.photo_url.is_(None))
+                athletes = list(session.execute(stmt).scalars())
+                log.info(
+                    "Mode=%s — %d athletes queued for scrape.",
+                    "only-missing" if args.only_missing else "force",
+                    len(athletes),
                 )
 
             id_index = _build_ifsc_id_index(

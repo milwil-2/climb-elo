@@ -95,5 +95,14 @@ jobs:
         run: uv run python scripts/compute_combined_ratings.py
 
       # ----------------------------------------------------------------------
+      # Issue #93: incrementally enrich any newly-discovered athletes with their
+      # IFSC photo + body metrics. --only-missing makes this cheap in steady
+      # state (skips rows whose photo_url is already set). The one-time backfill
+      # for the full ~2,700-athlete population is run locally by Milan — see
+      # the "One-time setup" section in CLAUDE.md.
+      - name: Enrich athlete profiles (photos, body metrics)
+        run: uv run python scripts/scrape_athlete_profiles.py --only-missing
+
+      # ----------------------------------------------------------------------
       - name: Show DB counts
         run: uv run python scripts/validate_db_counts.py
