@@ -31,9 +31,17 @@ uv run python scripts/run_backfill.py
 uv run python scripts/run_backtest.py   # validates model beats baseline by ≥15pp
 uv run python scripts/compute_combined_ratings.py  # populate BOULDER_LEAD aggregate
 
-# Athlete profile refresh (manual / occasional — Issue #86)
-uv run python scripts/scrape_athlete_profiles.py        # photo_url + body metrics from IFSC
+# Athlete profile refresh (Issue #86 / #93)
+# One of --only-missing or --force is required (no implicit default).
+uv run python scripts/scrape_athlete_profiles.py --only-missing  # skip rows with photo_url set (daily cron mode)
+uv run python scripts/scrape_athlete_profiles.py --force         # re-scrape every athlete (use when IFSC updates photos)
 uv run python scripts/scrape_athlete_profiles.py --athlete-id 5  # refresh one athlete only
+
+# One-time prod backfill (Issue #93 — run locally; GH Actions 60-min cap is too tight).
+# Takes ~10-12 min for the full ~2,700-athlete population. Steady-state ongoing
+# enrichment is handled by the --only-missing step in scrape-supabase.yml.
+#   export DATABASE_URL='<Supabase session pooler URL, port 5432>'
+#   uv run python scripts/scrape_athlete_profiles.py --only-missing
 
 # Health-check monitoring
 uv run python scripts/health_check_cli.py             # ping API; exit 0/1
