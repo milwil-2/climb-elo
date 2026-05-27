@@ -28,9 +28,13 @@ Only athletes with n_events >= 3 in BOTH Boulder AND Lead are included, to
 ensure statistical reliability (the same provisional threshold used by the ELO
 engine).
 
-Sigma combination: RMS of the two sigmas, i.e. sqrt((sigma_b**2 + sigma_l**2) / 2),
-which is the natural pooled uncertainty when combining two independent estimates.
-The RMS formula is **not** affected by the learned weights — only mu is.
+Sigma combination: by default RMS of the two sigmas, i.e.
+``sqrt((sigma_b**2 + sigma_l**2) / 2)`` — the natural pooled uncertainty when
+combining two independent estimates. When the learned-weights JSON also
+contains ``w_sigma_lead`` / ``w_sigma_boulder`` keys (Issue #78), the formula
+generalises to ``sqrt((w_σL * sigma_l**2 + w_σB * sigma_b**2) / (w_σL + w_σB))``
+— which collapses to the RMS formula at (0.5, 0.5). The σ weights are
+optimised independently of the μ weights against a Brier-score target.
 """
 
 from __future__ import annotations
@@ -61,6 +65,11 @@ MIN_EVENTS = 3
 DEFAULT_W_LEAD = 0.5
 DEFAULT_W_BOULDER = 0.5
 
+# Default σ weights (v_lead = v_boulder = 0.5 collapses to the classical
+# RMS formula sqrt((σ_b² + σ_l²) / 2)).
+DEFAULT_W_SIGMA_LEAD = 0.5
+DEFAULT_W_SIGMA_BOULDER = 0.5
+
 # Where the fitter writes its output. Read at startup; if missing or malformed
 # the script falls back to the geometric mean (DEFAULT_W_*).
 LEARNED_WEIGHTS_PATH = (
@@ -75,11 +84,20 @@ class CombinedWeights:
     The ``source`` field tags where the weights came from for runtime logging:
     ``"geometric_mean"`` for the default (0.5, 0.5) baseline or ``"learned"``
     when they were loaded from ``data/learned_combined_weights.json``.
+
+    ``w_sigma_lead`` / ``w_sigma_boulder`` are the σ-combination weights
+    introduced by Issue #78. They default to (0.5, 0.5) which collapses the
+    weighted σ formula back to the classical RMS used historically. A v1
+    learned-weights JSON without the new keys therefore loads with
+    ``sigma_source="rms"`` — fully backward compatible.
     """
 
     w_lead: float
     w_boulder: float
     source: str  # "geometric_mean" or "learned"
+    w_sigma_lead: float = DEFAULT_W_SIGMA_LEAD
+    w_sigma_boulder: float = DEFAULT_W_SIGMA_BOULDER
+    sigma_source: str = "rms"  # "rms" or "learned"
 
 
 def load_combined_weights(
@@ -173,7 +191,55 @@ def load_combined_weights(
         )
         return CombinedWeights(DEFAULT_W_LEAD, DEFAULT_W_BOULDER, "geometric_mean")
 
-    return CombinedWeights(w_lead, w_boulder, "learned")
+    # Optional σ weights (#78). Backward-compatible: a v1 payload without
+    # these keys keeps the historical RMS formula by leaving the defaults
+    # in place.
+    sigma_source = "rms"
+    w_sigma_lead = DEFAULT_W_SIGMA_LEAD
+    w_sigma_boulder = DEFAULT_W_SIGMA_BOULDER
+    if "w_sigma_lead" in payload or "w_sigma_boulder" in payload:
+        try:
+            w_sigma_lead_raw = float(payload["w_sigma_lead"])
+            w_sigma_boulder_raw = float(payload["w_sigma_boulder"])
+        except (KeyError, TypeError, ValueError):
+            log.warning("learned σ weights missing/invalid; falling back to RMS")
+        else:
+            if not (
+                math.isfinite(w_sigma_lead_raw) and math.isfinite(w_sigma_boulder_raw)
+            ):
+                log.warning(
+                    "learned σ weights non-finite (w_sigma_lead=%s, w_sigma_boulder=%s); "
+                    "falling back to RMS",
+                    w_sigma_lead_raw,
+                    w_sigma_boulder_raw,
+                )
+            elif w_sigma_lead_raw < 0 or w_sigma_boulder_raw < 0:
+                log.warning(
+                    "learned σ weights are negative (w_sigma_lead=%s, w_sigma_boulder=%s); "
+                    "falling back to RMS",
+                    w_sigma_lead_raw,
+                    w_sigma_boulder_raw,
+                )
+            elif w_sigma_lead_raw + w_sigma_boulder_raw <= 0:
+                log.warning(
+                    "learned σ weights sum to ≤0 (w_sigma_lead=%s, w_sigma_boulder=%s); "
+                    "falling back to RMS",
+                    w_sigma_lead_raw,
+                    w_sigma_boulder_raw,
+                )
+            else:
+                w_sigma_lead = w_sigma_lead_raw
+                w_sigma_boulder = w_sigma_boulder_raw
+                sigma_source = "learned"
+
+    return CombinedWeights(
+        w_lead=w_lead,
+        w_boulder=w_boulder,
+        source="learned",
+        w_sigma_lead=w_sigma_lead,
+        w_sigma_boulder=w_sigma_boulder,
+        sigma_source=sigma_source,
+    )
 
 
 def compute_combined_mu(
@@ -199,31 +265,65 @@ def compute_combined_mu(
     return (mu_lead**weights.w_lead) * (mu_boulder**weights.w_boulder)
 
 
-def compute_combined_sigma(sigma_boulder: float, sigma_lead: float) -> float:
-    """Root-mean-square of Boulder and Lead sigmas (pooled uncertainty).
+def compute_combined_sigma(
+    sigma_boulder: float,
+    sigma_lead: float,
+    weights: CombinedWeights | None = None,
+) -> float:
+    """Weighted RMS of Boulder and Lead sigmas (pooled uncertainty).
 
-    Note: sigma combination is *not* affected by the learned weights. The
-    learned weights are fitted to the mu-ranking task only; sigma is a
-    secondary quantity used by the Monte Carlo projector for uncertainty
-    bands and is left at its principled RMS form.
+    With ``weights=None`` or with the default σ weights
+    ``(w_sigma_lead = w_sigma_boulder = 0.5)``, this collapses to the
+    classical RMS formula ``sqrt((σ_b² + σ_l²) / 2)`` and matches the
+    historical behaviour exactly. When the learned-weights JSON includes
+    σ-specific weights (Issue #78), the formula becomes
+
+        sqrt((w_σL * σ_l² + w_σB * σ_b²) / (w_σL + w_σB))
+
+    which lets one discipline's uncertainty dominate the combined-format
+    σ if calibration favours it. The σ weights are independent of the μ
+    weights — they are optimised against a Brier-score target on top-3
+    finish probability, while the μ weights are optimised on log-loss.
     """
-    return math.sqrt((sigma_boulder**2 + sigma_lead**2) / 2.0)
+    if weights is None or weights.sigma_source == "rms":
+        return math.sqrt((sigma_boulder**2 + sigma_lead**2) / 2.0)
+    denom = weights.w_sigma_lead + weights.w_sigma_boulder
+    if denom <= 0:
+        # Defensive: load_combined_weights already rejects this case, but
+        # treat it as RMS rather than crash on a malformed in-memory value.
+        return math.sqrt((sigma_boulder**2 + sigma_lead**2) / 2.0)
+    return math.sqrt(
+        (
+            weights.w_sigma_lead * sigma_lead**2
+            + weights.w_sigma_boulder * sigma_boulder**2
+        )
+        / denom
+    )
 
 
 def main() -> None:
     weights = load_combined_weights()
     if weights.source == "learned":
         log.info(
-            "Using LEARNED Boulder+Lead weights: w_lead=%.4f, w_boulder=%.4f "
+            "Using LEARNED Boulder+Lead μ weights: w_lead=%.4f, w_boulder=%.4f "
             "(loaded from %s)",
             weights.w_lead,
             weights.w_boulder,
             LEARNED_WEIGHTS_PATH,
         )
+        if weights.sigma_source == "learned":
+            log.info(
+                "Using LEARNED σ-combination weights: w_σ_lead=%.4f, w_σ_boulder=%.4f",
+                weights.w_sigma_lead,
+                weights.w_sigma_boulder,
+            )
+        else:
+            log.info("Using RMS σ combination (no learned σ weights in JSON).")
     else:
         log.info(
-            "Using GEOMETRIC-MEAN Boulder+Lead weights (w_lead=w_boulder=0.5). "
-            "Run scripts/fit_combined_weights.py to attempt learned weights."
+            "Using GEOMETRIC-MEAN Boulder+Lead weights (w_lead=w_boulder=0.5) "
+            "with RMS σ combination. Run scripts/fit_combined_weights.py to attempt "
+            "learned weights."
         )
 
     SessionFactory = init_db()
@@ -279,7 +379,7 @@ def main() -> None:
             lead = lead_ratings[aid]
 
             mu_combined = compute_combined_mu(b.mu, lead.mu, weights)
-            sigma_combined = compute_combined_sigma(b.sigma, lead.sigma)
+            sigma_combined = compute_combined_sigma(b.sigma, lead.sigma, weights)
 
             # Use the more recent of the two last_event_at dates
             last_event = None
