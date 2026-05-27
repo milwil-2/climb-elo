@@ -96,6 +96,46 @@ PHI_CEILING = SIGMA_CEILING / GLICKO2_SCALE
 
 MARGIN_CAP = 1.5  # MOV cap, retained from prior tuning
 
+# ---------------------------------------------------------------------------
+# Gap-conditioned MOV (Issue #53, 538-style)
+# ---------------------------------------------------------------------------
+#
+# The base MOV multiplier ``min(1 + gap/max_gap, MARGIN_CAP)`` is unconditioned
+# on the rating gap — an elite crushing a junior earns the same MOV bonus as
+# an elite crushing a peer. 538's NFL/NBA experience and Kovalchik (2020) on
+# ATP tennis both show this drives autocorrelation drift at the top.
+#
+# Fix: damp the MOV bonus when the *favourite* wins by Δμ:
+#   multiplier = base · MOV_SOFTENING / (max(Δμ, 0)/MOV_RATING_SCALE + MOV_SOFTENING)
+#
+# Asymmetric on purpose — an upset (Δμ < 0, underdog wins) keeps the full MOV
+# bonus, since a big-margin upset is genuinely high-information.
+#
+# Constants:
+# * ``MOV_RATING_SCALE = 400.0`` — chosen for the current production μ regime
+#   (top ≈ 2250, mean ≈ 1500, so Δμ in pairwise contests spans 0–750). At
+#   Δμ=400 the damping factor is 2.2/3.2 ≈ 0.69 (31% reduction); at Δμ=800
+#   it's 2.2/4.2 ≈ 0.52 (48% reduction). Matches 538's intent of "big bonuses
+#   for peer matchups, shrink for mismatches".  Grid-search refinement is a
+#   follow-up (#80 K-regrid pairs naturally with this).
+# * ``MOV_SOFTENING = 2.2`` — 538 default. Controls how fast the damping
+#   kicks in.  Lower → harsher damping; higher → milder.
+MOV_RATING_SCALE = 400.0
+MOV_SOFTENING = 2.2
+
+
+def _gap_conditioning_factor(rating_gap: float) -> float:
+    """538-style asymmetric damping factor for the MOV multiplier.
+
+    ``factor = MOV_SOFTENING / (max(rating_gap, 0)/MOV_RATING_SCALE + MOV_SOFTENING)``
+
+    Returns 1.0 when ``rating_gap <= 0`` (upset side — full MOV bonus retained)
+    and shrinks toward 0 as the favourite's rating advantage grows.
+    """
+    positive_gap = max(rating_gap, 0.0)
+    return MOV_SOFTENING / (positive_gap / MOV_RATING_SCALE + MOV_SOFTENING)
+
+
 # Speed-specific margin: max meaningful time gap in seconds.
 SPEED_MAX_GAP_SECONDS = 2.0
 
@@ -262,11 +302,24 @@ def compute_margin_multiplier(
     score_a: float | None,
     score_b: float | None,
     max_gap: float = 20.0,
+    rating_gap: float = 0.0,
 ) -> float:
+    """Lead-style margin multiplier with optional 538-style gap conditioning.
+
+    ``rating_gap`` is ``μ_winner − μ_loser`` (pre-update). Defaults to 0.0 for
+    backward compatibility; the gap-conditioned version reduces exactly to the
+    legacy formula when ``rating_gap == 0``. When the favourite (rating_gap > 0)
+    wins, the bonus is damped per :func:`_gap_conditioning_factor`. Upsets
+    (rating_gap < 0) keep the full bonus.
+
+    Note: the MARGIN_CAP ceiling is enforced on the *base* multiplier; the
+    conditioning factor can only shrink it further, never above the cap.
+    """
     if score_a is None or score_b is None:
         return 1.0
     gap = abs(score_a - score_b)
-    return min(1.0 + gap / max_gap, MARGIN_CAP)
+    base = min(1.0 + gap / max_gap, MARGIN_CAP)
+    return base * _gap_conditioning_factor(rating_gap)
 
 
 BOULDER_MARGIN_MAX_GAP = 1000.0
@@ -323,20 +376,29 @@ def normalize_boulder_score(raw_score: str) -> float | None:
 def compute_boulder_margin_multiplier(
     score_a: float | None,
     score_b: float | None,
+    rating_gap: float = 0.0,
 ) -> float:
-    """Margin multiplier for Boulder discipline."""
-    return compute_margin_multiplier(score_a, score_b, max_gap=BOULDER_MARGIN_MAX_GAP)
+    """Margin multiplier for Boulder discipline (538-style gap-conditioned)."""
+    return compute_margin_multiplier(
+        score_a, score_b, max_gap=BOULDER_MARGIN_MAX_GAP, rating_gap=rating_gap
+    )
 
 
 def compute_speed_margin_multiplier(
     winner_time: float | None,
     loser_time: float | None,
+    rating_gap: float = 0.0,
 ) -> float:
-    """Margin multiplier for Speed discipline (times in seconds, lower is better)."""
+    """Margin multiplier for Speed discipline (times in seconds, lower is better).
+
+    Gap-conditioned in the same fashion as Lead/Boulder — favourite wins get
+    damped, upsets keep the full bonus. See :func:`compute_margin_multiplier`.
+    """
     if winner_time is None or loser_time is None:
         return 1.0
     gap = abs(loser_time - winner_time)
-    return min(1.0 + gap / SPEED_MAX_GAP_SECONDS, MARGIN_CAP)
+    base = min(1.0 + gap / SPEED_MAX_GAP_SECONDS, MARGIN_CAP)
+    return base * _gap_conditioning_factor(rating_gap)
 
 
 # ---------------------------------------------------------------------------
@@ -438,20 +500,30 @@ def calculate_round_updates(
             e_i = glicko2_expected_score(mu_i, mu_j, sigma_j)
             e_j = 1.0 - e_i  # symmetric
 
-            # Margin multiplier per discipline.
+            # Margin multiplier per discipline. The rating gap (μ_winner −
+            # μ_loser, using *pre-update* μs) feeds the 538-style gap
+            # conditioning: favourite wins (Δμ > 0) get a damped bonus, upsets
+            # (Δμ < 0) keep the full bonus. See ``_gap_conditioning_factor``.
+            rating_gap = mu_i - mu_j  # res_i is the winner (rank < res_j's rank)
             if res_i.dnf:
                 margin_mult = 1.0
             elif discipline == Discipline.SPEED:
                 margin_mult = compute_speed_margin_multiplier(
-                    res_i.score_normalized, res_j.score_normalized
+                    res_i.score_normalized,
+                    res_j.score_normalized,
+                    rating_gap=rating_gap,
                 )
             elif discipline == Discipline.BOULDER:
                 margin_mult = compute_boulder_margin_multiplier(
-                    res_i.score_normalized, res_j.score_normalized
+                    res_i.score_normalized,
+                    res_j.score_normalized,
+                    rating_gap=rating_gap,
                 )
             else:
                 margin_mult = compute_margin_multiplier(
-                    res_i.score_normalized, res_j.score_normalized
+                    res_i.score_normalized,
+                    res_j.score_normalized,
+                    rating_gap=rating_gap,
                 )
 
             # K_eff weights this pair by the opponent's certainty (g(φ_opp))
