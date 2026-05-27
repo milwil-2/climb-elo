@@ -13,10 +13,13 @@ from climbing_elo.engine.elo import (
     DEFAULT_SIGMA,
     GLICKO2_SCALE,
     MARGIN_CAP,
+    MOV_RATING_SCALE,
+    MOV_SOFTENING,
     SIGMA_CEILING,
     SIGMA_FLOOR,
     AthleteRating,
     AthleteResult,
+    _gap_conditioning_factor,
     _is_new_boulder_format,
     calculate_round_updates,
     compute_boulder_margin_multiplier,
@@ -638,3 +641,170 @@ def test_speed_dns_excluded():
     ids_updated = {u.athlete_id for u in updates}
     assert 3 not in ids_updated
     assert len(updates) == 2
+
+
+# ---------------------------------------------------------------------------
+# Gap-conditioned MOV (Issue #53)
+# ---------------------------------------------------------------------------
+
+
+def test_gap_conditioning_factor_zero_gap_is_one():
+    """At Δμ = 0 (peer matchup), no damping — factor must equal 1.0."""
+    assert _gap_conditioning_factor(0.0) == 1.0
+
+
+def test_gap_conditioning_factor_negative_gap_is_one():
+    """Upsets (Δμ < 0, underdog wins) keep full MOV bonus — factor = 1.0."""
+    assert _gap_conditioning_factor(-100.0) == 1.0
+    assert _gap_conditioning_factor(-500.0) == 1.0
+    assert _gap_conditioning_factor(-1000.0) == 1.0
+
+
+def test_gap_conditioning_factor_positive_gap_damps():
+    """Favourite wins (Δμ > 0) are damped — factor < 1.0 and monotonic."""
+    f_100 = _gap_conditioning_factor(100.0)
+    f_400 = _gap_conditioning_factor(400.0)
+    f_800 = _gap_conditioning_factor(800.0)
+    assert 0.0 < f_800 < f_400 < f_100 < 1.0
+
+
+def test_gap_conditioning_factor_at_scale_matches_538_formula():
+    """Direct check: at Δμ = MOV_RATING_SCALE, factor = SOFTENING / (1 + SOFTENING)."""
+    f = _gap_conditioning_factor(MOV_RATING_SCALE)
+    expected = MOV_SOFTENING / (1.0 + MOV_SOFTENING)
+    assert math.isclose(f, expected, rel_tol=1e-9)
+
+
+def test_margin_multiplier_default_rating_gap_back_compat():
+    """With rating_gap=0 (the default), gap-conditioned formula = legacy formula."""
+    mult = compute_margin_multiplier(30.0, 20.0, max_gap=20.0)
+    # Legacy: min(1 + 10/20, 1.5) = 1.5
+    assert abs(mult - 1.5) < 0.01
+
+
+def test_margin_multiplier_peer_matchup_full_bonus():
+    """Δμ = 0 leaves the multiplier unchanged from the legacy formula."""
+    legacy = min(1.0 + 10.0 / 20.0, MARGIN_CAP)  # 1.5
+    new = compute_margin_multiplier(30.0, 20.0, max_gap=20.0, rating_gap=0.0)
+    assert math.isclose(new, legacy, rel_tol=1e-9)
+
+
+def test_margin_multiplier_favourite_wins_damped():
+    """Favourite wins → damped multiplier (smaller than the peer-matchup case)."""
+    peer = compute_margin_multiplier(30.0, 20.0, max_gap=20.0, rating_gap=0.0)
+    favourite = compute_margin_multiplier(30.0, 20.0, max_gap=20.0, rating_gap=400.0)
+    assert favourite < peer
+    # Same gap, scaling factor = 2.2 / (1 + 2.2) = 0.6875
+    expected = peer * (MOV_SOFTENING / (1.0 + MOV_SOFTENING))
+    assert math.isclose(favourite, expected, rel_tol=1e-9)
+
+
+def test_margin_multiplier_upset_keeps_full_bonus():
+    """Upset (Δμ < 0, underdog wins) is asymmetric — no damping."""
+    peer = compute_margin_multiplier(30.0, 20.0, max_gap=20.0, rating_gap=0.0)
+    upset = compute_margin_multiplier(30.0, 20.0, max_gap=20.0, rating_gap=-400.0)
+    assert math.isclose(upset, peer, rel_tol=1e-9)
+
+
+def test_margin_multiplier_cap_still_respected_after_gap_conditioning():
+    """MARGIN_CAP is on the base; gap conditioning only shrinks further."""
+    # Huge score gap and peer matchup → exactly MARGIN_CAP.
+    cap_peer = compute_margin_multiplier(100.0, 0.0, max_gap=20.0, rating_gap=0.0)
+    assert cap_peer == MARGIN_CAP
+    # Huge score gap and large favourite-side Δμ → strictly below MARGIN_CAP.
+    cap_fav = compute_margin_multiplier(100.0, 0.0, max_gap=20.0, rating_gap=600.0)
+    assert cap_fav < MARGIN_CAP
+    # And it is the base * damping (= MARGIN_CAP * factor).
+    expected = MARGIN_CAP * _gap_conditioning_factor(600.0)
+    assert math.isclose(cap_fav, expected, rel_tol=1e-9)
+
+
+def test_boulder_margin_gap_conditioned():
+    """Boulder margin participates in gap conditioning too."""
+    peer = compute_boulder_margin_multiplier(4000.0, 3000.0, rating_gap=0.0)
+    favourite = compute_boulder_margin_multiplier(4000.0, 3000.0, rating_gap=500.0)
+    upset = compute_boulder_margin_multiplier(4000.0, 3000.0, rating_gap=-500.0)
+    assert favourite < peer
+    assert math.isclose(upset, peer, rel_tol=1e-9)
+
+
+def test_speed_margin_gap_conditioned():
+    """Speed margin participates in gap conditioning too."""
+    peer = compute_speed_margin_multiplier(6.0, 7.0, rating_gap=0.0)
+    favourite = compute_speed_margin_multiplier(6.0, 7.0, rating_gap=500.0)
+    upset = compute_speed_margin_multiplier(6.0, 7.0, rating_gap=-500.0)
+    assert favourite < peer
+    assert math.isclose(upset, peer, rel_tol=1e-9)
+
+
+def test_zero_sum_invariant_holds_with_gap_conditioning():
+    """The new MOV must not break the zero-sum invariant — heterogeneous μ field."""
+    # Mixed favourites + underdogs so gap-conditioning fires in both directions.
+    results = [AthleteResult(athlete_id=i, rank=i) for i in range(1, 9)]
+    ratings = {
+        1: AthleteRating(1, mu=1800, n_events=10, provisional=False),
+        2: AthleteRating(2, mu=1750, n_events=10, provisional=False),
+        3: AthleteRating(3, mu=1700, n_events=10, provisional=False),
+        4: AthleteRating(4, mu=1650, n_events=10, provisional=False),
+        5: AthleteRating(5, mu=1600, n_events=10, provisional=False),
+        6: AthleteRating(6, mu=1550, n_events=10, provisional=False),
+        7: AthleteRating(7, mu=1500, n_events=10, provisional=False),
+        8: AthleteRating(8, mu=1450, n_events=10, provisional=False),
+    }
+    updates = calculate_round_updates(
+        results, ratings, EventTier.WORLD_CUP, RoundType.FINAL, date(2024, 6, 1)
+    )
+    total_delta = sum(u.mu_after - u.mu_before for u in updates)
+    assert abs(total_delta) < 0.0001
+
+
+def test_calculate_round_updates_elite_vs_junior_smaller_swing_than_peer_vs_peer():
+    """Headline test for Issue #53: elite crushing a junior by margin X should move
+    less than a peer crushing a peer by the same margin X.
+
+    Set up two 2-athlete rounds with identical *score* gap but different rating
+    gaps. The favourite's μ swing should be smaller in the mismatched case.
+    """
+    score_winner = 30.0
+    score_loser = 20.0
+
+    # Peer matchup (Δμ = 0).
+    results_peer = [
+        AthleteResult(athlete_id=1, rank=1, score_normalized=score_winner),
+        AthleteResult(athlete_id=2, rank=2, score_normalized=score_loser),
+    ]
+    ratings_peer = {
+        1: AthleteRating(1, mu=1500.0, n_events=10, provisional=False),
+        2: AthleteRating(2, mu=1500.0, n_events=10, provisional=False),
+    }
+    upd_peer = calculate_round_updates(
+        results_peer,
+        ratings_peer,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+    )
+    swing_peer = next(u for u in upd_peer if u.athlete_id == 1).mu_after - 1500.0
+
+    # Elite vs junior (Δμ = 600).
+    results_elite = [
+        AthleteResult(athlete_id=1, rank=1, score_normalized=score_winner),
+        AthleteResult(athlete_id=2, rank=2, score_normalized=score_loser),
+    ]
+    ratings_elite = {
+        1: AthleteRating(1, mu=2100.0, n_events=10, provisional=False),
+        2: AthleteRating(2, mu=1500.0, n_events=10, provisional=False),
+    }
+    upd_elite = calculate_round_updates(
+        results_elite,
+        ratings_elite,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+    )
+    swing_elite = next(u for u in upd_elite if u.athlete_id == 1).mu_after - 2100.0
+
+    # Note: the elite is *already favoured* and so the (1 − E) term is small,
+    # which also shrinks the swing. The gap-conditioned MOV stacks on top of
+    # that. Either way, elite-side swing must be smaller than peer-side.
+    assert swing_elite < swing_peer
