@@ -143,3 +143,7 @@ from climbing_elo.engine import oos_modes  # noqa: E402,F401
 # to ``BACKTEST_VARIANTS``. Keep this import at the bottom of the package
 # so the registry / protocols are fully defined first (avoids circular import).
 from climbing_elo.engine import baselines as _baselines  # noqa: F401, E402
+
+# G-Elo bucketed-MOV variant — Issue #84 (Szczecinski 2022 benchmark).
+# Same import-side-effect registration pattern as the baselines above.
+from climbing_elo.engine import gelo as _gelo  # noqa: F401, E402
