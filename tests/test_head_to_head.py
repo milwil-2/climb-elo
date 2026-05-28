@@ -402,6 +402,42 @@ class TestHeadToHeadResult:
         # Cross-gender pair with no shared events → the note must render.
         assert "no shared events" in html.lower() or "cross-gender" in html.lower()
 
+    def test_two_sided_ring_renders_both_arcs(self, client):
+        """#99: the result page draws two distinct arcs (A + B) and labels both."""
+        tc, adam_id, janja_id, _ = client
+        r = tc.get(f"/head-to-head/{adam_id}/{janja_id}?discipline=lead")
+        assert r.status_code == 200
+        html = r.text
+        # Two distinct arc circles present (A bright, B muted).
+        assert "fg-a" in html
+        assert "fg-b" in html
+        # Ring legend labels both athletes.
+        assert "ring-legend" in html
+        assert "Adam Ondra" in html
+        assert "Janja Garnbret" in html
+
+    def test_two_sided_ring_underdog_proportional(self, client):
+        """#99: when A is the underdog (Adam 1750 < Janja 1850), A's arc must be
+        shorter than B's — both shares render proportionally, not just A."""
+        import re
+
+        tc, adam_id, janja_id, _ = client
+        # Adam (A) is the underdog vs Janja (B).
+        r = tc.get(f"/head-to-head/{adam_id}/{janja_id}?discipline=lead")
+        assert r.status_code == 200
+        html = r.text
+        # Pull the two arc dash-array lengths (first number of each "seg gap").
+        m_a = re.search(r'class="fg-a"\s+stroke-dasharray="([\d.]+)', html)
+        m_b = re.search(r'class="fg-b"\s+stroke-dasharray="([\d.]+)', html)
+        assert m_a and m_b, "both arcs must carry a stroke-dasharray"
+        seg_a = float(m_a.group(1))
+        seg_b = float(m_b.group(1))
+        # A is the underdog → its visible arc is the shorter of the two.
+        assert seg_a < seg_b
+        # Both arcs are non-trivial (B is not the whole circle, A is not zero).
+        assert seg_a > 0
+        assert seg_b > 0
+
 
 # ---------------------------------------------------------------------------
 # Tests — error handling
