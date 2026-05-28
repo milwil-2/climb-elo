@@ -64,7 +64,10 @@ def test_factory(test_db_path):
     janja = Athlete(name="Janja Garnbret", gender=Gender.F, nationality="SVN")
     # Third athlete with no shared events with the first two
     solo = Athlete(name="Solo Climber", gender=Gender.M, nationality="USA")
-    session.add_all([adam, janja, solo])
+    # Cross-gender partner with a Lead rating but no shared events with Adam
+    # (used by the cross-gender result-route test — #98).
+    cross_f = Athlete(name="Cross Woman", gender=Gender.F, nationality="JPN")
+    session.add_all([adam, janja, solo, cross_f])
     session.flush()
 
     # Ratings for Lead
@@ -97,6 +100,17 @@ def test_factory(test_db_path):
             mu=1600.0,
             sigma=200.0,
             n_events=5,
+            provisional=False,
+            last_event_at=past,
+        )
+    )
+    session.add(
+        Rating(
+            athlete_id=cross_f.id,
+            discipline=Discipline.LEAD,
+            mu=1820.0,
+            sigma=110.0,
+            n_events=12,
             provisional=False,
             last_event_at=past,
         )
@@ -240,11 +254,35 @@ class TestHeadToHeadForm:
         assert "lead" in text
         assert "boulder" in text
 
-    def test_form_contains_athlete_data(self, client):
+    def test_form_renders_empty_no_preloaded_pool(self, client):
+        """#98: the form now loads empty — search-driven, no pre-loaded pool.
+
+        The old <select name="a_id"> / <select name="b_id"> athlete dropdowns
+        must be gone, replaced by two typeahead search inputs + a gender control.
+        (Athlete names may still appear in the page *chrome* ticker — that's not
+        the picker pool, so we assert on the picker structure instead.)
+        """
         tc, *_ = client
         r = tc.get("/head-to-head")
-        # At least one of the seeded athletes must appear in the picker pool.
-        assert "Adam Ondra" in r.text or "Janja Garnbret" in r.text
+        assert r.status_code == 200
+        html = r.text
+        # No pre-loaded athlete <select> pools.
+        assert 'name="a_id"' not in html
+        assert 'name="b_id"' not in html
+        assert 'id="a-sel"' not in html
+        assert 'id="b-sel"' not in html
+        # Two typeahead inputs + the gender control are present instead.
+        assert 'id="search-a"' in html
+        assert 'id="search-b"' in html
+        assert 'id="gender-seg"' in html
+        # Typeahead is wired to the search API.
+        assert "/api/v1/athletes?q=" in html
+
+    def test_form_offers_cross_gender_scope(self, client):
+        """The gender control exposes an explicit all/cross-gender option."""
+        tc, *_ = client
+        r = tc.get("/head-to-head")
+        assert "cross-gender" in r.text.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +366,41 @@ class TestHeadToHeadResult:
         r = tc.get(f"/head-to-head/{adam_id}/{janja_id}")
         assert r.status_code == 200
         assert "Lead" in r.text
+
+    def test_cross_gender_result_renders(self, client):
+        """#98: a man (Adam, M) vs a woman (Cross Woman, F) must compare cleanly.
+
+        Both have Lead ratings, so the analytic win-prob still computes. The two
+        share no events, so the template surfaces a cross-gender / no-shared note.
+        """
+        import re
+        from sqlalchemy import select as _select
+
+        from climbing_elo.models import Athlete as _Athlete
+
+        tc, adam_id, _, _ = client
+        # Look up Cross Woman's id via the patched test session.
+        with _v1._session() as s:
+            cross_f_id = (
+                s.execute(_select(_Athlete).where(_Athlete.name == "Cross Woman"))
+                .scalar_one()
+                .id
+            )
+
+        r = tc.get(f"/head-to-head/{adam_id}/{cross_f_id}?discipline=lead")
+        assert r.status_code == 200, r.text[:500]
+        html = r.text
+        assert "Adam Ondra" in html
+        assert "Cross Woman" in html
+        # Win probabilities still present and sum to ~100.
+        m = re.search(
+            r"Win probability A:\s*(\d+\.\d+)%\s*[·•]\s*B:\s*(\d+\.\d+)%",
+            html,
+        )
+        assert m is not None
+        assert abs(float(m.group(1)) + float(m.group(2)) - 100.0) < 0.2
+        # Cross-gender pair with no shared events → the note must render.
+        assert "no shared events" in html.lower() or "cross-gender" in html.lower()
 
 
 # ---------------------------------------------------------------------------
