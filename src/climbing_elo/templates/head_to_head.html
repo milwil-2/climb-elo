@@ -64,7 +64,7 @@
     <div class="crumbs reveal"><a href="/">Home</a> / Head-to-head</div>
     <h1 class="reveal d2">Two athletes,<br/>one <em>probability</em>.</h1>
     <p class="lead reveal d3">
-      Win probability is the closed-form ELO expectation given current &mu; and discipline.
+      Win probability is the closed-form ELO expectation given current R and discipline.
       The chart underneath is the actual rating history &mdash; the model has receipts.
     </p>
   </section>
@@ -88,7 +88,7 @@
           <select name="a_id" id="a-sel">
             {%- for row in pool -%}
             <option value="{{ row.id }}"{% if h2h_result and h2h_result.athlete_a.id == row.id %} selected{% endif %}>
-              {{ row.name }} &middot; &mu; {{ row.mu }}
+              {{ row.name }} &middot; R {{ row.mu }}
             </option>
             {%- endfor -%}
           </select>
@@ -98,7 +98,7 @@
           <select name="b_id" id="b-sel">
             {%- for row in pool -%}
             <option value="{{ row.id }}"{% if h2h_result and h2h_result.athlete_b.id == row.id %} selected{% endif %}>
-              {{ row.name }} &middot; &mu; {{ row.mu }}
+              {{ row.name }} &middot; R {{ row.mu }}
             </option>
             {%- endfor -%}
           </select>
@@ -115,7 +115,7 @@
           <div class="label">Athlete A</div>
           <div class="name">{{ h2h_result.athlete_a.name }}</div>
           <div class="nat">{{ h2h_result.athlete_a.nationality }}</div>
-          <div class="rating"><b>{{ h2h_result.athlete_a.mu }}</b> &mu; &middot; &sigma; {{ h2h_result.athlete_a.sigma }}</div>
+          <div class="rating"><b>{{ h2h_result.athlete_a.mu }}</b> R &middot; &sigma; {{ h2h_result.athlete_a.sigma }}</div>
         </div>
 
         <!-- Ring -->
@@ -140,7 +140,7 @@
           <div class="label">Athlete B</div>
           <div class="name">{{ h2h_result.athlete_b.name }}</div>
           <div class="nat">{{ h2h_result.athlete_b.nationality }}</div>
-          <div class="rating"><b>{{ h2h_result.athlete_b.mu }}</b> &mu; &middot; &sigma; {{ h2h_result.athlete_b.sigma }}</div>
+          <div class="rating"><b>{{ h2h_result.athlete_b.mu }}</b> R &middot; &sigma; {{ h2h_result.athlete_b.sigma }}</div>
         </div>
       </div>
 
@@ -159,7 +159,7 @@
     <!-- Insight strip -->
     <div class="insight-grid reveal d3">
       <div class="ins">
-        <div class="ttl">&mu; gap</div>
+        <div class="ttl">R gap</div>
         <div class="v">{% if h2h_result.mu_gap > 0 %}+{% endif %}{{ h2h_result.mu_gap }}</div>
         <div class="s">Rating difference. Each 400 points doubles the closed-form odds.</div>
       </div>
@@ -240,7 +240,7 @@ function submitH2H() {
         tooltip: {
           callbacks: {
             title: function() { return ''; },
-            label: function(ctx) { return ctx.dataset.label + ' μ ' + ctx.parsed.y; }
+            label: function(ctx) { return ctx.dataset.label + ' R ' + ctx.parsed.y; }
           }
         }
       },

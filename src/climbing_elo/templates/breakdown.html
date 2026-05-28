@@ -78,7 +78,7 @@
     <p class="lead reveal d3">
       Pairwise contests for <a href="/athletes/{{ athlete.id }}">{{ athlete.name }}</a>
       at <a href="/events/{{ event.id }}">{{ event.name }} ({{ event.season }})</a>.
-      Each row is one opponent; &Delta;&mu; is the share of the rating change attributed to that pairing.
+      Each row is one opponent; &Delta;R is the share of the rating change attributed to that pairing.
     </p>
   </section>
 
@@ -116,7 +116,7 @@
             <th>Result</th>
             <th style="text-align:right">Expected</th>
             <th style="text-align:right">Actual</th>
-            <th style="text-align:right">&Delta;&mu;</th>
+            <th style="text-align:right">&Delta;R</th>
             <th style="text-align:right">Margin</th>
           </tr></thead>
           <tbody>
@@ -157,7 +157,7 @@
           <span class="v">&minus;{{ tpb.debit }}</span>
         </div>
         <div class="tpb-cell">
-          <span class="l">Net &Delta;&mu;</span>
+          <span class="l">Net &Delta;R</span>
           <span class="v {% if tpb.delta > 0 %}up{% elif tpb.delta < 0 %}dn{% endif %}">
             {% if tpb.delta > 0 %}+{% endif %}{{ tpb.delta }}
           </span>
