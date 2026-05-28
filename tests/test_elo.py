@@ -937,3 +937,235 @@ def test_tpb_does_not_disturb_pair_updates():
     # μ deltas must remain zero-sum on the pair update alone.
     total = sum(u.mu_after - u.mu_before for u in updates)
     assert abs(total) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Bracket-native Speed model (Issue #56, R6)
+# ---------------------------------------------------------------------------
+
+
+def test_speed_bracket_zero_sum_invariant_in_final():
+    """Bracket-native Speed final must zero-sum across the field."""
+    # 8-athlete final → 4 adjacent pairs → each pair sums to zero.
+    results = [
+        AthleteResult(athlete_id=i, rank=i, score_normalized=6.0 + i * 0.1)
+        for i in range(1, 9)
+    ]
+    ratings = {
+        i: AthleteRating(
+            athlete_id=i, mu=1500.0 + (5 - i) * 25, n_events=10, provisional=False
+        )
+        for i in range(1, 9)
+    }
+    updates = calculate_round_updates(
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.SPEED,
+    )
+    total_delta = sum(u.mu_after - u.mu_before for u in updates)
+    assert abs(total_delta) < 1e-9
+    # Each athlete should have exactly 1 contributing pair (its adjacent
+    # bracket opponent), unlike P-L where rank-1 would have 7 contributions.
+    for u in updates:
+        assert len(u.contributing_pairs) == 1, (
+            f"Speed bracket pairs for athlete {u.athlete_id}: expected 1, got "
+            f"{len(u.contributing_pairs)}"
+        )
+
+
+def test_speed_bracket_tie_produces_zero_net_delta():
+    """When two adjacent times are within ε, the pair contributes a 0.5/0.5 outcome.
+
+    With μ_a == μ_b and a tie, the expected score is exactly 0.5 (peer) — and
+    actual is 0.5, so delta is exactly 0.0 for both athletes.
+    """
+    # 0.005 s gap < default ε = 0.01 s → treated as a tie.
+    results = [
+        AthleteResult(athlete_id=1, rank=1, score_normalized=6.500),
+        AthleteResult(athlete_id=2, rank=2, score_normalized=6.505),
+    ]
+    ratings = {
+        1: AthleteRating(1, mu=1500.0, n_events=10, provisional=False),
+        2: AthleteRating(2, mu=1500.0, n_events=10, provisional=False),
+    }
+    updates = calculate_round_updates(
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.SPEED,
+    )
+    by_id = {u.athlete_id: u for u in updates}
+    delta_1 = by_id[1].mu_after - by_id[1].mu_before
+    delta_2 = by_id[2].mu_after - by_id[2].mu_before
+    assert abs(delta_1) < 1e-9, f"tied winner delta should be 0, got {delta_1}"
+    assert abs(delta_2) < 1e-9, f"tied loser delta should be 0, got {delta_2}"
+    # The breakdown should record "tied" rather than "won"/"lost".
+    assert by_id[1].contributing_pairs[0].result == "tied"
+    assert by_id[2].contributing_pairs[0].result == "tied"
+    # Margin multiplier is neutral for ties.
+    assert by_id[1].contributing_pairs[0].margin_multiplier == 1.0
+
+
+def test_speed_bracket_favourite_wins_small_swing():
+    """μ-favoured athlete winning → small positive μ delta (gap-conditioned + low surprise)."""
+    results = [
+        AthleteResult(athlete_id=1, rank=1, score_normalized=6.5),
+        AthleteResult(athlete_id=2, rank=2, score_normalized=6.7),
+    ]
+    ratings = {
+        1: AthleteRating(1, mu=1800.0, n_events=10, provisional=False),
+        2: AthleteRating(2, mu=1500.0, n_events=10, provisional=False),
+    }
+    updates = calculate_round_updates(
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.SPEED,
+    )
+    delta = next(u for u in updates if u.athlete_id == 1).mu_after - 1800.0
+    # Positive but small — the favourite was expected to win, and the gap-
+    # conditioning further damps the MOV bonus.
+    assert 0.0 < delta < 5.0, f"favourite swing {delta} should be small positive"
+
+
+def test_speed_bracket_upset_produces_larger_swing_than_favourite_win():
+    """Slower-rated athlete posts the faster time → larger μ swing than the favourite-win baseline.
+
+    The upset path keeps the full MOV bonus (gap-conditioning is asymmetric)
+    and the expected-score term ``(1 - E)`` is close to 1.0 because the
+    underdog wasn't expected to win.
+    """
+    results = [
+        AthleteResult(athlete_id=1, rank=1, score_normalized=6.5),
+        AthleteResult(athlete_id=2, rank=2, score_normalized=6.7),
+    ]
+
+    # Underdog wins (μ_1 = 1500, μ_2 = 1800).
+    ratings_upset = {
+        1: AthleteRating(1, mu=1500.0, n_events=10, provisional=False),
+        2: AthleteRating(2, mu=1800.0, n_events=10, provisional=False),
+    }
+    upd_upset = calculate_round_updates(
+        results,
+        ratings_upset,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.SPEED,
+    )
+    upset_delta = next(u for u in upd_upset if u.athlete_id == 1).mu_after - 1500.0
+
+    # Favourite wins (μ_1 = 1800, μ_2 = 1500).
+    ratings_fav = {
+        1: AthleteRating(1, mu=1800.0, n_events=10, provisional=False),
+        2: AthleteRating(2, mu=1500.0, n_events=10, provisional=False),
+    }
+    upd_fav = calculate_round_updates(
+        results,
+        ratings_fav,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.SPEED,
+    )
+    fav_delta = next(u for u in upd_fav if u.athlete_id == 1).mu_after - 1800.0
+
+    # Upset must move the winner more than a same-margin favourite win.
+    assert upset_delta > fav_delta, (
+        f"upset swing {upset_delta} should exceed favourite swing {fav_delta}"
+    )
+
+
+def test_speed_bracket_path_only_triggered_for_speed_discipline():
+    """The bracket-native path is dispatched only when discipline == SPEED.
+
+    Run the same 4-athlete round under both LEAD and SPEED and verify the
+    pair-count differs: LEAD does full P-L (3 pairs per athlete in a
+    4-field), SPEED does adjacent-only (1 pair per athlete in a 4-field).
+    """
+    results = [
+        AthleteResult(athlete_id=i, rank=i, score_normalized=80.0 - i * 5)
+        for i in range(1, 5)
+    ]
+    ratings = {
+        i: AthleteRating(i, mu=1500.0, n_events=10, provisional=False)
+        for i in range(1, 5)
+    }
+    upd_lead = calculate_round_updates(
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.LEAD,
+    )
+    # In Lead's P-L decomposition each athlete is paired with every other.
+    for u in upd_lead:
+        assert len(u.contributing_pairs) == 3
+
+    # Re-build ratings (calculate_round_updates does not mutate them, but
+    # using a fresh dict avoids any test-order dependency).
+    ratings = {
+        i: AthleteRating(i, mu=1500.0, n_events=10, provisional=False)
+        for i in range(1, 5)
+    }
+    upd_speed = calculate_round_updates(
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.SPEED,
+    )
+    # In Speed's bracket-native path each athlete has exactly 1 adjacent
+    # match.
+    for u in upd_speed:
+        assert len(u.contributing_pairs) == 1
+
+
+def test_speed_bracket_davidson_helpers_collapse_to_logistic_at_zero_nu():
+    """At ν = 0 the Davidson expected score must equal the legacy logistic."""
+    from climbing_elo.engine.speed import davidson_expected_score
+
+    # Pick a heterogeneous pair to exercise the formula.
+    e_davidson = davidson_expected_score(1700.0, 1500.0, nu=0.0)
+    e_legacy = expected_score(1700.0, 1500.0)
+    assert math.isclose(e_davidson, e_legacy, rel_tol=1e-9)
+
+
+def test_speed_bracket_davidson_tie_probability_peaks_at_equal_mu():
+    """Davidson tie probability is maximal at μ_a == μ_b for fixed ν > 0."""
+    from climbing_elo.engine.speed import davidson_expected_scores
+
+    _, _, p_tie_equal = davidson_expected_scores(1500.0, 1500.0, nu=0.5)
+    _, _, p_tie_gap = davidson_expected_scores(1500.0, 1300.0, nu=0.5)
+    assert p_tie_equal > p_tie_gap
+    # Sanity: probabilities sum to 1.0.
+    p_a, p_b, p_tie = davidson_expected_scores(1500.0, 1300.0, nu=0.5)
+    assert math.isclose(p_a + p_b + p_tie, 1.0, rel_tol=1e-9)
+
+
+def test_speed_bracket_pair_update_zero_sum_at_pair_level():
+    """The pure pair-update primitive must be exactly zero-sum on μ."""
+    from climbing_elo.engine.elo import DEFAULT_CONFIG, get_k_factor
+    from climbing_elo.engine.speed import compute_speed_pair_update
+
+    k_base = get_k_factor(EventTier.WORLD_CUP, RoundType.FINAL)
+    d_w, d_l, _, _, _ = compute_speed_pair_update(
+        time_winner=6.5,
+        time_loser=6.8,
+        mu_winner=1700.0,
+        mu_loser=1500.0,
+        sigma_winner=120.0,
+        sigma_loser=180.0,
+        k_base=k_base,
+        config=DEFAULT_CONFIG,
+    )
+    assert math.isclose(d_w + d_l, 0.0, abs_tol=1e-12)
