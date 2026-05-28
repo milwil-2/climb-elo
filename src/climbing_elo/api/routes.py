@@ -1185,10 +1185,21 @@ async def v2_h2h_result(
         aligned_a = [lmap_a.get(lbl) for lbl in all_labels]
         aligned_b = [lmap_b.get(lbl) for lbl in all_labels]
 
-        # Ring geometry: R=70, C=2πR
+        # Ring geometry: R=70, C=2πR. Two-sided ring (#99): A's arc starts at
+        # 12 o'clock and sweeps clockwise for its share; B's arc begins where A
+        # ends (rotated win_a·360°) and sweeps the remainder, so the two meet
+        # exactly and the underdog's larger share renders proportionally.
+        #   - dash_offset_a leaves (1 - win_a) of the circle hidden → A's arc.
+        #   - dash_offset_b is the symmetric value for B (kept for parity).
+        #   - seg_a / seg_b are the literal visible arc lengths.
+        #   - rot_b rotates B's circle so it starts at A's end.
         R = 70
         C = 2 * math.pi * R
         dash_offset_a = round(C * (1 - win_a), 2)
+        dash_offset_b = round(C * (1 - win_b), 2)
+        seg_a = round(C * win_a, 2)
+        seg_b = round(C * win_b, 2)
+        rot_b = round(win_a * 360.0, 2)
 
         mu_gap = round(rating_a.mu - rating_b.mu, 1)
 
@@ -1229,6 +1240,10 @@ async def v2_h2h_result(
             "ring_R": R,
             "ring_C": round(C, 2),
             "ring_dash_offset": dash_offset_a,
+            "ring_dash_offset_b": dash_offset_b,
+            "ring_seg_a": seg_a,
+            "ring_seg_b": seg_b,
+            "ring_rot_b": rot_b,
             "past_meetings": past_meetings,
             "no_shared_events": past_meetings == 0,
             "cross_gender": cross_gender,
