@@ -127,7 +127,7 @@ Supabase exposes three URL variants for the same database. Picking the wrong one
 | **Vercel runtime** | `aws-0-REGION.pooler.supabase.com` (transaction pooler) | 6543 | IPv4; required for short-lived serverless connections. |
 | **GitHub Actions** | `aws-0-REGION.pooler.supabase.com` (session pooler) | 5432 | Bulk-insert workflows need session state. |
 
-The direct `db.PROJECT.supabase.co` URL is **IPv6-only**, so it works from a developer laptop but not from CI runners or Vercel functions. See [CLAUDE.md → "Connection strings (Supabase)"](./CLAUDE.md#connection-strings-supabase) for the full explanation.
+The direct `db.PROJECT.supabase.co` URL is **IPv6-only**, so it works from a developer laptop but not from CI runners or Vercel functions. See [CLAUDE.md → "Connection strings (Supabase)"](../../CLAUDE.md#connection-strings-supabase) for the full explanation.
 
 ## Tech notes
 
@@ -138,12 +138,12 @@ The direct `db.PROJECT.supabase.co` URL is **IPv6-only**, so it works from a dev
 
 ## Documentation
 
-- **Engineering reference** — [CLAUDE.md](./CLAUDE.md) — the canonical operational + architectural document.
-- **Process retrospective** — [docs/PROCESS_RETROSPECTIVE.md](./docs/PROCESS_RETROSPECTIVE.md) — what one day of focused iteration looked like, and what was learned.
-- **Technical deep-dive** — [docs/writeups/technical-deep-dive.md](./docs/writeups/technical-deep-dive.md) — the ELO math, the deployment story, the orchestration patterns, all together.
-- **Blog post** — [docs/writeups/blog-post.md](./docs/writeups/blog-post.md) — public-facing narrative version.
-- **Hiring summary** — [docs/writeups/hiring-summary.md](./docs/writeups/hiring-summary.md) — skimmable one-pager.
-- **Research synthesis** — [docs/RATING_SYSTEM_RESEARCH.md](./docs/RATING_SYSTEM_RESEARCH.md) — the rating-system R&D backlog.
+- **Engineering reference** — [CLAUDE.md](../../CLAUDE.md) — the canonical operational + architectural document.
+- **Process retrospective** — [docs/PROCESS_RETROSPECTIVE.md](../PROCESS_RETROSPECTIVE.md) — what one day of focused iteration looked like, and what was learned.
+- **Technical deep-dive** — [docs/writeups/technical-deep-dive.md](./technical-deep-dive.md) — the ELO math, the deployment story, the orchestration patterns, all together.
+- **Blog post** — [docs/writeups/blog-post.md](./blog-post.md) — public-facing narrative version.
+- **Hiring summary** — [docs/writeups/hiring-summary.md](./hiring-summary.md) — skimmable one-pager.
+- **Research synthesis** — [docs/RATING_SYSTEM_RESEARCH.md](../RATING_SYSTEM_RESEARCH.md) — the rating-system R&D backlog.
 
 ## License
 
