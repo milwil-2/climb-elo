@@ -114,26 +114,33 @@ def _default_tpb_table() -> dict[EventTier, list[float]]:
     return copy.deepcopy(_DEFAULT_TPB_TABLE)
 
 
+# K values updated 2026-05-27 per the regrid sweep in docs/K_REGRID_REPORT.md.
+# WC / WCh / Continental cells with data in the source DB were re-tuned via
+# coordinate descent to keep μ-p95 in the elite band [1900, 2200]; Olympics
+# and SEMI cells lacked data in the sweep and retain their pre-regrid values.
+# Re-run scripts/regrid_k_factors.py after any change to the effective-K math
+# (σ_inactivity, margin cap, MOV gap-conditioning) and apply the recommended
+# dict here.
 _DEFAULT_K_FACTORS: dict[EventTier, dict[RoundType, float]] = {
     EventTier.OLYMPICS: {
-        RoundType.FINAL: 48.0,
-        RoundType.SEMI: 36.0,
-        RoundType.QUALIFICATION: 18.0,
+        RoundType.FINAL: 48.0,  # unchanged — no Olympics data in source DB
+        RoundType.SEMI: 36.0,  # unchanged — no data
+        RoundType.QUALIFICATION: 18.0,  # unchanged — no data
     },
     EventTier.WORLD_CHAMPIONSHIP: {
-        RoundType.FINAL: 40.0,
-        RoundType.SEMI: 30.0,
-        RoundType.QUALIFICATION: 15.0,
+        RoundType.FINAL: 15.0,  # was 40.0
+        RoundType.SEMI: 30.0,  # unchanged — no semi-round data in source DB
+        RoundType.QUALIFICATION: 3.75,  # was 15.0
     },
     EventTier.WORLD_CUP: {
-        RoundType.FINAL: 32.0,
-        RoundType.SEMI: 24.0,
-        RoundType.QUALIFICATION: 12.0,
+        RoundType.FINAL: 12.0,  # was 32.0
+        RoundType.SEMI: 24.0,  # unchanged — no semi-round data in source DB
+        RoundType.QUALIFICATION: 4.5,  # was 12.0
     },
     EventTier.CONTINENTAL: {
-        RoundType.FINAL: 24.0,
-        RoundType.SEMI: 18.0,
-        RoundType.QUALIFICATION: 9.0,
+        RoundType.FINAL: 6.0,  # was 24.0
+        RoundType.SEMI: 18.0,  # unchanged — no semi-round data in source DB
+        RoundType.QUALIFICATION: 4.5,  # was 9.0
     },
 }
 
@@ -210,7 +217,15 @@ class EloConfig:
     speed_max_gap_seconds: float = 2.0
 
     # Glicko-2
-    glicko2_sigma_inactivity: float = 5.0
+    # σ_inactivity bumped 5.0 → 25.0 on 2026-05-27 per the #89 investigation:
+    # at 5.0 the Wiener-process inflation was too weak to produce visible σ
+    # growth even over multi-year sabbaticals (12-month gap from σ=200 only
+    # reaches σ≈207.4, indistinguishable from noise). 25.0 produces a modest
+    # but plausible signal (12-month gap σ=200 → σ≈217.9). A proper grid
+    # sweep over [10, 15, 25, 50] against the backtest harness is filed as
+    # follow-up to this PR; 25.0 is a defensible starting point per the
+    # investigation doc.
+    glicko2_sigma_inactivity: float = 25.0
     glicko2_tau: float = 0.5
 
     # σ clamping (display scale)
@@ -389,20 +404,22 @@ def glicko2_inflate_phi(
     current_date: date,
     config: EloConfig = DEFAULT_CONFIG,
 ) -> float:
-    """Inflate φ for inactivity per Glicko-2's Wiener-process model.
+    """Inflate σ (display-scale RD) for inactivity per Glicko-2's Wiener-process model.
 
     Calendar-time semantics — months since last event (decision 1 in module
     docstring). Returns the new display-scale RD, clamped at
     ``config.sigma_ceiling``.
 
-    Formula (internal units, then converted back):
-        φ_new² = φ_old² + σ_inactivity² · months_inactive
+    Formula (display scale; we keep the units consistent across the calculation
+    rather than round-tripping through Glickman's internal scale):
+        σ_new² = σ_old² + σ_inactivity² · months_inactive
 
-    where ``σ_inactivity = config.glicko2_sigma_inactivity`` is on the internal
-    scale (≈ 0.029 RD-units per √month). With the default value of 5.0
-    (display scale), a 12-month gap inflates a φ=0.5 athlete (RD≈87) to φ≈0.85
-    (RD≈148); a fresh athlete at φ=2.014 (RD=350) stays clamped at the
-    ceiling.
+    With the default ``σ_inactivity = 25.0`` (post-#89 bump from 5.0), a
+    12-month sabbatical from σ=200 produces σ_new ≈ 217.9 — a modest but
+    visible "this athlete has been away" signal. From σ=100 the same gap
+    produces σ_new ≈ 134.6. A fresh athlete at σ=350 stays clamped at the
+    ceiling regardless. See ``docs/INVESTIGATION_SIGMA_CEILING.md`` for the
+    σ_inactivity sweep rationale.
     """
     if last_event_at is None or current_date <= last_event_at:
         return sigma_display

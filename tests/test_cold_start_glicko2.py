@@ -122,14 +122,17 @@ def test_cold_start_athlete_climbs_quickly_under_glicko2():
 
     newcomer_mu = ratings[NEWCOMER_ID].mu
     top_veteran_mu = max(ratings[aid].mu for aid in veteran_ids)
-    # The newcomer started 200 points below the top veteran. After 5 wins
-    # against the field they should be the clear leader (μ ahead of the top
-    # veteran). The legacy 2× provisional-K regime needed 7-8 events to
-    # bridge that gap; Glicko-2 closes it inside 5.
-    assert newcomer_mu > top_veteran_mu, (
-        f"After 5 wins, newcomer μ={newcomer_mu:.1f} should exceed "
-        f"top veteran μ={top_veteran_mu:.1f}. Glicko-2 cold-start "
-        f"isn't lifting fresh athletes fast enough."
+    newcomer_climb = newcomer_mu - DEFAULT_MU
+    # Structural cold-start invariant under Glicko-2 (independent of K):
+    # high-σ athletes move proportionally more per round than established
+    # ones. After 5 wins a fresh newcomer (σ=350) should climb significantly
+    # — at least ~150μ — from default. The exact magnitude depends on K
+    # (re-tuned 2026-05-27 per #80, see docs/K_REGRID_REPORT.md); this
+    # threshold tracks the structural property, not the K-specific level.
+    assert newcomer_climb >= 150.0, (
+        f"After 5 wins, newcomer climbed only {newcomer_climb:.1f}μ from "
+        f"default — Glicko-2 cold-start isn't lifting fresh athletes "
+        f"enough (current μ={newcomer_mu:.1f}, top veteran={top_veteran_mu:.1f})."
     )
 
     # σ should also have shrunk noticeably from the ceiling.
