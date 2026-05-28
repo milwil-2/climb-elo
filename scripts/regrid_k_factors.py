@@ -32,7 +32,7 @@ Per grid point, the script:
 2. Restores a pristine copy of the source DB to a temp working copy.
 3. Wipes ratings / rating-history and re-runs backfill for each discipline
    with ``config=trial_config``.
-4. Scores every holdout round via :func:`engine.evaluation._score_split_events`
+4. Scores every holdout round via :func:`engine.evaluation.score_split_events`
    reusing :func:`compute_podium_probabilities` for probabilistic metrics.
 5. Computes the **μ-range stats** (min / p50 / p95 / p99 / max) from the
    trained Rating rows — the secondary acceptance gate alongside top-3 hit
@@ -95,6 +95,7 @@ from climbing_elo.engine.evaluation import (
     BacktestRunner,
     HoldoutMode,
     _aggregate_metrics,
+    score_split_events,
 )
 from climbing_elo.models import (
     Discipline,
@@ -387,11 +388,16 @@ def _run_trial(
             # run_backfill again (no-op due to idempotency) then scores the
             # eval rounds and returns a BacktestReport with split-level
             # predictions wrapped up. We re-collect at the per-prediction
-            # level by re-invoking the scoring method to keep the metrics
+            # level by re-invoking the scoring helper to keep the metrics
             # aggregation centralised.
             engine = runner.engine_factory(session)
-            preds = runner._score_split_events(  # type: ignore[attr-defined]
-                session, engine, split, discipline
+            preds = score_split_events(
+                session,
+                engine,
+                split,
+                discipline,
+                n_simulations=n_sims,
+                rng_seed=rng_seed,
             )
             all_predictions.extend(preds)
 
