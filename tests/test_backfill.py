@@ -4,7 +4,7 @@ from datetime import date
 
 from sqlalchemy import select
 
-from climbing_elo.engine.backfill import run_backfill
+from climbing_elo.engine.backfill import force_reset_for_discipline, run_backfill
 from climbing_elo.models import (
     Athlete,
     Discipline,
@@ -346,3 +346,185 @@ def test_backfill_multi_round_event_does_not_reinflate_sigma(db_session):
         f"After 4 round-updates σ_after={final_sigma:.1f}; expected meaningful "
         f"shrinkage well below the 350 ceiling."
     )
+
+
+def test_force_reset_wipes_and_rebuilds(db_session):
+    """force_reset_for_discipline + a fresh run_backfill produces identical
+    final ratings (deterministic) but with fresh RatingHistory row IDs
+    (proving the old rows were deleted)."""
+    athletes = []
+    for name in ["FR1", "FR2", "FR3"]:
+        a = Athlete(name=name, gender=Gender.M)
+        db_session.add(a)
+        athletes.append(a)
+    db_session.flush()
+
+    _seed_event(db_session, "WC One", date(2024, 1, 1), athletes, [0, 1, 2])
+    _seed_event(db_session, "WC Two", date(2024, 6, 1), athletes, [2, 0, 1])
+    db_session.commit()
+
+    run_backfill(db_session, Discipline.LEAD)
+    pre_reset_ratings = {
+        r.athlete_id: r.mu
+        for r in db_session.execute(
+            select(Rating).where(Rating.discipline == Discipline.LEAD)
+        ).scalars()
+    }
+    pre_reset_history_ids = {
+        rh.id
+        for rh in db_session.execute(
+            select(RatingHistory).join(Event).where(Event.discipline == Discipline.LEAD)
+        ).scalars()
+    }
+    assert pre_reset_ratings, "First backfill should have populated ratings"
+    assert pre_reset_history_ids, "First backfill should have written history rows"
+
+    rows_deleted = force_reset_for_discipline(db_session, Discipline.LEAD)
+    db_session.commit()
+    assert rows_deleted == len(pre_reset_history_ids), (
+        f"force_reset reported {rows_deleted} deleted rows, expected "
+        f"{len(pre_reset_history_ids)}"
+    )
+
+    # Ratings should be back to defaults after reset.
+    post_reset = list(
+        db_session.execute(
+            select(Rating).where(Rating.discipline == Discipline.LEAD)
+        ).scalars()
+    )
+    for r in post_reset:
+        assert r.mu == 1500.0
+        assert r.sigma == 350.0
+        assert r.n_events == 0
+        assert r.last_event_at is None
+        assert r.provisional is True
+
+    # And rating_history should be empty for this discipline.
+    remaining_history = list(
+        db_session.execute(
+            select(RatingHistory).join(Event).where(Event.discipline == Discipline.LEAD)
+        ).scalars()
+    )
+    assert remaining_history == []
+
+    # Re-run backfill. Same input data → same final μ.
+    run_backfill(db_session, Discipline.LEAD)
+    post_rebuild_ratings = {
+        r.athlete_id: r.mu
+        for r in db_session.execute(
+            select(Rating).where(Rating.discipline == Discipline.LEAD)
+        ).scalars()
+    }
+    post_rebuild_history_count = len(
+        list(
+            db_session.execute(
+                select(RatingHistory)
+                .join(Event)
+                .where(Event.discipline == Discipline.LEAD)
+            ).scalars()
+        )
+    )
+    # Final μ values match (deterministic backfill).
+    for aid, mu in pre_reset_ratings.items():
+        assert abs(post_rebuild_ratings[aid] - mu) < 1e-6, (
+            f"Athlete {aid}: pre-reset μ={mu}, post-rebuild μ={post_rebuild_ratings[aid]}"
+        )
+    # History was repopulated to the same row count as pre-reset.
+    assert post_rebuild_history_count == len(pre_reset_history_ids)
+
+
+def test_force_reset_only_affects_specified_discipline(db_session):
+    """A reset of LEAD must NOT touch BOULDER ratings or history."""
+    athletes = []
+    for name in ["DA", "DB"]:
+        a = Athlete(name=name, gender=Gender.M)
+        db_session.add(a)
+        athletes.append(a)
+    db_session.flush()
+
+    # Seed a LEAD event…
+    lead_event = _seed_event(db_session, "WC Lead", date(2024, 4, 1), athletes, [0, 1])
+    # …and a BOULDER event (override the helper's hardcoded Discipline.LEAD).
+    boulder_event = Event(
+        name="WC Boulder",
+        tier=EventTier.WORLD_CUP,
+        season=2024,
+        start_date=date(2024, 4, 8),
+        discipline=Discipline.BOULDER,
+    )
+    db_session.add(boulder_event)
+    db_session.flush()
+    boulder_round = Round(
+        event_id=boulder_event.id,
+        round_type=RoundType.FINAL,
+        gender=Gender.M,
+        athlete_count=2,
+    )
+    db_session.add(boulder_round)
+    db_session.flush()
+    for rank, athlete in enumerate(athletes, 1):
+        db_session.add(
+            Result(
+                round_id=boulder_round.id,
+                athlete_id=athlete.id,
+                rank=rank,
+            )
+        )
+    db_session.commit()
+
+    run_backfill(db_session, Discipline.LEAD)
+    run_backfill(db_session, Discipline.BOULDER)
+
+    boulder_ratings_pre = {
+        r.athlete_id: (r.mu, r.sigma, r.n_events)
+        for r in db_session.execute(
+            select(Rating).where(Rating.discipline == Discipline.BOULDER)
+        ).scalars()
+    }
+    boulder_history_count_pre = len(
+        list(
+            db_session.execute(
+                select(RatingHistory).where(RatingHistory.event_id == boulder_event.id)
+            ).scalars()
+        )
+    )
+    assert boulder_ratings_pre, "Boulder backfill should have populated ratings"
+    assert boulder_history_count_pre > 0
+
+    # Reset LEAD only.
+    force_reset_for_discipline(db_session, Discipline.LEAD)
+    db_session.commit()
+
+    # Boulder ratings + history untouched.
+    boulder_ratings_post = {
+        r.athlete_id: (r.mu, r.sigma, r.n_events)
+        for r in db_session.execute(
+            select(Rating).where(Rating.discipline == Discipline.BOULDER)
+        ).scalars()
+    }
+    assert boulder_ratings_post == boulder_ratings_pre, (
+        "Boulder ratings should be unchanged after a LEAD-only reset"
+    )
+    boulder_history_count_post = len(
+        list(
+            db_session.execute(
+                select(RatingHistory).where(RatingHistory.event_id == boulder_event.id)
+            ).scalars()
+        )
+    )
+    assert boulder_history_count_post == boulder_history_count_pre
+
+    # LEAD ratings are wiped.
+    lead_ratings = list(
+        db_session.execute(
+            select(Rating).where(Rating.discipline == Discipline.LEAD)
+        ).scalars()
+    )
+    for r in lead_ratings:
+        assert r.mu == 1500.0 and r.n_events == 0
+    lead_history = list(
+        db_session.execute(
+            select(RatingHistory).where(RatingHistory.event_id == lead_event.id)
+        ).scalars()
+    )
+    assert lead_history == []
