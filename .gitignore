@@ -68,3 +68,12 @@ data/backtests/
 
 # Agent-generated design handoff bundles (large, local references only)
 agent-resources/
+
+# Private knowledge — local-only, kept out of the public repo. The public
+# surface is production code (src/, api/, vercel.json) plus the pipeline
+# workflows and scripts they call. These files reveal internal architecture,
+# infra, and product/design thinking, so they live only on the maintainer's
+# machine.
+docs/
+CLAUDE.md
+.claude/agents/
