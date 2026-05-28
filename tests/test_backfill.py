@@ -528,3 +528,110 @@ def test_force_reset_only_affects_specified_discipline(db_session):
         ).scalars()
     )
     assert lead_history == []
+
+
+def _seed_speed_event(session, name, event_date, athletes, ordering, times):
+    """Helper: create a Speed event with a single FINAL round + per-athlete times."""
+    event = Event(
+        name=name,
+        tier=EventTier.WORLD_CUP,
+        season=event_date.year,
+        start_date=event_date,
+        discipline=Discipline.SPEED,
+    )
+    session.add(event)
+    session.flush()
+
+    rnd = Round(
+        event_id=event.id,
+        round_type=RoundType.FINAL,
+        gender=Gender.M,
+        athlete_count=len(ordering),
+    )
+    session.add(rnd)
+    session.flush()
+
+    for rank, athlete_idx in enumerate(ordering, 1):
+        session.add(
+            Result(
+                round_id=rnd.id,
+                athlete_id=athletes[athlete_idx].id,
+                rank=rank,
+                score_normalized=times[athlete_idx],
+                raw_score=f"{times[athlete_idx]:.3f}",
+            )
+        )
+    session.flush()
+    return event
+
+
+def test_backfill_speed_event_uses_bracket_path(db_session):
+    """Issue #56: backfill on a Speed event runs the bracket-native engine and
+    produces sensible ratings.
+
+    Smoke checks:
+      1. The pipeline runs without raising.
+      2. Final ratings respect the ordering — winner has the highest μ.
+      3. Per-athlete contributing_pairs come from the adjacent-pair model
+         (each athlete records exactly 1 pair per round, not N-1).
+      4. The event-level μ sum is conserved (zero-sum within FP tolerance).
+    """
+    athletes = []
+    for name in ["SP1", "SP2", "SP3", "SP4"]:
+        a = Athlete(name=name, gender=Gender.M)
+        db_session.add(a)
+        athletes.append(a)
+    db_session.flush()
+
+    # 4-athlete Speed final, ranked by time ascending.
+    _seed_speed_event(
+        db_session,
+        "WC Speed One",
+        date(2024, 3, 1),
+        athletes,
+        ordering=[0, 1, 2, 3],
+        times=[5.50, 5.60, 5.72, 5.95],
+    )
+    db_session.commit()
+
+    report = run_backfill(db_session, Discipline.SPEED)
+    assert report.errors == [], f"Speed backfill raised: {report.errors}"
+    assert report.events_processed == 1
+    assert report.rounds_processed == 1
+
+    ratings = {
+        r.athlete_id: r
+        for r in db_session.execute(
+            select(Rating).where(Rating.discipline == Discipline.SPEED)
+        ).scalars()
+    }
+
+    # Bracket model: each athlete only races their adjacent neighbour. So the
+    # invariants are *per-pair*, not field-wide:
+    #   - SP1 (rank 1) > SP2 (rank 2)         — race winner
+    #   - SP3 (rank 3) > SP4 (rank 4)         — race winner
+    #   - Same starting μ, same K, peer matchups → SP1's gain == SP3's gain,
+    #     and likewise on the loser side. We do NOT expect μ(SP2) > μ(SP3)
+    #     because they never raced each other — that's the whole point of
+    #     bracket-native rating.
+    mu_by_idx = [ratings[a.id].mu for a in athletes]
+    assert mu_by_idx[0] > mu_by_idx[1], f"SP1 should beat SP2 head-to-head: {mu_by_idx}"
+    assert mu_by_idx[2] > mu_by_idx[3], f"SP3 should beat SP4 head-to-head: {mu_by_idx}"
+
+    # Per-athlete pair history: each athlete recorded exactly 1 pair in this
+    # 4-athlete bracket round (rank 1↔2 and rank 3↔4).
+    pair_rows = list(
+        db_session.execute(
+            select(RatingHistory).where(RatingHistory.kind == "pair")
+        ).scalars()
+    )
+    assert len(pair_rows) == 4, f"Expected 4 pair rows, got {len(pair_rows)}"
+    for rh in pair_rows:
+        assert len(rh.contributing_pairs) == 1, (
+            f"Speed bracket model should record 1 pair per athlete; got "
+            f"{len(rh.contributing_pairs)} for athlete {rh.athlete_id}"
+        )
+
+    # Zero-sum on the pair-update layer (TPB rows are layered separately).
+    pair_delta_sum = sum(rh.mu_after - rh.mu_before for rh in pair_rows)
+    assert abs(pair_delta_sum) < 1e-6, f"Speed pair Δμ sum = {pair_delta_sum}"

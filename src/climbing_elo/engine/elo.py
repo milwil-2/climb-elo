@@ -216,6 +216,19 @@ class EloConfig:
     boulder_margin_max_gap: float = 1000.0
     speed_max_gap_seconds: float = 2.0
 
+    # Speed bracket-native model (Issue #56)
+    # ``speed_tie_epsilon_seconds`` — gap below which two Speed times count as
+    # a tie under the Davidson model. Default 0.01 s is finer than the IFSC's
+    # millisecond-resolution timing system; in practice ties at this level only
+    # fire on rare exact-match data.
+    # ``speed_davidson_nu`` — Davidson (1970) tie parameter. ν = 0 collapses to
+    # vanilla Bradley-Terry (no tie mass); ν > 0 allocates probability to the
+    # tie outcome that peaks at μ_a == μ_b. A small default of 0.1 keeps the
+    # tie mass low for typical Δμ but lets ε-close times produce a non-trivial
+    # update.
+    speed_tie_epsilon_seconds: float = 0.01
+    speed_davidson_nu: float = 0.1
+
     # Glicko-2
     # σ_inactivity bumped 5.0 → 25.0 on 2026-05-27 per the #89 investigation:
     # at 5.0 the Wiener-process inflation was too weak to produce visible σ
@@ -683,7 +696,31 @@ def calculate_round_updates(
     * **PROVISIONAL_K_MULTIPLIER is retired** — Glicko-2 handles cold start
       natively via large initial φ → larger μ update via φ² scaling at the
       end. The ``provisional`` flag is still set on the Rating row for UI use.
+
+    Speed dispatch (Issue #56)
+    --------------------------
+
+    When ``discipline == Discipline.SPEED`` this function delegates to
+    :func:`climbing_elo.engine.speed.calculate_speed_round_updates`, which
+    processes only *adjacent-rank* head-to-head matchups (the closest
+    approximation we can recover to the actual elimination bracket without a
+    schema change) and uses Davidson 1970 tie handling on near-ε times. The
+    Lead/Boulder path below is untouched.
     """
+    if discipline == Discipline.SPEED:
+        # Local import to avoid a circular dependency at module load time
+        # (engine.speed imports primitives from engine.elo).
+        from climbing_elo.engine.speed import calculate_speed_round_updates
+
+        return calculate_speed_round_updates(
+            results,
+            ratings,
+            event_tier,
+            round_type,
+            event_date,
+            config,
+        )
+
     active = [r for r in results if not r.dns]
     if len(active) < 2:
         return []
