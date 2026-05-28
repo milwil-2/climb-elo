@@ -82,6 +82,21 @@ class AthleteDetail(BaseModel):
     recent_events: list[RecentEvent]
 
 
+class AthleteSearchResult(BaseModel):
+    """One match from GET /api/v1/athletes (name search / typeahead).
+
+    ``mu`` is the athlete's rating in the requested discipline, or their highest
+    rating across all disciplines when no discipline is supplied. ``None`` when
+    the athlete has no rating at all (or none for the requested discipline).
+    """
+
+    id: int
+    name: str
+    nationality: Optional[str]
+    gender: str
+    mu: Optional[float]
+
+
 # ---------------------------------------------------------------------------
 # Athlete rating history (for charts)
 # ---------------------------------------------------------------------------

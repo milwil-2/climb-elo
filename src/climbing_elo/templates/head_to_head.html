@@ -10,23 +10,73 @@
   .page-head .lead{margin-top:22px;max-width:560px;color:var(--ink-2);font-size:15.5px;line-height:1.6}
   .h2h-page{padding:32px 0 88px}
 
-  .picker{display:grid;grid-template-columns:1fr 1fr 200px;gap:14px;margin-bottom:24px}
-  @media (max-width:760px){.picker{grid-template-columns:1fr}}
-  .picker label{
-    display:flex;flex-direction:column;gap:6px;
-    font-size:10.5px;color:var(--dim);letter-spacing:0.14em;text-transform:uppercase;
-  }
-  .picker select{
+  /* ── Picker: discipline + gender controls, two typeahead inputs ── */
+  .picker-controls{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-end;margin-bottom:20px}
+  .ctl{display:flex;flex-direction:column;gap:6px}
+  .ctl .label{font-size:10.5px;color:var(--dim);letter-spacing:0.14em;text-transform:uppercase}
+  .ctl select{
     font:inherit;font-size:14px;color:var(--ink);
     padding:11px 14px;border:1px solid var(--line-2);border-radius:0;background:var(--paper);
     appearance:none;-webkit-appearance:none;cursor:pointer;
     background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M0 0l5 6 5-6" fill="none" stroke="%236E6E6E" stroke-width="1.5"/></svg>');
     background-repeat:no-repeat;background-position:right 14px center;padding-right:34px;
-    transition:border-color .2s;
+    transition:border-color .2s;min-width:170px;
   }
-  .picker select:hover{border-color:var(--ink-2)}
+  .ctl select:hover{border-color:var(--ink-2)}
 
-  .h2h-grid{display:grid;grid-template-columns:1fr 160px 1fr;gap:24px;align-items:center;margin-bottom:24px}
+  .seg{display:flex;border:1px solid var(--line-2);border-radius:0}
+  .seg button{
+    font:inherit;font-size:12.5px;font-weight:500;letter-spacing:0.02em;cursor:pointer;
+    padding:9px 14px;background:var(--paper);color:var(--ink-2);border:none;transition:all .15s;
+  }
+  .seg button + button{border-left:1px solid var(--line-2)}
+  .seg button:hover{color:var(--ink)}
+  .seg button.active{background:var(--ink);color:var(--paper)}
+
+  .picker-search{display:grid;grid-template-columns:1fr 56px 1fr;gap:14px;align-items:center;margin-bottom:8px}
+  @media (max-width:760px){.picker-search{grid-template-columns:1fr}}
+  .picker-search .vs-mid{text-align:center;font-size:11px;color:var(--dim);letter-spacing:0.16em;text-transform:uppercase}
+  @media (max-width:760px){.picker-search .vs-mid{display:none}}
+
+  .pick-slot{position:relative}
+  .pick-slot .slot-label{font-size:10.5px;color:var(--dim);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:6px}
+  .search{
+    display:flex;align-items:center;gap:10px;padding:11px 16px;
+    border:1px solid var(--line-2);border-radius:0;background:var(--paper);
+    font-size:14px;color:var(--ink);transition:border-color .2s;
+  }
+  .search:focus-within{border-color:var(--ink-2)}
+  .search input{flex:1;border:none;outline:none;background:transparent;font:inherit;color:inherit}
+  .search input::placeholder{color:var(--dim)}
+  .search .ico{color:var(--dim);font-size:12px}
+
+  .typeahead{
+    position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:30;
+    background:var(--paper);border:1px solid var(--line-2);max-height:300px;
+    overflow:auto;display:none;
+  }
+  .typeahead.open{display:block}
+  .typeahead a{display:flex;align-items:baseline;gap:10px;padding:11px 16px;text-decoration:none;color:var(--ink);border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
+  .typeahead a:last-child{border-bottom:none}
+  .typeahead a:hover,.typeahead a.hl{background:var(--paper-2)}
+  .typeahead a .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .typeahead a .gg{font-size:10px;color:var(--dim);letter-spacing:0.1em;text-transform:uppercase}
+  .typeahead a .nat{font-size:11px;color:var(--dim);letter-spacing:0.06em}
+  .typeahead a .mu{font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+  .typeahead .empty{padding:14px 16px;color:var(--dim);font-size:13px}
+
+  /* Selected athlete chip */
+  .chip{
+    display:none;align-items:center;gap:10px;margin-top:8px;padding:10px 14px;
+    border:1px solid var(--ink-2);background:var(--paper-2);
+  }
+  .chip.set{display:flex}
+  .chip .c-nm{flex:1;font-size:14px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chip .c-meta{font-size:11px;color:var(--dim);letter-spacing:0.06em;text-transform:uppercase}
+  .chip .c-x{cursor:pointer;color:var(--dim);font-size:16px;line-height:1;border:none;background:none;padding:0 2px;transition:color .15s}
+  .chip .c-x:hover{color:var(--ink)}
+
+  .h2h-grid{display:grid;grid-template-columns:1fr 180px 1fr;gap:24px;align-items:center;margin-bottom:24px}
   @media (max-width:760px){.h2h-grid{grid-template-columns:1fr;gap:16px}}
   .h2h-side .label{font-size:10.5px;color:var(--dim);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:8px}
   .h2h-side .name{font-size:22px;font-weight:600;letter-spacing:-0.01em;margin-bottom:4px}
@@ -36,16 +86,33 @@
   .h2h-side.right{text-align:right}
 
   .h2h-center{display:flex;flex-direction:column;align-items:center;gap:12px}
-  .ring{position:relative;width:140px;height:140px}
-  .ring svg{width:140px;height:140px;transform:rotate(-90deg)}
+  .ring{position:relative;width:150px;height:150px}
+  .ring svg{width:150px;height:150px;transform:rotate(-90deg)}
   .ring svg circle.bg{fill:none;stroke:var(--line-2);stroke-width:8}
-  .ring svg circle.fg{fill:none;stroke:var(--ink);stroke-width:8;stroke-linecap:butt;transition:stroke-dashoffset .8s ease}
+  /* Two arcs: A (bright ink) and B (muted), distinct colours (#99). */
+  .ring svg circle.fg-a{fill:none;stroke:var(--ink);stroke-width:8;stroke-linecap:butt;transition:stroke-dasharray .8s ease}
+  .ring svg circle.fg-b{fill:none;stroke:#8A8A8A;stroke-width:8;stroke-linecap:butt;transition:stroke-dasharray .8s ease}
   .ring .pct{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center}
-  .ring .pct .v{font-size:24px;font-weight:600;letter-spacing:-0.02em;font-variant-numeric:tabular-nums}
-  .ring .pct .l{font-size:10px;color:var(--dim);letter-spacing:0.1em;text-transform:uppercase}
+  .ring .pct .v{font-size:22px;font-weight:600;letter-spacing:-0.02em;font-variant-numeric:tabular-nums}
+  .ring .pct .l{font-size:9.5px;color:var(--dim);letter-spacing:0.1em;text-transform:uppercase}
   .vs{font-size:11px;color:var(--dim);letter-spacing:0.16em;text-transform:uppercase}
 
+  /* Ring legend: which colour is which athlete + their win share. */
+  .ring-legend{display:flex;flex-direction:column;gap:5px;width:100%;margin-top:2px}
+  .ring-legend .lg{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink-2)}
+  .ring-legend .lg .sw{width:10px;height:10px;flex:none}
+  .ring-legend .lg .sw.a{background:var(--ink)}
+  .ring-legend .lg .sw.b{background:#8A8A8A}
+  .ring-legend .lg .lg-nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ring-legend .lg .lg-pct{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+
   .h2h-chart{width:100%;height:160px;margin-top:8px}
+
+  .h2h-note{
+    margin-top:18px;padding:12px 16px;border:1px solid var(--line-2);
+    background:var(--paper-2);font-size:13px;color:var(--ink-2);line-height:1.55;
+  }
+  .h2h-note b{color:var(--ink)}
 
   .insight-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:24px}
   @media (max-width:760px){.insight-grid{grid-template-columns:1fr}}
@@ -55,6 +122,7 @@
   .ins .s{color:var(--ink-2);font-size:13px;margin-top:8px;line-height:1.55}
 
   .h2h-form-help{padding:48px 0;color:var(--dim);text-align:center}
+  .btn[disabled]{opacity:0.4;pointer-events:none}
 </style>
 {% endblock %}
 
@@ -64,68 +132,91 @@
     <div class="crumbs reveal"><a href="/">Home</a> / Head-to-head</div>
     <h1 class="reveal d2">Two athletes,<br/>one <em>probability</em>.</h1>
     <p class="lead reveal d3">
-      Win probability is the closed-form ELO expectation given current R and discipline.
-      The chart underneath is the actual rating history &mdash; the model has receipts.
+      Search any two climbers &mdash; same gender or cross-gender &mdash; and the model
+      returns the closed-form ELO win probability from current R and &sigma;.
+      The chart underneath is the actual rating history.
     </p>
   </section>
 
   <div class="h2h-page">
 
-    <!-- Picker form — navigates to /head-to-head/{a}/{b}?discipline= -->
-    <form id="h2h-form" method="get" onsubmit="return submitH2H()">
-      <div class="picker reveal">
-        <label>
-          Discipline
-          <select name="discipline" id="disc-sel">
-            <option value="L"{% if selected_disc == 'L' %} selected{% endif %}>Lead</option>
-            <option value="B"{% if selected_disc == 'B' %} selected{% endif %}>Boulder</option>
-            <option value="S"{% if selected_disc == 'S' %} selected{% endif %}>Speed</option>
-            <option value="BL"{% if selected_disc == 'BL' %} selected{% endif %}>Boulder + Lead</option>
-          </select>
-        </label>
-        <label>
-          Athlete A
-          <select name="a_id" id="a-sel">
-            {%- for row in pool -%}
-            <option value="{{ row.id }}"{% if h2h_result and h2h_result.athlete_a.id == row.id %} selected{% endif %}>
-              {{ row.name }} &middot; R {{ row.mu }}
-            </option>
-            {%- endfor -%}
-          </select>
-        </label>
-        <label>
-          Athlete B
-          <select name="b_id" id="b-sel">
-            {%- for row in pool -%}
-            <option value="{{ row.id }}"{% if h2h_result and h2h_result.athlete_b.id == row.id %} selected{% endif %}>
-              {{ row.name }} &middot; R {{ row.mu }}
-            </option>
-            {%- endfor -%}
-          </select>
-        </label>
+    <!-- Picker — search-driven, no pre-loaded pool. -->
+    <div class="picker-controls reveal">
+      <div class="ctl">
+        <span class="label">Discipline</span>
+        <select id="disc-sel">
+          <option value="L"{% if selected_disc == 'L' %} selected{% endif %}>Lead</option>
+          <option value="B"{% if selected_disc == 'B' %} selected{% endif %}>Boulder</option>
+          <option value="S"{% if selected_disc == 'S' %} selected{% endif %}>Speed</option>
+          <option value="BL"{% if selected_disc == 'BL' %} selected{% endif %}>Boulder + Lead</option>
+        </select>
       </div>
-      <button type="submit" class="btn btn-primary" style="margin-bottom:24px">Compare &rarr;</button>
-    </form>
+      <div class="ctl">
+        <span class="label">Search scope</span>
+        <div class="seg" id="gender-seg" role="group" aria-label="Gender filter">
+          <button type="button" data-gender="" class="active">All / cross-gender</button>
+          <button type="button" data-gender="M">Men</button>
+          <button type="button" data-gender="F">Women</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="picker-search reveal">
+      <div class="pick-slot">
+        <div class="slot-label">Athlete A</div>
+        <div class="search">
+          <span class="ico">&#9906;</span>
+          <input type="text" id="search-a" autocomplete="off" placeholder="Search athlete A&hellip;" />
+        </div>
+        <div class="typeahead" id="ta-a" role="listbox"></div>
+        <div class="chip" id="chip-a">
+          <span class="c-nm" id="chip-a-name"></span>
+          <span class="c-meta" id="chip-a-meta"></span>
+          <button type="button" class="c-x" id="chip-a-clear" aria-label="Clear athlete A">&times;</button>
+        </div>
+      </div>
+      <div class="vs-mid">vs</div>
+      <div class="pick-slot">
+        <div class="slot-label">Athlete B</div>
+        <div class="search">
+          <span class="ico">&#9906;</span>
+          <input type="text" id="search-b" autocomplete="off" placeholder="Search athlete B&hellip;" />
+        </div>
+        <div class="typeahead" id="ta-b" role="listbox"></div>
+        <div class="chip" id="chip-b">
+          <span class="c-nm" id="chip-b-name"></span>
+          <span class="c-meta" id="chip-b-meta"></span>
+          <button type="button" class="c-x" id="chip-b-clear" aria-label="Clear athlete B">&times;</button>
+        </div>
+      </div>
+    </div>
+
+    <button type="button" id="compare-btn" class="btn btn-primary" style="margin:8px 0 24px" disabled>Compare &rarr;</button>
 
     {%- if h2h_result -%}
     <div class="card reveal d2" style="padding:32px">
       <div class="h2h-grid">
         <!-- Athlete A -->
         <div class="h2h-side">
-          <div class="label">Athlete A</div>
+          <div class="label">Athlete A{% if h2h_result.cross_gender %} &middot; {{ h2h_result.athlete_a.gender }}{% endif %}</div>
           <div class="name">{{ h2h_result.athlete_a.name }}</div>
           <div class="nat">{{ h2h_result.athlete_a.nationality }}</div>
           <div class="rating"><b>{{ h2h_result.athlete_a.mu }}</b> R &middot; &sigma; {{ h2h_result.athlete_a.sigma }}</div>
         </div>
 
-        <!-- Ring -->
+        <!-- Two-sided ring (#99): A's arc + B's arc, distinct colours -->
         <div class="h2h-center">
           <div class="ring">
+            <!-- Both arcs sweep clockwise from 12 o'clock. A fills its share;
+                 B starts where A ends (rotated win_a·360°) and fills the rest,
+                 so the underdog case (e.g. 25/75) renders both proportionally. -->
             <svg viewBox="0 0 160 160">
               <circle cx="80" cy="80" r="{{ h2h_result.ring_R }}" class="bg" />
-              <circle cx="80" cy="80" r="{{ h2h_result.ring_R }}" class="fg"
-                stroke-dasharray="{{ h2h_result.ring_C }}"
-                stroke-dashoffset="{{ h2h_result.ring_dash_offset }}" />
+              <circle cx="80" cy="80" r="{{ h2h_result.ring_R }}" class="fg-a"
+                stroke-dasharray="{{ h2h_result.ring_seg_a }} {{ h2h_result.ring_C }}" />
+              <circle cx="80" cy="80" r="{{ h2h_result.ring_R }}" class="fg-b"
+                stroke-dasharray="{{ h2h_result.ring_seg_b }} {{ h2h_result.ring_C }}"
+                transform="rotate({{ h2h_result.ring_rot_b }} 80 80)" />
             </svg>
             <div class="pct">
               <div class="v">{{ h2h_result.win_a }}%</div>
@@ -133,11 +224,24 @@
             </div>
           </div>
           <div class="vs">vs</div>
+          <!-- Both segments labelled with athlete name + win % (#99) -->
+          <div class="ring-legend">
+            <div class="lg">
+              <span class="sw a"></span>
+              <span class="lg-nm">{{ h2h_result.athlete_a.name }}</span>
+              <span class="lg-pct">{{ h2h_result.win_a }}%</span>
+            </div>
+            <div class="lg">
+              <span class="sw b"></span>
+              <span class="lg-nm">{{ h2h_result.athlete_b.name }}</span>
+              <span class="lg-pct">{{ h2h_result.win_b }}%</span>
+            </div>
+          </div>
         </div>
 
         <!-- Athlete B -->
         <div class="h2h-side right">
-          <div class="label">Athlete B</div>
+          <div class="label">Athlete B{% if h2h_result.cross_gender %} &middot; {{ h2h_result.athlete_b.gender }}{% endif %}</div>
           <div class="name">{{ h2h_result.athlete_b.name }}</div>
           <div class="nat">{{ h2h_result.athlete_b.nationality }}</div>
           <div class="rating"><b>{{ h2h_result.athlete_b.mu }}</b> R &middot; &sigma; {{ h2h_result.athlete_b.sigma }}</div>
@@ -149,6 +253,19 @@
         <canvas id="h2h-chart"></canvas>
       </div>
     </div>
+
+    {%- if h2h_result.no_shared_events -%}
+    <div class="h2h-note reveal d3">
+      {%- if h2h_result.cross_gender -%}
+      <b>Cross-gender comparison.</b> These athletes compete in separate categories, so they have
+      no shared events &mdash; the win probability is the analytic ELO expectation from their
+      ratings alone, not from any direct meeting.
+      {%- else -%}
+      <b>No shared events.</b> These athletes have never appeared in the same field for this
+      discipline, so the win probability comes purely from the closed-form ELO expectation.
+      {%- endif -%}
+    </div>
+    {%- endif -%}
 
     <!-- Shareable canonical URL -->
     <div class="reveal d3" style="margin-top:18px;font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);font-weight:500">
@@ -175,7 +292,7 @@
       </div>
     </div>
     {%- else -%}
-    <div class="h2h-form-help">Select two athletes above and click Compare.</div>
+    <div class="h2h-form-help">Search and select two athletes above, then click Compare.</div>
     {%- endif -%}
   </div>
 </main>
@@ -183,14 +300,131 @@
 
 {% block scripts %}
 <script>
-function submitH2H() {
-  var disc = document.getElementById('disc-sel').value;
-  var a = document.getElementById('a-sel').value;
-  var b = document.getElementById('b-sel').value;
-  if (a === b) { alert('Please select two different athletes.'); return false; }
-  window.location.href = '/head-to-head/' + a + '/' + b + '?discipline=' + disc;
-  return false;
-}
+(function() {
+  // Selected athletes — null until chosen via typeahead.
+  var sel = { a: null, b: null };
+  var gender = {{ selected_gender | tojson }};
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function(c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  }
+
+  // ── Gender segmented control ──
+  var seg = document.getElementById('gender-seg');
+  if (seg) {
+    seg.querySelectorAll('button').forEach(function(b) {
+      b.addEventListener('click', function() {
+        seg.querySelectorAll('button').forEach(function(x) { x.classList.remove('active'); });
+        b.classList.add('active');
+        gender = b.getAttribute('data-gender') || '';
+      });
+    });
+  }
+
+  function discVal() {
+    var d = document.getElementById('disc-sel');
+    return d ? d.value : 'L';
+  }
+
+  // ── One typeahead slot (A or B) ──
+  function wireSlot(slot) {
+    var input = document.getElementById('search-' + slot);
+    var dd = document.getElementById('ta-' + slot);
+    var chip = document.getElementById('chip-' + slot);
+    var chipName = document.getElementById('chip-' + slot + '-name');
+    var chipMeta = document.getElementById('chip-' + slot + '-meta');
+    var chipClear = document.getElementById('chip-' + slot + '-clear');
+    var timer = null, lastQ = '';
+
+    function closeDD() { dd.classList.remove('open'); dd.innerHTML = ''; }
+
+    function select(athlete) {
+      sel[slot] = athlete;
+      chipName.textContent = athlete.name;
+      var meta = [];
+      if (athlete.gender) meta.push(athlete.gender);
+      if (athlete.nationality) meta.push(athlete.nationality);
+      if (athlete.mu !== null && athlete.mu !== undefined) meta.push('R ' + athlete.mu);
+      chipMeta.textContent = meta.join(' · ');
+      chip.classList.add('set');
+      input.value = '';
+      closeDD();
+      updateCompare();
+    }
+
+    function render(items) {
+      if (!items.length) {
+        dd.innerHTML = '<div class="empty">No athletes found.</div>';
+        dd.classList.add('open');
+        return;
+      }
+      dd.innerHTML = '';
+      items.forEach(function(a) {
+        var el = document.createElement('a');
+        el.setAttribute('role', 'option');
+        var mu = (a.mu === null || a.mu === undefined) ? '—' : a.mu;
+        el.innerHTML = '<span class="nm">' + escapeHtml(a.name) + '</span>' +
+          '<span class="gg">' + escapeHtml(a.gender || '') + '</span>' +
+          '<span class="nat">' + escapeHtml(a.nationality || '') + '</span>' +
+          '<span class="mu num">R ' + mu + '</span>';
+        el.addEventListener('mousedown', function(ev) { ev.preventDefault(); select(a); });
+        dd.appendChild(el);
+      });
+      dd.classList.add('open');
+    }
+
+    function fetchResults(q) {
+      var url = '/api/v1/athletes?q=' + encodeURIComponent(q) + '&limit=12';
+      if (gender) url += '&gender=' + encodeURIComponent(gender);
+      // Note: we do NOT filter by discipline here so cross-discipline searches
+      // still surface athletes; the result page resolves the rating.
+      fetch(url, { headers: { 'Accept': 'application/json' } })
+        .then(function(r) { return r.ok ? r.json() : []; })
+        .then(render)
+        .catch(closeDD);
+    }
+
+    input.addEventListener('input', function() {
+      var q = input.value.trim();
+      if (timer) clearTimeout(timer);
+      if (q.length < 2) { closeDD(); lastQ = ''; return; }
+      timer = setTimeout(function() {
+        if (q === lastQ) return;
+        lastQ = q;
+        fetchResults(q);
+      }, 280);
+    });
+    input.addEventListener('blur', function() { setTimeout(closeDD, 150); });
+
+    chipClear.addEventListener('click', function() {
+      sel[slot] = null;
+      chip.classList.remove('set');
+      updateCompare();
+    });
+  }
+
+  function updateCompare() {
+    var btn = document.getElementById('compare-btn');
+    if (!btn) return;
+    btn.disabled = !(sel.a && sel.b && sel.a.id !== sel.b.id);
+  }
+
+  wireSlot('a');
+  wireSlot('b');
+
+  var btn = document.getElementById('compare-btn');
+  if (btn) {
+    btn.addEventListener('click', function() {
+      if (!sel.a || !sel.b) return;
+      if (sel.a.id === sel.b.id) { alert('Please select two different athletes.'); return; }
+      var disc = discVal();
+      window.location.href = '/head-to-head/' + sel.a.id + '/' + sel.b.id +
+        '?discipline=' + encodeURIComponent(disc);
+    });
+  }
+})();
 </script>
 
 {%- if h2h_result -%}
@@ -221,7 +455,7 @@ function submitH2H() {
         {
           label: '{{ h2h_result.athlete_b.name }}',
           data: muB,
-          borderColor: '#B8B8B8',
+          borderColor: '#8A8A8A',
           borderWidth: 1.25,
           borderDash: [4, 4],
           pointRadius: 0,

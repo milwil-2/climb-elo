@@ -612,3 +612,38 @@ def test_leaderboard_view_toggle_renders(leaderboard_client):
     assert "view=all" in html
     # The default view's toggle has ``active`` class on the Active button.
     assert 'view=active"\n         class="active"' in html or 'class="active"' in html
+
+
+# ---------------------------------------------------------------------------
+# /athletes — searchable index (Issue #102; no longer a redirect)
+# ---------------------------------------------------------------------------
+
+
+def test_athletes_index_returns_200_with_list(leaderboard_client):
+    """GET /athletes must render the index page (200, not a 302 redirect)."""
+    r = leaderboard_client.get("/athletes?disc=L&gender=M", follow_redirects=False)
+    assert r.status_code == 200, r.text[:500]
+    html = r.text
+    # Active athletes from the leaderboard fixture appear as browsable rows.
+    assert "Active Ace" in html
+    # Each row links to the profile page.
+    assert "/athletes/" in html
+    # The typeahead search box + table are present.
+    assert 'id="ai-search"' in html
+    assert 'id="ai-table"' in html
+
+
+def test_athletes_index_default_renders(leaderboard_client):
+    """No query params → still a 200 index (default discipline/gender)."""
+    r = leaderboard_client.get("/athletes", follow_redirects=False)
+    assert r.status_code == 200
+    # Discipline + gender filter pills are present.
+    assert "/athletes?disc=B" in r.text
+    assert "/athletes?disc=L" in r.text
+
+
+def test_athletes_index_typeahead_hits_search_api(leaderboard_client):
+    """The page wires its typeahead to the GET /api/v1/athletes endpoint."""
+    r = leaderboard_client.get("/athletes?disc=L&gender=M")
+    assert r.status_code == 200
+    assert "/api/v1/athletes?q=" in r.text
