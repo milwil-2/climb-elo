@@ -263,3 +263,63 @@ The remaining open work splits into three categories:
 Production knowledge is paid for in outages. Plan documents are cheaper than implementation re-runs. Parallel agents work only if their file sets are disjoint and you've thought about the merge graph. The right fix is sometimes to delete the thing causing the problem.
 
 Most of all: **the work is the iteration**. The codebase that exists at the end of this document is not the codebase that existed at the start. Neither is final. The next iteration is already queued.
+
+---
+---
+
+# Session 2 (2026-05-28) — Activating the engine, and what "activation" actually costs
+
+The first session *shipped* the rating-model improvements (Glicko-2, MOV gap-conditioning, K-regrid, TPB, the σ-ceiling fix). This session tried to make them *real in production* — and discovered that "merged, tests green, deployed" is only the first of several layers between writing a change and a user seeing it. Most of the day's lessons are about the gap between those layers.
+
+## Turn 6: Shipped ≠ activated (the idempotency trap)
+
+Applied the #80 K-regrid + bumped `σ_inactivity` (#89) + shipped TPB (#90) + the per-round `last_event_at` σ fix (#89 Fix 3). All deployed cleanly to Vercel, all tests green. Then I checked the live leaderboard — and the ratings hadn't changed at all.
+
+Root cause: the backfill is **idempotent** on `(athlete_id, round_id, kind)`. Re-running it skips every round that already has history rows, so engine-math changes never propagate to *existing* historical ratings — the new code only ever applies to newly-scraped rounds. "Deployed + tests pass" gave false confidence; the deployed engine was new but every number it served was computed by the old one.
+
+**Lesson:** for changes to *derived/computed* data, shipping the code is half the job. You must also recompute the data — and an idempotency guard (there precisely to make routine re-runs safe) will silently prevent the recompute you now want. The two needs are in direct tension and you have to design for both.
+
+## Turn 7: `--force-reset` and the 60-minute wall
+
+The fix for Turn 6 was a `--force-reset` flag: wipe `rating_history` + reset `ratings`, then recompute from scratch. I wired it into the daily `scrape-supabase.yml` workflow and triggered it.
+
+It was **cancelled at exactly 60 minutes**, mid-Lead-rebuild. Prod was left half-rebuilt — 778 Lead athletes stranded at default 1500/350, Boulder and Speed untouched. This is the *exact* trap that issue #75 was filed to document ("full backfill best done locally — avoids the GH Actions 60-min timeout"). I walked straight into a hazard I had already written down.
+
+**Lesson:** a full recompute is a **local-only** operation; CI job timeouts make "big batch jobs bolted onto the daily workflow" a footgun that fails *halfway*, which is worse than failing cleanly. Removed the workflow `force_reset` input entirely, made the flag local-only, and ran the real rebuild from a laptop (no timeout) against the session pooler.
+
+## Turn 8: The σ saga — a fix you can't observe isn't verified
+
+σ had been pinned at the ceiling (343) for everyone. The #89 Fix 3 (don't re-inflate σ between rounds of the same event) was the correct fix. But I couldn't *see* it work across **three** attempts: attempt 1 was an idempotent no-op (Turn 6), attempt 2 timed out (Turn 7). Only the clean local rebuild finally let it run end-to-end — and revealed that σ now over-shrinks to the *floor* (50) after a single event, because the variance accumulator over-counts a multi-athlete result as ~50 independent Glicko-2 games when it's really one ranking (filed as #95; companion K-regrid re-run #96).
+
+**Lesson:** a fix you can't observe end-to-end is not verified, no matter how confident the diff looks — and we had *no clean signal at all* until the full rebuild, because two unrelated mechanisms (idempotency, then timeout) kept masking it. Also: fixing one boundary can reveal you were silently sitting against the opposite one. Ceiling-pin → floor-pin; the real target is the spread in between.
+
+## Turn 9: A data-shape change's blast radius (the TPB 500)
+
+Activating TPB changed the *shape* of the most-recent `rating_history` row for an event: TPB rows store `contributing_pairs` as a **dict** (`{rank, gross_bonus, …}`), not the list-of-opponents that `kind='pair'` rows hold. The athlete-profile page assumed every row was a pair row and iterated it — so the moment real TPB rows landed in prod (via the rebuild), `/athletes/{id}` started throwing `'str' object has no attribute 'get'` (iterating a dict yields its string keys). Tests passed throughout because no test fixture had a TPB-latest row.
+
+**Lesson:** a feature's blast radius includes *every consumer of the columns it touches*, not just the code that writes them. "Activate feature X" can break feature Y that was written before X existed and made an assumption X violates. The fix was one line (filter `kind='pair'`) + a regression test that seeds the exact condition — but finding it required reading prod logs, not the test suite.
+
+## Turn 10: "Tests pass + deployed" ≠ "works in prod" (the cache header)
+
+Shipped a `Cache-Control` middleware for edge caching (#97 Tier 1). Seven tests green, header verified present in `TestClient`. I called it done. Then a `curl -I` against prod showed Vercel serving its *default* `max-age=0, must-revalidate` with `x-vercel-cache: MISS` — the edge was ignoring my header entirely, almost certainly because `vercel.json` still uses the legacy `builds`/`routes` schema that opts out of function-response CDN caching (#101).
+
+**Lesson:** for **platform-integration** features (caching, headers, redirects, anything the CDN/runtime mediates), app-layer tests are necessary but not sufficient. The definition of done has to include *verifying the platform's actual behavior* — `curl` the real deployment, check `x-vercel-cache`. I shouldn't have called Tier 1 "done"; the code was correct and the feature still didn't work.
+
+## Patterns reinforced this session
+
+1. **"Shipped" has layers**: code merged → tests pass → deployed → *data recomputed* → *platform honors it* → user sees it. Each layer can silently swallow the previous one's intent. Most of today's surprises lived between the last three.
+2. **Verify in prod for anything the platform or stored data mediates.** The test suite proved the *code*; only `curl` + runtime logs + DB queries proved the *system*.
+3. **Idempotency and activation are in tension.** The guard that makes daily re-runs safe is the same guard that blocks an engine change from taking effect. Name which one you need this run.
+4. **A hazard you documented can still bite you.** #75 spelled out the 60-min trap and I hit it anyway. Writing it down isn't the same as wiring a guardrail (e.g. fail-fast if a reset is attempted in CI).
+
+## Where Session 2 ended
+
+| Category | Count |
+|---|---|
+| Issues closed | #92, #56, #100 (+#84/#85 shipped, left open for backtest runs) |
+| New issues filed | #95, #96, #97, #98, #99, #101, #102 |
+| Production incidents | 2 (Vercel password/env outage; TPB-row 500) — both fixed + verified |
+| Re-backfill cycles | 4 (3 ineffective — idempotent/timeout — then 1 clean local rebuild) |
+| Net engine state | Glicko-2 + MOV + TPB now genuinely live; σ converges (over-aggressively, #95); μ slightly hot (#96) |
+
+The honest summary: the *features* were already built; this session was the unglamorous, surprisingly-deep work of getting them to actually run against real data on a real platform — and discovering that each of those words ("actually run", "real data", "real platform") hid a separate failure mode.
