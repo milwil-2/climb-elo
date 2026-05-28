@@ -13,7 +13,7 @@ from typing import Optional
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from sqlalchemy import func, or_, select
 
 from climbing_elo.cache import likely_roster_cache, predictions_cache
@@ -491,33 +491,55 @@ async def v2_leaderboard(
 
 
 # ---------------------------------------------------------------------------
-# GET /athletes  — redirect to first athlete in default discipline
+# GET /athletes  — searchable, browsable athlete index (#102)
 # ---------------------------------------------------------------------------
 
 
 @router.get("/athletes", response_class=HTMLResponse)
-async def v2_athletes_index(request: Request):
-    with _session() as session:
-        first = session.execute(
-            select(Athlete).order_by(Athlete.id.asc()).limit(1)
-        ).scalar_one_or_none()
+async def v2_athletes_index(
+    request: Request,
+    disc: str = Query(default="L"),
+    gender: str = Query(default="M"),
+):
+    """Searchable / browsable athletes index.
 
-    if first:
-        return RedirectResponse(url=f"/athletes/{first.id}", status_code=302)
-
+    Renders an in-page filterable list (discipline + gender pills, client-side
+    name/country filter, rating sort) backed by a single batched query, plus a
+    debounced typeahead that hits ``GET /api/v1/athletes`` for a global search
+    across the whole population. Every row links to ``/athletes/{id}``.
+    """
     t = _templates(request)
+
+    disc_enum = _DISC_KEY_TO_ENUM.get(disc.upper(), Discipline.LEAD)
+    gender_enum = Gender.M if gender.upper() == "M" else Gender.F
+
     with _session() as session:
+        # Active-view ranked rows for the selected discipline + gender. Cap at
+        # 300 so the page stays light; the typeahead covers the long tail.
+        rows = _get_rankings_v2(
+            session,
+            gender_enum,
+            disc_enum,
+            limit=300,
+            view="active",
+        )
+        total_count = len(rows)
         ticker = _ticker_context(session)
-    return t.TemplateResponse(
-        request,
-        "athletes.html",
-        {
-            "athlete": None,
-            "sidebar_athletes": [],
-            **ticker,
-            **_nav_context("athletes"),
-        },
-    )
+
+    disc_label = _DISC_LABEL.get(disc_enum, disc)
+    gender_label = _GENDER_LABEL.get(gender_enum, gender)
+
+    ctx = {
+        "rows": rows,
+        "disc": disc_enum.value,
+        "disc_label": disc_label,
+        "gender": gender_enum.value,
+        "gender_label": gender_label,
+        "total_count": total_count,
+        **ticker,
+        **_nav_context("athletes"),
+    }
+    return t.TemplateResponse(request, "athletes_index.html", ctx)
 
 
 # ---------------------------------------------------------------------------
