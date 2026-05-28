@@ -475,6 +475,75 @@ def test_athlete_detail_not_found(client):
 
 
 # ---------------------------------------------------------------------------
+# /api/v1/athletes  — name search / typeahead (Step 1)
+# ---------------------------------------------------------------------------
+
+
+def test_athlete_search_match(client):
+    """A substring match (case-insensitive) returns the athlete with mu."""
+    r = client.get("/api/v1/athletes?q=ondra")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert isinstance(body, list)
+    names = [a["name"] for a in body]
+    assert "Adam Ondra" in names
+    adam = next(a for a in body if a["name"] == "Adam Ondra")
+    assert adam["nationality"] == "CZE"
+    assert adam["gender"] == "M"
+    # No discipline → highest rating across disciplines (Adam only has Lead).
+    assert adam["mu"] == 1750.0
+
+
+def test_athlete_search_no_match(client):
+    """A query that matches nobody returns an empty list (still 200)."""
+    r = client.get("/api/v1/athletes?q=zzzznobody")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_athlete_search_gender_filter(client):
+    """The gender filter restricts the result set."""
+    # 'a' matches both Adam and Janja; filtering to F drops Adam.
+    r = client.get("/api/v1/athletes?q=a&gender=F")
+    assert r.status_code == 200
+    body = r.json()
+    names = [a["name"] for a in body]
+    assert "Janja Garnbret" in names
+    assert "Adam Ondra" not in names
+    assert all(a["gender"] == "F" for a in body)
+
+
+def test_athlete_search_discipline_mu(client):
+    """With a discipline, mu reflects that discipline's rating."""
+    r = client.get("/api/v1/athletes?q=garnbret&discipline=lead")
+    assert r.status_code == 200
+    body = r.json()
+    janja = next(a for a in body if a["name"] == "Janja Garnbret")
+    assert janja["mu"] == 1800.0
+
+
+def test_athlete_search_limit_cap(client):
+    """limit must be capped at 50 (422 above)."""
+    r_ok = client.get("/api/v1/athletes?q=a&limit=50")
+    assert r_ok.status_code == 200
+    r_too_big = client.get("/api/v1/athletes?q=a&limit=51")
+    assert r_too_big.status_code == 422
+
+
+def test_athlete_search_limit_applied(client):
+    """A small limit truncates the result list."""
+    r = client.get("/api/v1/athletes?q=a&limit=1")
+    assert r.status_code == 200
+    assert len(r.json()) <= 1
+
+
+def test_athlete_search_missing_query_is_422(client):
+    """q is required (min_length=1)."""
+    r = client.get("/api/v1/athletes")
+    assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # /api/v1/athletes/{athlete_id}/history
 # ---------------------------------------------------------------------------
 
