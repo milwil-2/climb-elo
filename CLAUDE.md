@@ -28,6 +28,10 @@ uv run uvicorn climbing_elo.api.app:app --reload     # dev server on :8000
 # Data pipeline (run in order)
 uv run python scripts/scrape_ifsc.py --min-year 2012 --max-year 2026
 uv run python scripts/run_backfill.py
+# After an engine change (K-regrid, σ-formula bump, TPB activation), the
+# default invocation is idempotent and won't replace existing rating_history
+# rows. Pass --force-reset to wipe + recompute for a discipline:
+uv run python scripts/run_backfill.py --discipline lead --force-reset
 uv run python scripts/run_backtest.py   # validates model beats baseline by ≥15pp
 uv run python scripts/compute_combined_ratings.py  # populate BOULDER_LEAD aggregate
 
@@ -241,7 +245,7 @@ Source files: `api/v1_routes.py` (endpoints), `api/schemas.py` (Pydantic respons
 
 Production data lives in **Supabase Postgres**. One GitHub Actions workflow keeps it fresh:
 
-- **`.github/workflows/scrape-supabase.yml`** — runs daily at 04:00 UTC against the Supabase session pooler. Scrapes upcoming events + recent finished results, runs the ELO backfill (idempotent via `uq_rating_history_athlete_round`), and refreshes combined Boulder+Lead ratings. Workflow-dispatchable with an optional `historical_backfill` flag for the full 2012→present rescrape. Requires the `DATABASE_URL` repo secret (session pooler URL, port 5432).
+- **`.github/workflows/scrape-supabase.yml`** — runs daily at 04:00 UTC against the Supabase session pooler. Scrapes upcoming events + recent finished results, runs the ELO backfill (idempotent via `uq_rating_history_athlete_round_kind`), and refreshes combined Boulder+Lead ratings. Workflow-dispatchable with two boolean inputs: `historical_backfill` (full 2012→present rescrape) and `force_reset` (wipe `rating_history` + reset `ratings` before recomputing — required to activate engine changes like K-regrid or σ-formula bumps that the idempotent default would otherwise skip). Requires the `DATABASE_URL` repo secret (session pooler URL, port 5432).
 
 **Backups**: Supabase provides its own rolling backups (7-day on the free tier, PITR on paid). The previous in-repo snapshot workflow (`.github/workflows/snapshot.yml`) and `scripts/snapshot_db.py` / `scripts/restore_snapshot.py` helpers were removed in Issue #82 — they snapshotted an empty CI-local SQLite file and the `db-snapshots` GitHub Release contents were never usable for recovery.
 

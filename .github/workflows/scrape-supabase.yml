@@ -28,6 +28,10 @@ on:
         description: "Also run the full 2012→present historical scrape (slow)"
         type: boolean
         default: false
+      force_reset:
+        description: "Wipe rating_history + ratings before backfill (use after engine changes like K-regrid / σ-formula bumps so existing rows get recomputed)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -83,11 +87,22 @@ jobs:
         run: uv run python scripts/scrape_ifsc_historical.py --min-year 2012
 
       # ----------------------------------------------------------------------
+      # The default invocation is idempotent — rounds with an existing pair
+      # RatingHistory row are silently skipped. Pass force_reset=true via
+      # workflow_dispatch to wipe + recompute (required after engine changes
+      # like K-regrid or σ-formula bumps, since the existing rows were
+      # computed by the old engine and the idempotency guard would otherwise
+      # never replace them).
       - name: Run backfill for each discipline
         run: |
+          FORCE_RESET_FLAG=""
+          if [ "${{ inputs.force_reset }}" = "true" ]; then
+            FORCE_RESET_FLAG="--force-reset"
+            echo "::warning::--force-reset is set — wiping rating_history + ratings before recompute"
+          fi
           for discipline in lead boulder speed; do
             echo "::group::Backfill — $discipline"
-            uv run python scripts/run_backfill.py --discipline "$discipline"
+            uv run python scripts/run_backfill.py --discipline "$discipline" $FORCE_RESET_FLAG
             echo "::endgroup::"
           done
 

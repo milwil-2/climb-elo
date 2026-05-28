@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from climbing_elo.engine.elo import (
@@ -92,6 +92,56 @@ def _get_or_create_rating(
     )
     session.add(db_rating)
     return rating
+
+
+def force_reset_for_discipline(session: Session, discipline: Discipline) -> int:
+    """Wipe computed ratings for a discipline so backfill can recompute from scratch.
+
+    Deletes every ``RatingHistory`` row attached to an event of this discipline
+    and resets every ``Rating`` row of this discipline back to engine defaults
+    (mu=1500, sigma=350, n_events=0, last_event_at=NULL, provisional=True).
+    The raw competition data (``Athlete``, ``Event``, ``Round``, ``Result``) is
+    untouched — only the computed-rating layer is wiped.
+
+    Required after engine changes that need *existing* rows to be recomputed
+    (K-factor regrid, σ formula bumps, etc.) — the backfill is otherwise
+    idempotent on `(athlete_id, round_id, kind)` and silently skips rounds
+    that already have history rows, so engine changes never propagate to
+    historical ratings without an explicit reset.
+
+    Returns the number of ``RatingHistory`` rows deleted. The caller is
+    responsible for committing the surrounding transaction.
+
+    **Per-discipline scope**: a reset of LEAD does not touch BOULDER or
+    SPEED ratings. The combined BOULDER_LEAD aggregate (``Discipline.BOULDER_LEAD``)
+    is its own discipline row in ``ratings`` and is left alone here — it
+    will be naturally refreshed the next time ``compute_combined_ratings.py``
+    runs.
+    """
+    event_id_rows = session.execute(
+        select(Event.id).where(Event.discipline == discipline)
+    ).all()
+    event_ids = [row[0] for row in event_id_rows]
+
+    rows_deleted = 0
+    if event_ids:
+        result = session.execute(
+            delete(RatingHistory).where(RatingHistory.event_id.in_(event_ids))
+        )
+        rows_deleted = result.rowcount or 0
+
+    session.execute(
+        update(Rating)
+        .where(Rating.discipline == discipline)
+        .values(
+            mu=DEFAULT_MU,
+            sigma=DEFAULT_SIGMA,
+            n_events=0,
+            last_event_at=None,
+            provisional=True,
+        )
+    )
+    return rows_deleted
 
 
 def run_backfill(
