@@ -28,10 +28,14 @@ on:
         description: "Also run the full 2012→present historical scrape (slow)"
         type: boolean
         default: false
-      force_reset:
-        description: "Wipe rating_history + ratings before backfill (use after engine changes like K-regrid / σ-formula bumps so existing rows get recomputed)"
-        type: boolean
-        default: false
+      # NOTE: there is intentionally NO force_reset input here. A full
+      # wipe+recompute exceeds this job's 60-min timeout (the Lead rebuild
+      # alone runs >60 min), which leaves prod HALF-REBUILT and broken —
+      # this actually happened on 2026-05-28 (run 26550405752 was cancelled
+      # mid-Lead-rebuild, stranding 778 athletes at default ratings). The
+      # `--force-reset` flag on run_backfill.py is therefore a LOCAL-ONLY
+      # operation: run it from a laptop pointed at the session pooler, where
+      # there's no timeout. See issue #75 and CLAUDE.md.
 
 permissions:
   contents: read
@@ -87,22 +91,25 @@ jobs:
         run: uv run python scripts/scrape_ifsc_historical.py --min-year 2012
 
       # ----------------------------------------------------------------------
-      # The default invocation is idempotent — rounds with an existing pair
-      # RatingHistory row are silently skipped. Pass force_reset=true via
-      # workflow_dispatch to wipe + recompute (required after engine changes
-      # like K-regrid or σ-formula bumps, since the existing rows were
-      # computed by the old engine and the idempotency guard would otherwise
-      # never replace them).
+      # The backfill here is always idempotent — rounds with an existing pair
+      # RatingHistory row are silently skipped, so this step only computes
+      # ratings for newly-scraped rounds. This is correct for routine daily
+      # operation.
+      #
+      # To ACTIVATE an engine change (K-regrid, σ-formula bump, etc.) the whole
+      # history must be wiped + recomputed, but that exceeds this job's 60-min
+      # timeout and is therefore a LOCAL-ONLY operation — do NOT add a
+      # --force-reset path here. Run it from a laptop instead:
+      #   export DATABASE_URL='<session pooler, port 5432>'
+      #   for d in lead boulder speed; do
+      #     uv run python scripts/run_backfill.py --discipline "$d" --force-reset
+      #   done
+      #   uv run python scripts/compute_combined_ratings.py
       - name: Run backfill for each discipline
         run: |
-          FORCE_RESET_FLAG=""
-          if [ "${{ inputs.force_reset }}" = "true" ]; then
-            FORCE_RESET_FLAG="--force-reset"
-            echo "::warning::--force-reset is set — wiping rating_history + ratings before recompute"
-          fi
           for discipline in lead boulder speed; do
             echo "::group::Backfill — $discipline"
-            uv run python scripts/run_backfill.py --discipline "$discipline" $FORCE_RESET_FLAG
+            uv run python scripts/run_backfill.py --discipline "$discipline"
             echo "::endgroup::"
           done
 

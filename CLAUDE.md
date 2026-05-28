@@ -30,8 +30,16 @@ uv run python scripts/scrape_ifsc.py --min-year 2012 --max-year 2026
 uv run python scripts/run_backfill.py
 # After an engine change (K-regrid, σ-formula bump, TPB activation), the
 # default invocation is idempotent and won't replace existing rating_history
-# rows. Pass --force-reset to wipe + recompute for a discipline:
-uv run python scripts/run_backfill.py --discipline lead --force-reset
+# rows. Pass --force-reset to wipe + recompute for a discipline. **Run this
+# LOCALLY ONLY** — a full reset+rebuild of even one discipline exceeds the
+# scrape-supabase.yml job's 60-min GH Actions timeout and will leave prod
+# half-rebuilt (this happened on 2026-05-28). Point DATABASE_URL at the
+# session pooler (port 5432) and run all three disciplines + combined:
+#   export DATABASE_URL='<session pooler URL, port 5432>'
+#   for d in lead boulder speed; do
+#     uv run python scripts/run_backfill.py --discipline "$d" --force-reset
+#   done
+#   uv run python scripts/compute_combined_ratings.py
 uv run python scripts/run_backtest.py   # validates model beats baseline by ≥15pp
 uv run python scripts/compute_combined_ratings.py  # populate BOULDER_LEAD aggregate
 

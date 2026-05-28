@@ -47,7 +47,11 @@ def main() -> None:
             "existing rows were computed by the old engine — the normal "
             "backfill is idempotent and would otherwise skip them. "
             "Per-discipline scope: a reset of LEAD does not touch BOULDER "
-            "or SPEED. The raw Athlete/Event/Round/Result data is untouched."
+            "or SPEED. The raw Athlete/Event/Round/Result data is untouched. "
+            "RUN LOCALLY ONLY: a full reset+rebuild exceeds the GitHub "
+            "Actions 60-min job timeout and will leave prod half-rebuilt. "
+            "Point DATABASE_URL at the session pooler (port 5432) and run "
+            "from a laptop."
         ),
     )
     args = parser.parse_args()
