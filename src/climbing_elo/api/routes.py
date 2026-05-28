@@ -721,11 +721,18 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
 
             # Top-3 opponents = pull pairs from the *last* (i.e. final) round's
             # contributing_pairs, sorted by abs(delta), then resolve names.
+            # Only consider kind='pair' rows: TPB rows (#90) store
+            # contributing_pairs as a dict ({"rank":…,"gross_bonus":…}), not a
+            # list of pair-dicts, so iterating one would yield string keys and
+            # crash p.get(). The isinstance guard is belt-and-suspenders.
             last_round_rh = max(
                 (
                     h
                     for h, _e in recent_rh
-                    if _e.id == ev.id and (h.contributing_pairs or [])
+                    if _e.id == ev.id
+                    and h.kind == "pair"
+                    and isinstance(h.contributing_pairs, list)
+                    and h.contributing_pairs
                 ),
                 key=lambda h: h.id,
                 default=None,

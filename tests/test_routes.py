@@ -294,6 +294,30 @@ def profile_factory(profile_db_path):
                 ],
             )
         )
+    # Issue #90 / #36 regression: a TPB row for `full` on the lead WC event.
+    # kind='tpb' stores contributing_pairs as a DICT (not a list of pair-dicts),
+    # and it's added last so it has the highest id for its event. The athlete
+    # profile's "recent ELO changes" opponents logic must NOT pick this row
+    # (iterating a dict yields string keys → p.get() crash). See
+    # routes.py:v2_athlete_profile.
+    session.add(
+        RatingHistory(
+            athlete_id=full.id,
+            event_id=ev_wc_l.id,
+            round_id=rounds[3].id,
+            mu_before=2050.0,
+            mu_after=2062.0,
+            sigma_before=110.0,
+            sigma_after=110.0,
+            kind="tpb",
+            contributing_pairs={
+                "rank": 1,
+                "gross_bonus": 12.0,
+                "debit": 0.0,
+                "tier": "world_cup",
+            },
+        )
+    )
     session.commit()
     session.close()
     return factory
@@ -361,6 +385,21 @@ def test_profile_route_full_athlete_renders_200(profile_client, profile_factory)
     assert ">Event history</div>" in html
     assert "Paris Olympics" in html
     assert "Bern World Championships" in html
+
+
+def test_profile_route_with_tpb_row_renders_200(profile_client, profile_factory):
+    """Regression (#36): an athlete whose latest rating_history row for an
+    event is a TPB row (kind='tpb', dict contributing_pairs) must still render
+    200. Before the fix the opponents logic in v2_athlete_profile picked the
+    highest-id row regardless of kind and iterated the dict's string keys,
+    raising 'str' object has no attribute 'get'. The profile fixture seeds
+    such a TPB row for 'Sora Climber' on the Briancon World Cup event."""
+    aid = _athlete_id_by_name(profile_factory, "Sora Climber")
+    r = profile_client.get(f"/athletes/{aid}")
+    assert r.status_code == 200, r.text[:500]
+    # The opponents list must still come from the pair row (Solo Lead), never
+    # from the TPB row's dict payload.
+    assert "Solo Lead" in r.text
 
 
 def test_profile_route_minimal_athlete_no_photo_no_metrics(
