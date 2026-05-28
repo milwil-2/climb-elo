@@ -1,10 +1,17 @@
-"""Edge cache-control middleware (Issue #97, Tier 1).
+"""Edge cache-control middleware (Issue #97, Tier 1; Issue #101).
 
 Tags cacheable GET responses with a short shared-cache ``Cache-Control`` so
 Vercel's edge (and browsers) can serve repeat hits without re-invoking the
 Python function. Rating data refreshes once daily (the 04:00 UTC scrape), so a
 brief edge TTL with ``stale-while-revalidate`` is safe: the edge serves
 instantly and refreshes in the background.
+
+The same responses also receive ``Vercel-CDN-Cache-Control`` (Issue #101).
+Vercel's edge ignores plain ``Cache-Control`` in production — it overrides it
+with its own ``public, max-age=0, must-revalidate`` and ``x-vercel-cache`` stays
+``MISS``. ``Vercel-CDN-Cache-Control`` is the explicit CDN directive Vercel
+honors for edge caching, independent of ``Cache-Control``, so we emit both: the
+CDN header drives the edge, the plain header still steers browsers.
 
 Implemented as a **pure-ASGI** middleware rather than ``BaseHTTPMiddleware`` so
 it never buffers the response body — important for the SSE streaming endpoint
@@ -32,6 +39,12 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 #: data-refresh cadence.
 DEFAULT_CACHE_CONTROL = "public, s-maxage=300, stale-while-revalidate=600"
 
+#: Vercel-specific CDN directive. Vercel's edge honors this header for edge
+#: caching even though it overrides plain ``Cache-Control`` in production
+#: (Issue #101). Same policy value as ``DEFAULT_CACHE_CONTROL`` — the edge TTL
+#: and stale-grace are identical; only the header name differs.
+VERCEL_CDN_CACHE_CONTROL_HEADER = "vercel-cdn-cache-control"
+
 #: Path prefixes that must NOT be edge-cached.
 NO_CACHE_PREFIXES = ("/live", "/static")
 
@@ -55,6 +68,10 @@ class CacheControlMiddleware:
             if message["type"] == "http.response.start" and message["status"] == 200:
                 headers = MutableHeaders(raw=message["headers"])
                 headers.setdefault("cache-control", self.header_value)
+                # Vercel's edge ignores plain Cache-Control; this is the header
+                # it actually honors for CDN caching (Issue #101). Same policy
+                # value, so a route that sets its own still wins via setdefault.
+                headers.setdefault(VERCEL_CDN_CACHE_CONTROL_HEADER, self.header_value)
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
