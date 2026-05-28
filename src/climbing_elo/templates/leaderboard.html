@@ -60,6 +60,12 @@
     vertical-align:middle;font-weight:500;
   }
   .activity-badge.is-active{color:var(--ink-2);border-color:var(--line-2)}
+
+  /* Athlete-name links in the leaderboard table — mirrors the canonical
+     pattern used in event_detail.html (`td.ath a`) and breakdown.html
+     (`td.opponent a`). Inherits colour, subtle hover dim. (#92) */
+  td.athlete a{color:inherit;text-decoration:none;transition:color .15s}
+  td.athlete a:hover{color:var(--dim)}
 </style>
 {% endblock %}
 
@@ -122,7 +128,7 @@
           <tr>
             <td class="rank mono{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
             <td class="athlete">
-              {{ row.name }}
+              <a href="/athletes/{{ row.id }}">{{ row.name }}</a>
               <span class="nat">{{ row.nationality }}</span>
               {%- if view == 'all' and row.activity_label -%}
               <span class="activity-badge{% if row.activity_label == 'Active' %} is-active{% endif %}">{{ row.activity_label }}</span>
