@@ -194,6 +194,16 @@ def run_backfill(
                 ar = ratings_cache[upd.athlete_id]
                 ar.mu = upd.mu_after
                 ar.sigma = upd.sigma_after
+                # Issue #89 Fix 3 — set last_event_at to this event's date so
+                # subsequent rounds of the SAME event see zero inactivity gap
+                # and don't re-inflate σ. Without this, the round 2 / round 3
+                # of a multi-round event computes φ_inflated from the prior
+                # event's date, clamps to σ_ceiling, and wipes out the per-
+                # round σ shrinkage that round 1 just earned. The DB column
+                # is only updated once per event (see the seen_athletes block
+                # below) — that's intentional, the cache update here is the
+                # in-event guard.
+                ar.last_event_at = event.start_date
 
                 db_rating = session.execute(
                     select(Rating).where(
