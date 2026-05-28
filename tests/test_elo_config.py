@@ -64,6 +64,11 @@ class TestDefaultsMatchLegacyConstants:
     def test_mov_softening(self):
         assert DEFAULT_CONFIG.mov_softening == elo.MOV_SOFTENING
 
+    def test_sigma_field_normalization_exponent_default(self):
+        # Issue #95: lives on EloConfig (no module-global re-export by design).
+        # Default is full field-size normalization (one round ≈ one game).
+        assert DEFAULT_CONFIG.sigma_field_normalization_exponent == 1.0
+
     def test_k_factor_table_default(self):
         # Reference equality not guaranteed (default_factory makes a fresh copy)
         # but the values should match.
