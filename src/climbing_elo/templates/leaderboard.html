@@ -79,6 +79,11 @@
       a podium against weak fields counts for less than a strong fifth. &sigma; widens during
       inactivity and shrinks with each event.
     </p>
+    <p class="reveal d3" style="margin-top:14px;font-size:12.5px;color:var(--dim);letter-spacing:0.02em">
+      <b style="color:var(--ink-2)">R</b> rating &mdash; higher is stronger (~1500 average, elite ~2000&ndash;2300)
+      &nbsp;&middot;&nbsp; <b style="color:var(--ink-2)">&sigma;</b> uncertainty &mdash; shrinks as an athlete competes more
+      &nbsp;&middot;&nbsp; <b style="color:var(--ink-2)">&Delta;R</b> rating change from an event
+    </p>
   </section>
 
   <section class="lb-section">
@@ -120,7 +125,7 @@
           <th>Athlete</th>
           <th>Born</th>
           <th>Events</th>
-          <th style="text-align:right">&mu; &plusmn; &sigma;</th>
+          <th style="text-align:right">R &plusmn; &sigma;</th>
           <th style="text-align:right">90d &Delta;</th>
         </tr></thead>
         <tbody>
@@ -153,7 +158,7 @@
       </table>
       <div class="summary-bar">
         <span>Showing<b id="showing-count">{{ rows | length }}</b><span style="margin-left:14px">of<b>{{ total_count }}</b>in {{ disc_label }} &middot; {{ gender_label }}</span></span>
-        <span>Top &mu;<b>{{ top_mu }}</b><span style="margin-left:14px">Median<b>{{ median_mu }}</b></span></span>
+        <span>Top R<b>{{ top_mu }}</b><span style="margin-left:14px">Median<b>{{ median_mu }}</b></span></span>
       </div>
     </div>
   </section>
