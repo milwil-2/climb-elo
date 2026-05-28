@@ -196,6 +196,18 @@ class EloConfig:
         * ``sigma_ceiling`` — display-scale RD ceiling (≈ φ=2.01; cold
           start).
 
+    σ field-size normalization (Issue #95)
+        * ``sigma_field_normalization_exponent`` — damps the accumulated
+          Glicko-2 variance evidence (``v_inv``) by ``max(n−1, 1) ** exponent``
+          where ``n`` is the round's field size. A Plackett-Luce-decomposed
+          ranking yields (n−1) pairwise "games" per athlete, but a single
+          multi-athlete ranking is **not** (n−1) independent Glicko-2 games —
+          left undamped it collapses σ straight to the floor after one event
+          (mirroring the μ over-counting that ``pair_k = base_k/(n−1)`` already
+          fixes). ``1.0`` (default) = full normalization (one round ≈ one game
+          of evidence); ``0.0`` = the old over-counting behaviour (escape hatch
+          for ablation / regression tests).
+
     MOV gap-conditioning (Issue #53, 538-style)
         * ``mov_rating_scale`` — Δμ at which the damping factor becomes
           ``softening / (1 + softening)``.
@@ -244,6 +256,12 @@ class EloConfig:
     # σ clamping (display scale)
     sigma_floor: float = 50.0
     sigma_ceiling: float = 350.0
+
+    # σ field-size normalization (Issue #95). Divide accumulated v_inv by
+    # max(n-1, 1) ** exponent so one multi-athlete round contributes ≈ one
+    # Glicko-2 game of evidence rather than (n-1). 1.0 = full normalization,
+    # 0.0 = legacy over-counting (collapses σ to the floor after one event).
+    sigma_field_normalization_exponent: float = 1.0
 
     # MOV gap-conditioning (Issue #53)
     mov_rating_scale: float = 400.0
@@ -854,7 +872,21 @@ def calculate_round_updates(
         # Simplified closed-form Glicko-2 φ update:
         #   1/φ_new² = 1/φ_inflated² + Σ g(φ_opp)² · E · (1-E)
         # (full volatility iteration is a follow-up — see module docstring.)
+        #
+        # Field-size normalization (Issue #95): the v_inv accumulator sums
+        # one variance term per pairwise comparison, i.e. (n−1) Glicko-2
+        # "games" of evidence in an n-athlete round. But a single
+        # Plackett-Luce-decomposed ranking is NOT (n−1) independent games —
+        # left undamped it collapses σ to the floor after one event (a
+        # first-event athlete lands at σ≈50 instead of retaining cold-start
+        # uncertainty). Divide v_inv by max(n−1, 1) ** exponent so one round
+        # contributes ≈ one game (exponent=1.0, the default). This mirrors the
+        # μ-side ``pair_k = base_k/(n−1)`` normalization. exponent=0.0 restores
+        # the legacy over-counting behaviour (escape hatch / ablation knob).
         v_inv = v_inv_sum.get(aid, 0.0)
+        n_field = len(active)
+        if v_inv and n_field > 1 and config.sigma_field_normalization_exponent:
+            v_inv /= float(n_field - 1) ** config.sigma_field_normalization_exponent
         inv_phi_sq_new = 1.0 / (phi_internal * phi_internal) + v_inv
         phi_new = 1.0 / math.sqrt(inv_phi_sq_new)
         sigma_after_display = phi_new * GLICKO2_SCALE

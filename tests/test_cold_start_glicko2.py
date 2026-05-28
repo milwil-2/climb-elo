@@ -36,6 +36,7 @@ from climbing_elo.engine.elo import (
     DEFAULT_SIGMA,
     AthleteRating,
     AthleteResult,
+    EloConfig,
     calculate_round_updates,
 )
 from climbing_elo.models import (
@@ -195,6 +196,150 @@ def test_cold_start_loser_drops_quickly_under_glicko2():
     assert ratings[NEWCOMER_ID].mu < DEFAULT_MU - 30, (
         f"After 5 last-place finishes, newcomer μ={ratings[NEWCOMER_ID].mu:.1f} "
         f"should drop well below default 1500."
+    )
+
+
+# ---------------------------------------------------------------------------
+# σ field-size normalization (Issue #95) — v_inv must not over-count evidence
+# ---------------------------------------------------------------------------
+
+
+def _make_field(n_athletes: int) -> dict[int, AthleteRating]:
+    """Build a field of established veterans plus one fresh newcomer (id=999).
+
+    The newcomer starts at the cold-start defaults (σ at the ceiling); the
+    veterans sit at a low σ so the round's evidence is dominated by the
+    newcomer's own large φ.
+    """
+    veteran_ids = list(range(1, n_athletes))
+    ratings: dict[int, AthleteRating] = {
+        aid: AthleteRating(
+            athlete_id=aid,
+            mu=1600.0 - 10.0 * idx,
+            sigma=80.0,
+            n_events=10,
+            last_event_at=date(2024, 1, 1),
+            provisional=False,
+        )
+        for idx, aid in enumerate(veteran_ids)
+    }
+    ratings[999] = AthleteRating(
+        athlete_id=999,
+        mu=DEFAULT_MU,
+        sigma=DEFAULT_SIGMA,
+        n_events=0,
+        last_event_at=None,
+        provisional=True,
+    )
+    return ratings
+
+
+def _single_event_results(n_athletes: int) -> list[AthleteResult]:
+    """Newcomer (id=999) wins; veterans fill ranks 2..n."""
+    veteran_ids = list(range(1, n_athletes))
+    return [AthleteResult(athlete_id=999, rank=1)] + [
+        AthleteResult(athlete_id=aid, rank=i + 2) for i, aid in enumerate(veteran_ids)
+    ]
+
+
+def test_single_multi_athlete_event_does_not_collapse_sigma():
+    """A first-event athlete in a large field must retain large σ (#95).
+
+    The closed-form φ update accumulates one variance term per pairwise
+    comparison — (n−1) of them in an n-athlete round. Without field-size
+    normalization, a single 8-athlete event drives a fresh athlete's σ
+    straight to the floor (50). With the default exponent=1.0 the round
+    contributes ≈ one game of evidence, so σ should stay high.
+    """
+    n_athletes = 8
+    ratings = _make_field(n_athletes)
+    updates = calculate_round_updates(
+        _single_event_results(n_athletes),
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.LEAD,
+    )
+    newcomer = next(u for u in updates if u.athlete_id == 999)
+    assert newcomer.sigma_after > 200.0, (
+        f"After a single 8-athlete event a first-time athlete (n_events=1) "
+        f"should retain σ > 200, not collapse toward the floor; "
+        f"got σ={newcomer.sigma_after:.1f}"
+    )
+
+
+def test_exponent_zero_restores_legacy_sigma_collapse():
+    """exponent=0.0 must reproduce the old over-counting behaviour (#95).
+
+    This proves the normalization knob is wired correctly: with the divisor
+    disabled, the (n−1)-game evidence over-count collapses a fresh athlete's
+    σ near the floor after a single multi-athlete event.
+    """
+    n_athletes = 8
+    ratings = _make_field(n_athletes)
+    legacy_cfg = EloConfig(sigma_field_normalization_exponent=0.0)
+    updates = calculate_round_updates(
+        _single_event_results(n_athletes),
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.LEAD,
+        config=legacy_cfg,
+    )
+    newcomer = next(u for u in updates if u.athlete_id == 999)
+    # Legacy behaviour: σ collapses hard toward the floor in one event. At n=8
+    # the 7-game over-count lands ~130 (it collapses further the larger the
+    # field), versus the normalized default's field-invariant ~255.
+    assert newcomer.sigma_after < 150.0, (
+        f"With exponent=0.0 the legacy over-counting should collapse σ toward "
+        f"the floor after one 8-athlete event; got σ={newcomer.sigma_after:.1f}"
+    )
+    # And it must be *much* lower than the normalized default (sanity on the knob).
+    normalized = calculate_round_updates(
+        _single_event_results(n_athletes),
+        _make_field(n_athletes),
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.LEAD,
+    )
+    normalized_newcomer = next(u for u in normalized if u.athlete_id == 999)
+    assert newcomer.sigma_after < normalized_newcomer.sigma_after - 50.0
+
+
+def test_repeated_events_drive_sigma_to_low_but_not_floor_band():
+    """Many events should settle σ in a sensible low band, not pin it at 50.
+
+    Under the normalized accumulator a fresh athlete who competes in a long
+    string of multi-athlete events should see σ shrink gradually toward — but
+    plausibly above — the floor, landing in a ~80-160 band rather than being
+    pinned at the 50 floor after a single event.
+    """
+    n_athletes = 8
+    ratings = _make_field(n_athletes)
+    event_date = date(2024, 6, 1)
+    for _ in range(15):
+        updates = calculate_round_updates(
+            _single_event_results(n_athletes),
+            ratings,
+            EventTier.WORLD_CUP,
+            RoundType.FINAL,
+            event_date,
+            discipline=Discipline.LEAD,
+        )
+        for upd in updates:
+            ratings[upd.athlete_id].mu = upd.mu_after
+            ratings[upd.athlete_id].sigma = upd.sigma_after
+            ratings[upd.athlete_id].n_events += 1
+            ratings[upd.athlete_id].last_event_at = event_date
+        event_date += timedelta(days=30)
+
+    final_sigma = ratings[999].sigma
+    assert 60.0 < final_sigma < 160.0, (
+        f"After 15 events the newcomer's σ should settle in a low-but-not-floor "
+        f"band (~80-160), not be pinned at the 50 floor; got σ={final_sigma:.1f}"
     )
 
 
