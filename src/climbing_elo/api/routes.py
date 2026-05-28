@@ -13,7 +13,7 @@ from typing import Optional
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from sqlalchemy import func, or_, select
 
 from climbing_elo.cache import likely_roster_cache, predictions_cache
@@ -491,33 +491,55 @@ async def v2_leaderboard(
 
 
 # ---------------------------------------------------------------------------
-# GET /athletes  — redirect to first athlete in default discipline
+# GET /athletes  — searchable, browsable athlete index (#102)
 # ---------------------------------------------------------------------------
 
 
 @router.get("/athletes", response_class=HTMLResponse)
-async def v2_athletes_index(request: Request):
-    with _session() as session:
-        first = session.execute(
-            select(Athlete).order_by(Athlete.id.asc()).limit(1)
-        ).scalar_one_or_none()
+async def v2_athletes_index(
+    request: Request,
+    disc: str = Query(default="L"),
+    gender: str = Query(default="M"),
+):
+    """Searchable / browsable athletes index.
 
-    if first:
-        return RedirectResponse(url=f"/athletes/{first.id}", status_code=302)
-
+    Renders an in-page filterable list (discipline + gender pills, client-side
+    name/country filter, rating sort) backed by a single batched query, plus a
+    debounced typeahead that hits ``GET /api/v1/athletes`` for a global search
+    across the whole population. Every row links to ``/athletes/{id}``.
+    """
     t = _templates(request)
+
+    disc_enum = _DISC_KEY_TO_ENUM.get(disc.upper(), Discipline.LEAD)
+    gender_enum = Gender.M if gender.upper() == "M" else Gender.F
+
     with _session() as session:
+        # Active-view ranked rows for the selected discipline + gender. Cap at
+        # 300 so the page stays light; the typeahead covers the long tail.
+        rows = _get_rankings_v2(
+            session,
+            gender_enum,
+            disc_enum,
+            limit=300,
+            view="active",
+        )
+        total_count = len(rows)
         ticker = _ticker_context(session)
-    return t.TemplateResponse(
-        request,
-        "athletes.html",
-        {
-            "athlete": None,
-            "sidebar_athletes": [],
-            **ticker,
-            **_nav_context("athletes"),
-        },
-    )
+
+    disc_label = _DISC_LABEL.get(disc_enum, disc)
+    gender_label = _GENDER_LABEL.get(gender_enum, gender)
+
+    ctx = {
+        "rows": rows,
+        "disc": disc_enum.value,
+        "disc_label": disc_label,
+        "gender": gender_enum.value,
+        "gender_label": gender_label,
+        "total_count": total_count,
+        **ticker,
+        **_nav_context("athletes"),
+    }
+    return t.TemplateResponse(request, "athletes_index.html", ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -1040,21 +1062,22 @@ async def v2_projections(request: Request):
 
 @router.get("/head-to-head", response_class=HTMLResponse)
 async def v2_h2h_form(request: Request):
+    """Empty head-to-head picker (#98).
+
+    The page loads with two debounced typeahead inputs (backed by
+    ``GET /api/v1/athletes``), a discipline control, and a gender control that
+    explicitly supports cross-gender (man vs woman) comparison. No athlete pool
+    is pre-loaded — selection is driven entirely by the search inputs.
+    """
     t = _templates(request)
 
     with _session() as session:
-        # Load top athletes by discipline for the selects. The picker shows
-        # both genders so users can compare any two athletes.
-        men_lead = _get_rankings_v2(session, Gender.M, Discipline.LEAD, limit=20)
-        women_lead = _get_rankings_v2(session, Gender.F, Discipline.LEAD, limit=20)
-        pool = men_lead + women_lead
-
         ticker = _ticker_context(session)
 
     ctx = {
-        "pool": pool,
         "h2h_result": None,
         "selected_disc": "L",
+        "selected_gender": "",
         **ticker,
         **_nav_context("h2h"),
     }
@@ -1162,18 +1185,30 @@ async def v2_h2h_result(
         aligned_a = [lmap_a.get(lbl) for lbl in all_labels]
         aligned_b = [lmap_b.get(lbl) for lbl in all_labels]
 
-        # Ring geometry: R=70, C=2πR
+        # Ring geometry: R=70, C=2πR. Two-sided ring (#99): A's arc starts at
+        # 12 o'clock and sweeps clockwise for its share; B's arc begins where A
+        # ends (rotated win_a·360°) and sweeps the remainder, so the two meet
+        # exactly and the underdog's larger share renders proportionally.
+        #   - dash_offset_a leaves (1 - win_a) of the circle hidden → A's arc.
+        #   - dash_offset_b is the symmetric value for B (kept for parity).
+        #   - seg_a / seg_b are the literal visible arc lengths.
+        #   - rot_b rotates B's circle so it starts at A's end.
         R = 70
         C = 2 * math.pi * R
         dash_offset_a = round(C * (1 - win_a), 2)
+        dash_offset_b = round(C * (1 - win_b), 2)
+        seg_a = round(C * win_a, 2)
+        seg_b = round(C * win_b, 2)
+        rot_b = round(win_a * 360.0, 2)
 
         mu_gap = round(rating_a.mu - rating_b.mu, 1)
 
-        # Pools for the selects
+        # Cross-gender support (#98): the pair may mix genders. The win-prob
+        # math (analytic ELO expectation) is gender-agnostic; we only surface
+        # the fact so the template can label it.
         gender_a = athlete_a.gender
         gender_b = athlete_b.gender
-        pool_gender = gender_a if gender_a == gender_b else Gender.M
-        pool = _get_rankings_v2(session, pool_gender, disc_enum, limit=20)
+        cross_gender = gender_a != gender_b
 
         ticker = _ticker_context(session)
 
@@ -1185,6 +1220,7 @@ async def v2_h2h_result(
                 "id": athlete_a.id,
                 "name": athlete_a.name,
                 "nationality": athlete_a.nationality or "—",
+                "gender": gender_a.value,
                 "mu": round(rating_a.mu, 1),
                 "sigma": round(rating_a.sigma, 1),
                 "n_events": rating_a.n_events,
@@ -1193,6 +1229,7 @@ async def v2_h2h_result(
                 "id": athlete_b.id,
                 "name": athlete_b.name,
                 "nationality": athlete_b.nationality or "—",
+                "gender": gender_b.value,
                 "mu": round(rating_b.mu, 1),
                 "sigma": round(rating_b.sigma, 1),
                 "n_events": rating_b.n_events,
@@ -1203,7 +1240,13 @@ async def v2_h2h_result(
             "ring_R": R,
             "ring_C": round(C, 2),
             "ring_dash_offset": dash_offset_a,
+            "ring_dash_offset_b": dash_offset_b,
+            "ring_seg_a": seg_a,
+            "ring_seg_b": seg_b,
+            "ring_rot_b": rot_b,
             "past_meetings": past_meetings,
+            "no_shared_events": past_meetings == 0,
+            "cross_gender": cross_gender,
             "mu_gap": mu_gap,
             "disc_label": disc_label,
             "disc_key": _DISC_ENUM_TO_KEY.get(disc_enum, "L"),
@@ -1211,10 +1254,10 @@ async def v2_h2h_result(
             "chart_mu_a": json.dumps(aligned_a),
             "chart_mu_b": json.dumps(aligned_b),
         },
-        "pool": pool,
         "a_id": a_id,
         "b_id": b_id,
         "selected_disc": _DISC_ENUM_TO_KEY.get(disc_enum, "L"),
+        "selected_gender": "",
         **ticker,
         **_nav_context("h2h"),
     }

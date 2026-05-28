@@ -38,6 +38,7 @@ from climbing_elo.api.schemas import (
     AthleteDetail,
     AthleteHistoryResponse,
     AthleteRating,
+    AthleteSearchResult,
     CombinedLeaderboardEntry,
     CombinedLeaderboardResponse,
     DisciplineInfo,
@@ -261,6 +262,119 @@ async def leaderboard(
         total=total,
         items=items,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/athletes  — name search / typeahead
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/athletes",
+    response_model=list[AthleteSearchResult],
+    summary="Search athletes by name",
+)
+async def search_athletes(
+    q: str = Query(
+        ...,
+        min_length=1,
+        max_length=80,
+        description="Case-insensitive substring match on athlete name.",
+    ),
+    gender: Optional[str] = Query(None, description="Optional gender filter: M or F."),
+    discipline: Optional[str] = Query(
+        None,
+        description=(
+            "Optional discipline: lead, boulder, speed, boulder_lead / combined. "
+            "When supplied, `mu` is the rating in this discipline and only "
+            "athletes with such a rating are returned."
+        ),
+    ),
+    limit: int = Query(20, ge=1, le=50, description="Max results (1–50)."),
+) -> list[AthleteSearchResult]:
+    """
+    Search athletes by name (case-insensitive substring).
+
+    Powers the typeahead pickers on the `/athletes` index and `/head-to-head`
+    pages. Results are ordered by `mu` descending (athletes with no rating sort
+    last). When `discipline` is supplied, `mu` is the rating in that discipline
+    and only athletes that have such a rating are returned. With no discipline,
+    `mu` is the athlete's highest rating across all disciplines (or `null`).
+
+    **Rate limit**: the default 120/min applies. Typeahead callers must debounce
+    (~250–300 ms) so per-keystroke fetches stay well under the cap.
+    """
+    gen: Optional[Gender] = None
+    if gender is not None:
+        gen = _resolve_gender(gender)
+
+    disc: Optional[Discipline] = None
+    if discipline is not None:
+        disc = _resolve_discipline(discipline)
+
+    pattern = f"%{q.strip()}%"
+
+    with _session() as session:
+        if disc is not None:
+            # Join the requested-discipline rating; only matching athletes
+            # (those that have a rating in this discipline) are returned.
+            stmt = (
+                select(Athlete, Rating.mu)
+                .join(
+                    Rating,
+                    (Rating.athlete_id == Athlete.id) & (Rating.discipline == disc),
+                )
+                .where(Athlete.name.ilike(pattern))
+            )
+            if gen is not None:
+                stmt = stmt.where(Athlete.gender == gen)
+            stmt = stmt.order_by(Rating.mu.desc()).limit(limit)
+            rows = session.execute(stmt).all()
+            return [
+                AthleteSearchResult(
+                    id=ath.id,
+                    name=ath.name,
+                    nationality=ath.nationality,
+                    gender=ath.gender.value,
+                    mu=round(mu, 2) if mu is not None else None,
+                )
+                for ath, mu in rows
+            ]
+
+        # No discipline: mu is the athlete's highest rating across disciplines.
+        # LEFT JOIN onto the per-athlete max(mu) so athletes without any rating
+        # still match (mu = null) and sort last.
+        max_mu_subq = (
+            select(
+                Rating.athlete_id.label("athlete_id"),
+                func.max(Rating.mu).label("max_mu"),
+            )
+            .group_by(Rating.athlete_id)
+            .subquery()
+        )
+        stmt = (
+            select(Athlete, max_mu_subq.c.max_mu)
+            .outerjoin(max_mu_subq, max_mu_subq.c.athlete_id == Athlete.id)
+            .where(Athlete.name.ilike(pattern))
+        )
+        if gen is not None:
+            stmt = stmt.where(Athlete.gender == gen)
+        # NULL mu sorts last under desc() in both SQLite and Postgres' default
+        # (NULLS LAST for DESC on SQLite; we coalesce to be portable).
+        stmt = stmt.order_by(func.coalesce(max_mu_subq.c.max_mu, -1.0).desc()).limit(
+            limit
+        )
+        rows = session.execute(stmt).all()
+        return [
+            AthleteSearchResult(
+                id=ath.id,
+                name=ath.name,
+                nationality=ath.nationality,
+                gender=ath.gender.value,
+                mu=round(max_mu, 2) if max_mu is not None else None,
+            )
+            for ath, max_mu in rows
+        ]
 
 
 # ---------------------------------------------------------------------------
