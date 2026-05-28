@@ -8,6 +8,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
+from climbing_elo.api.cache_headers import CacheControlMiddleware
 from climbing_elo.api.limiter import limiter
 from climbing_elo.api.routes import router as html_router
 from climbing_elo.api.v1_routes import router as v1_router
@@ -50,6 +51,11 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
+
+    # Edge cache-control on read-only GET routes (Issue #97 Tier 1) so Vercel's
+    # edge serves repeat hits without re-invoking the function. Excludes /live
+    # (real-time) and /static (own validators). See cache_headers.py.
+    application.add_middleware(CacheControlMiddleware)
 
     # Serve static files (styles.css, etc.) from src/climbing_elo/static/
     application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
