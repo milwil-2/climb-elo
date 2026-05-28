@@ -247,6 +247,19 @@ class EloConfig:
     # zero-sum debit math.
     tpb_table: dict[EventTier, list[float]] = field(default_factory=_default_tpb_table)
 
+    # G-Elo bucketed MOV (Issue #84 — Szczecinski 2022 benchmark variant).
+    # When ``None`` (the default), the engine uses the production continuous
+    # MOV formula ``min(1 + gap/max_gap, margin_cap)``. When set to a mapping
+    # of ``Discipline → [(upper_bound_exclusive, multiplier), ...]``, the
+    # MOV helpers dispatch to :func:`climbing_elo.engine.gelo.compute_gelo_margin_multiplier`
+    # instead. This is an opt-in benchmark knob — the default config keeps
+    # production behaviour byte-identical. See ``engine/gelo.py`` for the
+    # default bucket tables and rationale.
+    gelo_buckets: (
+        dict[Discipline, "list[tuple[float, float]] | tuple[tuple[float, float], ...]"]
+        | None
+    ) = None
+
 
 DEFAULT_CONFIG = EloConfig()
 
@@ -487,9 +500,20 @@ def compute_margin_multiplier(
     Note: the ``config.margin_cap`` ceiling is enforced on the *base*
     multiplier; the conditioning factor can only shrink it further, never
     above the cap.
+
+    When ``config.gelo_buckets`` is set, dispatch to the G-Elo (Szczecinski
+    2022) bucketed MOV variant — see :mod:`climbing_elo.engine.gelo`. The
+    default config has ``gelo_buckets=None`` so production behaviour is
+    unchanged.
     """
     if score_a is None or score_b is None:
         return 1.0
+    if config.gelo_buckets is not None:
+        from climbing_elo.engine.gelo import compute_gelo_margin_multiplier
+
+        return compute_gelo_margin_multiplier(
+            score_a, score_b, Discipline.LEAD, rating_gap=rating_gap, config=config
+        )
     gap = abs(score_a - score_b)
     base = min(1.0 + gap / max_gap, config.margin_cap)
     return base * _gap_conditioning_factor(rating_gap, config)
@@ -552,8 +576,22 @@ def compute_boulder_margin_multiplier(
 ) -> float:
     """Margin multiplier for Boulder discipline (538-style gap-conditioned).
 
-    Reads ``boulder_margin_max_gap`` from *config*.
+    Reads ``boulder_margin_max_gap`` from *config*. When ``config.gelo_buckets``
+    is set, dispatches to the Szczecinski bucketed MOV (see
+    :mod:`climbing_elo.engine.gelo`).
     """
+    if score_a is None or score_b is None:
+        return 1.0
+    if config.gelo_buckets is not None:
+        from climbing_elo.engine.gelo import compute_gelo_margin_multiplier
+
+        return compute_gelo_margin_multiplier(
+            score_a,
+            score_b,
+            Discipline.BOULDER,
+            rating_gap=rating_gap,
+            config=config,
+        )
     return compute_margin_multiplier(
         score_a,
         score_b,
@@ -574,9 +612,22 @@ def compute_speed_margin_multiplier(
     Gap-conditioned in the same fashion as Lead/Boulder — favourite wins get
     damped, upsets keep the full bonus. See :func:`compute_margin_multiplier`.
     Reads ``speed_max_gap_seconds`` and ``margin_cap`` from *config*.
+
+    When ``config.gelo_buckets`` is set, dispatches to the Szczecinski
+    bucketed MOV (see :mod:`climbing_elo.engine.gelo`).
     """
     if winner_time is None or loser_time is None:
         return 1.0
+    if config.gelo_buckets is not None:
+        from climbing_elo.engine.gelo import compute_gelo_margin_multiplier
+
+        return compute_gelo_margin_multiplier(
+            winner_time,
+            loser_time,
+            Discipline.SPEED,
+            rating_gap=rating_gap,
+            config=config,
+        )
     gap = abs(loser_time - winner_time)
     base = min(1.0 + gap / config.speed_max_gap_seconds, config.margin_cap)
     return base * _gap_conditioning_factor(rating_gap, config)
