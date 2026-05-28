@@ -66,6 +66,13 @@
   td.athlete a{color:inherit;text-decoration:none;transition:color .15s}
   td.athlete a:hover{color:var(--dim)}
 </style>
+<noscript>
+  <!-- The ranked list is server-rendered; the .reveal entrance animation
+       starts it at opacity:0 and the base.html IntersectionObserver only
+       reveals it on scroll. With JS off, force it visible so the list is
+       never permanently hidden (Issue #104). -->
+  <style>#ai-card{opacity:1!important;transform:none!important}</style>
+</noscript>
 {% endblock %}
 
 {% block body %}
@@ -114,7 +121,7 @@
       <button type="button" id="sort-name" data-key="name">Name (A&ndash;Z)</button>
     </div>
 
-    <div class="card reveal d2">
+    <div class="card reveal d2" id="ai-card">
       <table class="lb" id="ai-table">
         <thead><tr>
           <th>#</th>
@@ -154,6 +161,17 @@
 {% block scripts %}
 <script>
 (function() {
+  // ── Reveal the ranked list immediately (Issue #104).
+  // The card carries `.reveal`, which starts at opacity:0 and is normally
+  // animated in by the base.html IntersectionObserver on scroll. For this
+  // page the list is the primary content and must be visible on first paint
+  // with zero interaction, so we add `.in` (same end-state the observer
+  // produces) right away. This is page-scoped — global reveal behaviour on
+  // other pages is unchanged. The observer adding `.in` again later is a
+  // harmless no-op.
+  var card = document.getElementById('ai-card');
+  if (card) card.classList.add('in');
+
   // ── In-page client-side filter (name / country) — mirrors leaderboard #lb-search.
   var tbody = document.querySelector('#ai-table tbody');
   var dataRows = tbody ? Array.prototype.slice.call(tbody.querySelectorAll('tr[data-name]')) : [];
