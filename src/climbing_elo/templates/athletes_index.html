@@ -126,7 +126,7 @@
         <thead><tr>
           <th>#</th>
           <th>Athlete</th>
-          <th>Born</th>
+          <th>Age</th>
           <th>Events</th>
           <th style="text-align:right">R &plusmn; &sigma;</th>
         </tr></thead>
@@ -139,7 +139,7 @@
               <a href="/athletes/{{ row.id }}">{{ row.name }}</a>
               <span class="nat">{{ row.nationality }}</span>
             </td>
-            <td class="disc num" style="font-size:12.5px">{{ row.year_of_birth or '—' }}</td>
+            <td class="disc num" style="font-size:12.5px">{{ row.age or '—' }}</td>
             <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
             <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
           </tr>
