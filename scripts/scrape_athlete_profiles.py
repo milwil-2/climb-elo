@@ -34,6 +34,7 @@ operations on prod should be explicit). The script is intentionally rate-limited
 from __future__ import annotations
 
 import argparse
+import difflib
 import logging
 import sys
 import time
@@ -53,11 +54,89 @@ from climbing_elo.scraper.ifsc_api import (
     HEADERS,
     REQUEST_DELAY,
     _api_get,
+    normalize_name,
     scrape_athlete_profile,
 )
 
+#: difflib similarity floor for the fuzzy name-resolution fallback. Names below
+#: this ratio are not matched (too risky — would mis-assign a stranger's photo).
+#: 0.90 keeps spelling/diacritic drift in scope while rejecting distinct people.
+FUZZY_MATCH_THRESHOLD = 0.90
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+
+class IfscIdIndex:
+    """Name → IFSC-athlete-id lookup with tiered fallback (Issue #103).
+
+    Holds three views of the harvested ``(name, gender) → ifsc_id`` mapping:
+
+    - ``exact``      keyed by the raw ``"firstname lastname"`` string + gender.
+    - ``normalized`` keyed by :func:`normalize_name` output + gender (folds
+      accents, hyphens, casing and whitespace).
+    - ``norm_any_gender`` keyed by normalized name only (gender-agnostic
+      fallback for the rare rows whose gender disagrees between our DB and the
+      IFSC payload).
+
+    :meth:`resolve` walks the tiers in increasing looseness and finally tries a
+    ``difflib`` fuzzy match within the same gender, so spelling drift that the
+    deterministic folds miss still resolves.
+    """
+
+    def __init__(self) -> None:
+        self.exact: dict[tuple[str, Gender], int] = {}
+        self.normalized: dict[tuple[str, Gender], int] = {}
+        self.norm_any_gender: dict[str, int] = {}
+        # Per-gender list of (normalized_name, ifsc_id) for fuzzy matching.
+        self._by_gender: dict[Gender, list[tuple[str, int]]] = {
+            Gender.M: [],
+            Gender.F: [],
+        }
+
+    def add(self, firstname: str, lastname: str, gender: Gender, ifsc_id: int) -> None:
+        raw = f"{firstname} {lastname}".strip()
+        norm = normalize_name(raw)
+        # setdefault: events are walked most-recent-first, so the first id wins.
+        self.exact.setdefault((raw, gender), ifsc_id)
+        if norm:
+            if (norm, gender) not in self.normalized:
+                self.normalized[(norm, gender)] = ifsc_id
+                self._by_gender[gender].append((norm, ifsc_id))
+            self.norm_any_gender.setdefault(norm, ifsc_id)
+
+    def __len__(self) -> int:
+        return len(self.exact)
+
+    def resolve(self, name: str, gender: Gender) -> tuple[int | None, str]:
+        """Resolve a stored athlete name to an IFSC id.
+
+        Returns ``(ifsc_id_or_None, tier_label)`` where ``tier_label`` is one of
+        ``"exact"`` / ``"normalized"`` / ``"cross_gender"`` / ``"fuzzy"`` /
+        ``"unresolved"`` for dry-run reporting.
+        """
+        if (name, gender) in self.exact:
+            return self.exact[(name, gender)], "exact"
+
+        norm = normalize_name(name)
+        if not norm:
+            return None, "unresolved"
+        if (norm, gender) in self.normalized:
+            return self.normalized[(norm, gender)], "normalized"
+        if norm in self.norm_any_gender:
+            return self.norm_any_gender[norm], "cross_gender"
+
+        candidates = self._by_gender.get(gender, [])
+        if candidates:
+            names = [c[0] for c in candidates]
+            best = difflib.get_close_matches(
+                norm, names, n=1, cutoff=FUZZY_MATCH_THRESHOLD
+            )
+            if best:
+                idx = names.index(best[0])
+                return candidates[idx][1], "fuzzy"
+
+        return None, "unresolved"
 
 
 def _build_ifsc_id_index(
@@ -65,8 +144,8 @@ def _build_ifsc_id_index(
     client: httpx.Client,
     since_year: int | None,
     delay: float,
-) -> dict[tuple[str, Gender], int]:
-    """Map ``(name, gender) → ifsc_athlete_id`` by re-walking event payloads.
+) -> IfscIdIndex:
+    """Build an :class:`IfscIdIndex` by re-walking event payloads.
 
     Local Athlete rows don't store the IFSC id, so we have to recover it from
     the upstream API. We walk every event in the local DB (optionally filtered
@@ -76,9 +155,10 @@ def _build_ifsc_id_index(
     Args
     ----
     since_year:
-        When set, only events with ``season >= since_year`` are queried. Useful
-        to skip the long tail of historical events when you only care about
-        currently-active climbers.
+        When set, only events with ``season >= since_year`` are queried. Pass
+        ``None`` (the script default) to walk every season — required to
+        recover IDs for athletes whose last competition predates the old 2018
+        floor (Issue #103: ~744 missing-photo athletes last competed <2018).
     delay:
         Seconds to sleep between API requests (rate limiting).
     """
@@ -93,7 +173,7 @@ def _build_ifsc_id_index(
     # locally, so we use the events index endpoint per season instead.
     # Simpler: derive (firstname, lastname) tuples from each event's result.
 
-    id_by_name: dict[tuple[str, Gender], int] = {}
+    index = IfscIdIndex()
     seen_event_count = 0
 
     seasons_seen: dict[int, list[dict]] = {}  # season -> league d_cats
@@ -145,18 +225,14 @@ def _build_ifsc_id_index(
                 firstname = (entry.get("firstname") or "").strip()
                 lastname = (entry.get("lastname") or "").strip()
                 ifsc_id = entry.get("athlete_id")
-                gender_str = "M" if "men" in (dc.get("name") or "").lower() else "F"
                 # IFSC d_cat names "BOULDER Women" / "BOULDER Men" — "Women"
                 # contains "men", so check Women first.
+                gender_str = "M" if "men" in (dc.get("name") or "").lower() else "F"
                 if "women" in (dc.get("name") or "").lower():
                     gender_str = "F"
                 if not (firstname and lastname and ifsc_id):
                     continue
-                key = (f"{firstname} {lastname}", Gender(gender_str))
-                # First win — events were ordered most-recent first so we keep
-                # the freshest IFSC id (rare edge case if an athlete changes
-                # name).
-                id_by_name.setdefault(key, int(ifsc_id))
+                index.add(firstname, lastname, Gender(gender_str), int(ifsc_id))
 
         seen_event_count += 1
         if seen_event_count % 25 == 0:
@@ -164,11 +240,11 @@ def _build_ifsc_id_index(
                 "Walked %d/%d events, %d IFSC IDs discovered so far...",
                 seen_event_count,
                 len(events),
-                len(id_by_name),
+                len(index),
             )
 
-    log.info("Discovered IFSC IDs for %d (name, gender) pairs.", len(id_by_name))
-    return id_by_name
+    log.info("Discovered IFSC IDs for %d (name, gender) pairs.", len(index))
+    return index
 
 
 def _update_athlete(athlete: Athlete, payload: dict) -> bool:
@@ -213,9 +289,18 @@ def main() -> None:
     parser.add_argument(
         "--since-year",
         type=int,
-        default=2018,
-        help="Only walk events from this season onward during IFSC-id discovery "
-        "(default: 2018; lower values cover more athletes but take longer).",
+        default=None,
+        help="Only walk events from this season onward during IFSC-id discovery. "
+        "Default: None (walk ALL seasons). Issue #103: the old 2018 floor "
+        "stranded ~744 missing-photo athletes whose last competition predated "
+        "2018, so their IFSC id was never harvested. Set a year to trade "
+        "coverage for a faster walk.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Resolve IFSC ids and report projected coverage WITHOUT calling the "
+        "profile endpoint or writing to the DB. Use to validate matching gains.",
     )
     parser.add_argument(
         "--delay",
@@ -275,14 +360,22 @@ def main() -> None:
             missing_id = 0
             no_change = 0
             errors = 0
+            # Resolution-tier tally for reporting (Issue #103).
+            tier_counts: dict[str, int] = {}
 
             for ath in athletes:
                 if args.limit is not None and updated >= args.limit:
                     break
-                key = (ath.name, ath.gender)
-                ifsc_id = id_index.get(key)
+                ifsc_id, tier = id_index.resolve(ath.name, ath.gender)
+                tier_counts[tier] = tier_counts.get(tier, 0) + 1
                 if ifsc_id is None:
                     missing_id += 1
+                    continue
+
+                if args.dry_run:
+                    # Count a resolved id as a projected refresh; never touch the
+                    # network or DB.
+                    updated += 1
                     continue
 
                 time.sleep(args.delay)
@@ -315,9 +408,23 @@ def main() -> None:
                 else:
                     no_change += 1
 
-            session.commit()
+            if not args.dry_run:
+                session.commit()
 
     print()
+    if args.dry_run:
+        resolved = sum(v for k, v in tier_counts.items() if k != "unresolved")
+        queued = resolved + missing_id
+        print("DRY RUN — no network profile calls, no DB writes.")
+        print(f"  Athletes queued:       {queued}")
+        print(f"  Resolved to IFSC id:   {resolved}")
+        print(f"  Unresolved:            {missing_id}")
+        print("  Resolution by tier:")
+        for tier in ("exact", "normalized", "cross_gender", "fuzzy", "unresolved"):
+            if tier in tier_counts:
+                print(f"    {tier:<14} {tier_counts[tier]}")
+        return
+
     print("Profile scrape complete:")
     print(f"  Athletes refreshed:    {updated}")
     print(f"  No-op (no changes):    {no_change}")

@@ -16,11 +16,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from climbing_elo.models import Athlete, Base, Gender
-from climbing_elo.scraper.ifsc_api import scrape_athlete_profile
+from climbing_elo.scraper.ifsc_api import normalize_name, scrape_athlete_profile
 
 
 def _mock_response(data):
@@ -239,13 +239,13 @@ class TestScriptFlags:
         scraped: list[str] = []
 
         def _fake_id_index(session, client, since_year, delay):
-            return {
-                ("Missing One", Gender.M): 100,
-                ("Missing Two", Gender.F): 200,
-                ("Has Photo One", Gender.F): 300,
-                ("Has Photo Two", Gender.M): 400,
-                ("Has Photo Three", Gender.F): 500,
-            }
+            idx = mod.IfscIdIndex()
+            idx.add("Missing", "One", Gender.M, 100)
+            idx.add("Missing", "Two", Gender.F, 200)
+            idx.add("Has Photo", "One", Gender.F, 300)
+            idx.add("Has Photo", "Two", Gender.M, 400)
+            idx.add("Has Photo", "Three", Gender.F, 500)
+            return idx
 
         def _fake_scrape(ifsc_id, client):
             # Reverse-lookup the athlete by ifsc_id for assertion convenience.
@@ -284,13 +284,13 @@ class TestScriptFlags:
         scraped: list[str] = []
 
         def _fake_id_index(session, client, since_year, delay):
-            return {
-                ("Missing One", Gender.M): 100,
-                ("Missing Two", Gender.F): 200,
-                ("Has Photo One", Gender.F): 300,
-                ("Has Photo Two", Gender.M): 400,
-                ("Has Photo Three", Gender.F): 500,
-            }
+            idx = mod.IfscIdIndex()
+            idx.add("Missing", "One", Gender.M, 100)
+            idx.add("Missing", "Two", Gender.F, 200)
+            idx.add("Has Photo", "One", Gender.F, 300)
+            idx.add("Has Photo", "Two", Gender.M, 400)
+            idx.add("Has Photo", "Three", Gender.F, 500)
+            return idx
 
         def _fake_scrape(ifsc_id, client):
             name_by_id = {
@@ -317,6 +317,49 @@ class TestScriptFlags:
 
         assert sorted(scraped) == sorted(all_names)
 
+    def test_dry_run_resolves_but_never_writes_or_calls_api(
+        self, seeded_session_factory
+    ):
+        """``--dry-run`` resolves ids but must not hit the profile endpoint
+        or persist anything (Issue #103)."""
+        factory, _, _ = seeded_session_factory
+        mod = _load_script_module()
+
+        scraped: list[int] = []
+
+        def _fake_id_index(session, client, since_year, delay):
+            idx = mod.IfscIdIndex()
+            idx.add("Missing", "One", Gender.M, 100)
+            idx.add("Missing", "Two", Gender.F, 200)
+            return idx
+
+        def _fake_scrape(ifsc_id, client):  # pragma: no cover — must not run
+            scraped.append(ifsc_id)
+            return {"photo_url": "https://example.com/should-not-happen.jpg"}
+
+        with (
+            patch.object(mod, "init_db", return_value=factory),
+            patch.object(mod, "_build_ifsc_id_index", _fake_id_index),
+            patch.object(mod, "scrape_athlete_profile", _fake_scrape),
+            patch.object(mod.time, "sleep", lambda *a, **kw: None),
+            patch(
+                "sys.argv",
+                ["scrape_athlete_profiles.py", "--only-missing", "--dry-run"],
+            ),
+        ):
+            mod.main()
+
+        # The profile endpoint was never called.
+        assert scraped == []
+        # And no photo_url was written for the two NULL-photo rows.
+        with factory() as s:
+            still_missing = (
+                s.execute(select(Athlete.name).where(Athlete.photo_url.is_(None)))
+                .scalars()
+                .all()
+            )
+        assert set(still_missing) == {"Missing One", "Missing Two"}
+
     def test_only_missing_and_force_are_mutually_exclusive(
         self, seeded_session_factory, capsys
     ):
@@ -335,3 +378,101 @@ class TestScriptFlags:
         assert (
             "not allowed with" in captured.err or "mutually exclusive" in captured.err
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #103: name normalization + tiered IFSC-id resolution
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeName:
+    """``normalize_name`` folds accents / hyphens / case / whitespace."""
+
+    def test_none_and_blank(self):
+        assert normalize_name(None) == ""
+        assert normalize_name("   ") == ""
+
+    def test_casefold_and_whitespace_collapse(self):
+        # Trailing/leading + double-space drift (30 prod rows) folds away.
+        assert normalize_name("  Anja   KÖHLER  ") == normalize_name("anja kohler")
+
+    def test_accents_stripped(self):
+        assert normalize_name("Darius RÂPĂ") == "darius rapa"
+        assert normalize_name("Geila MACIÀ MARTÍN") == "geila macia martin"
+        assert normalize_name("Kaïna VIVIAND") == "kaina viviand"
+
+    def test_german_eszett_and_umlaut(self):
+        assert normalize_name("Weiß") == "weiss"
+        assert normalize_name("MÜLLER") == "muller"
+
+    def test_turkish_dotted_i(self):
+        # İ (dotted capital I) should fold to plain "i".
+        assert normalize_name("Ali ŞEN") == "ali sen"
+        assert normalize_name("AYDEMİR") == "aydemir"
+
+    def test_hyphen_and_underscore_to_space(self):
+        assert normalize_name("Anne-Sophie LÉON") == normalize_name("Anne Sophie Leon")
+        assert normalize_name("Jan_Hojer") == "jan hojer"
+
+    def test_slashed_o_and_stroked_letters(self):
+        assert normalize_name("Magnus MØRCH") == "magnus morch"
+
+
+class TestIfscIdIndexResolve:
+    """``IfscIdIndex.resolve`` walks exact → normalized → cross_gender → fuzzy."""
+
+    def _index(self):
+        mod = _load_script_module()
+        idx = mod.IfscIdIndex()
+        idx.add("Sorato", "ANRAKU", Gender.M, 13040)
+        idx.add("Anja", "KÖHLER", Gender.F, 555)
+        idx.add("Darius", "RÂPĂ", Gender.M, 777)
+        return mod, idx
+
+    def test_exact_match(self):
+        _mod, idx = self._index()
+        assert idx.resolve("Sorato ANRAKU", Gender.M) == (13040, "exact")
+
+    def test_normalized_match_on_whitespace(self):
+        # Stored name carries the trailing space the IFSC payload also had,
+        # but our index stripped it — normalized tier recovers it.
+        _mod, idx = self._index()
+        assert idx.resolve("Anja KÖHLER ", Gender.F) == (555, "normalized")
+
+    def test_normalized_match_on_accent_drift(self):
+        # A differently-accented stored spelling still resolves.
+        _mod, idx = self._index()
+        ifsc_id, tier = idx.resolve("Darius RAPA", Gender.M)
+        assert ifsc_id == 777
+        assert tier == "normalized"
+
+    def test_cross_gender_fallback(self):
+        # Same normalized name but wrong gender label — still resolves via the
+        # gender-agnostic tier.
+        _mod, idx = self._index()
+        ifsc_id, tier = idx.resolve("Sorato ANRAKU", Gender.F)
+        assert ifsc_id == 13040
+        assert tier == "cross_gender"
+
+    def test_fuzzy_match_on_minor_typo(self):
+        _mod, idx = self._index()
+        # One-letter typo in the last name — below exact/normalized but within
+        # the 0.90 fuzzy cutoff.
+        ifsc_id, tier = idx.resolve("Sorato ANRAKO", Gender.M)
+        assert ifsc_id == 13040
+        assert tier == "fuzzy"
+
+    def test_unresolved_for_unknown_name(self):
+        _mod, idx = self._index()
+        assert idx.resolve("Totally Different Person", Gender.M) == (
+            None,
+            "unresolved",
+        )
+
+    def test_first_id_wins_on_duplicate(self):
+        # Re-walking events most-recent-first means the freshest id is kept.
+        mod = _load_script_module()
+        idx = mod.IfscIdIndex()
+        idx.add("Janja", "GARNBRET", Gender.F, 60)
+        idx.add("Janja", "GARNBRET", Gender.F, 99999)
+        assert idx.resolve("Janja GARNBRET", Gender.F) == (60, "exact")
