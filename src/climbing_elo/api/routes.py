@@ -1981,6 +1981,12 @@ _V2_PREDICTIONS_DISCIPLINES = [
 ]
 _V2_MAX_UPCOMING_PER_DISCIPLINE = 50
 _V2_MAX_ATHLETES_PER_PROJECTION_CARD = 64
+# The /predictions HTML route only renders top-3 win/podium %, which is stable
+# at far fewer Monte Carlo draws than the public REST API uses. Lowering the
+# per-card sim count from 10k to 2k cuts cold-cache render time (#97) with no
+# visible change to the displayed percentages. The REST API
+# (POST /api/v1/projections) keeps the full 10k for numerical precision.
+_V2_PAGE_SIM_COUNT = 2_000
 
 
 @router.get("/predictions", response_class=HTMLResponse)
@@ -2061,12 +2067,13 @@ async def v2_predictions(request: Request):
                             f"projections:event:{ev.id}"
                             f":disc:{disc_enum.value}"
                             f":gender:{gender_enum.value}"
+                            f":n:{_V2_PAGE_SIM_COUNT}"
                             f":athletes:{_fp}"
                         )
                         probs = predictions_cache.get(_cache_key)
                         if probs is None:
                             probs = compute_podium_probabilities(
-                                proj_inputs, n_simulations=10_000
+                                proj_inputs, n_simulations=_V2_PAGE_SIM_COUNT
                             )
                             predictions_cache.set(_cache_key, probs)
 
@@ -2134,12 +2141,13 @@ async def v2_predictions(request: Request):
                             f"projections:likely:{ev.id}"
                             f":disc:{disc_enum.value}"
                             f":gender:{gender_enum.value}"
+                            f":n:{_V2_PAGE_SIM_COUNT}"
                             f":athletes:{_fp_fb}"
                         )
                         probs_fb = predictions_cache.get(_cache_key_fb)
                         if probs_fb is None:
                             probs_fb = compute_podium_probabilities(
-                                proj_inputs_fb, n_simulations=10_000
+                                proj_inputs_fb, n_simulations=_V2_PAGE_SIM_COUNT
                             )
                             predictions_cache.set(_cache_key_fb, probs_fb)
 
