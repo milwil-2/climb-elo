@@ -20,15 +20,16 @@ constants haven't been swept since.
 Strategy
 --------
 
-Full **2-D Cartesian grid** over ``(rating_scale, softening)``. Unlike the K
-table (16 cells × 7 grid points → coordinate descent) the MOV parameters are
-only two scalars — a 6 × 5 = 30-point grid runs in 10-30 min and is
-exhaustively the right answer.
+Cartesian grid over ``(rating_scale, softening[, margin_cap])``. The default is
+a 2-D 6 × 4 = 24-point grid (``MOV_RATING_SCALE`` × ``MOV_SOFTENING``); passing
+a multi-value ``--margin-cap-grid`` (e.g. ``1.3,1.5,1.7,2.0``) extends it to a
+3-D sweep (Issue #85). The MOV parameters are only two-or-three scalars, so an
+exhaustive grid is the right answer (no coordinate descent needed).
 
 Per grid point, the script:
 
 1. Builds an :class:`EloConfig` with the candidate ``(mov_rating_scale,
-   mov_softening)`` (no monkey-patching).
+   mov_softening, margin_cap)`` (no monkey-patching).
 2. Restores a pristine copy of the source DB to a temp working copy.
 3. Wipes ratings / rating-history and re-runs backfill for each discipline
    with ``config=trial_config``.
@@ -47,9 +48,10 @@ Output
 
 * ``docs/MOV_REGRID_REPORT.md`` — grid sweep table + the recommended values
   block as a paste-ready ``EloConfig`` snippet.
+* ``--json <path>`` (optional) — the full sweep serialised to JSON, e.g.
+  ``data/grid_search/mov/sweep.json``.
 
-Does **not** modify ``src/climbing_elo/engine/elo.py``. Applying the
-recommended values is a separate, reviewed manual step (small ~5-line PR).
+Applying the recommended values to ``EloConfig`` is a separate, reviewed step.
 
 Speed is excluded by default: the bracket-native Speed model (#56) in
 ``engine/speed.py`` doesn't use the 538 MOV damping at all, so sweeping the
@@ -60,23 +62,26 @@ Usage
 
 ::
 
-    # Default 6×5 grid (~10-30 min on the local DB).
-    uv run python scripts/regrid_mov_factors.py --db data/climbing_elo.db
+    # Default 2-D grid (6×4) + JSON dump.
+    uv run python scripts/regrid_mov_factors.py --db data/climbing_elo.db \
+        --json data/grid_search/mov/sweep.json
+
+    # Full 3-D sweep including MARGIN_CAP (#85).
+    uv run python scripts/regrid_mov_factors.py --db data/climbing_elo.db \
+        --margin-cap-grid 1.3,1.5,1.7,2.0 \
+        --json data/grid_search/mov/sweep.json
 
     # Faster smoke run — smaller grid + fewer sims.
     uv run python scripts/regrid_mov_factors.py --db data/climbing_elo.db \
-        --rating-scale-grid 200,400,800 --softening-grid 1.0,2.2,4.5 \
+        --rating-scale-grid 200,400,800 --softening-grid 1.5,2.2,4.0 \
         --n-sims 1000
-
-    # Custom output path:
-    uv run python scripts/regrid_mov_factors.py --db data/climbing_elo.db \
-        --output docs/MOV_REGRID_REPORT.md
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import json
 import logging
 import shutil
 import statistics
@@ -121,7 +126,12 @@ DEFAULT_RATING_SCALE_GRID: tuple[float, ...] = (
     600.0,
     800.0,
 )
-DEFAULT_SOFTENING_GRID: tuple[float, ...] = (1.0, 1.5, 2.2, 3.0, 4.5)
+DEFAULT_SOFTENING_GRID: tuple[float, ...] = (1.5, 2.2, 3.0, 4.0)
+# MARGIN_CAP is an optional third sweep dimension (Issue #85). Default holds it
+# at the *current production* cap (tracking DEFAULT_CONFIG so the two never
+# drift) so the sweep stays 2-D unless --margin-cap-grid is given a multi-value
+# list.
+DEFAULT_MARGIN_CAP_GRID: tuple[float, ...] = (DEFAULT_CONFIG.margin_cap,)
 DEFAULT_HOLDOUT_SEASONS = 2
 DEFAULT_N_SIMS = 2_000
 DEFAULT_RNG_SEED = 2026
@@ -136,7 +146,7 @@ DEFAULT_MU_P95_MAX = 2200.0
 
 @dataclass(frozen=True)
 class MovTrial:
-    """One (rating_scale, softening) trial's metric outcome."""
+    """One (rating_scale, softening, margin_cap) trial's metric outcome."""
 
     rating_scale: float
     softening: float
@@ -151,6 +161,9 @@ class MovTrial:
     mu_p99: float
     mu_max: float
     in_band: bool
+    # MARGIN_CAP is the optional third sweep dimension (#85). Defaults to the
+    # production cap so pre-existing 2-D callers / tests stay valid.
+    margin_cap: float = DEFAULT_CONFIG.margin_cap
 
 
 @dataclass
@@ -161,6 +174,7 @@ class MovRegridReport:
     finished_at: str
     rating_scale_grid: tuple[float, ...]
     softening_grid: tuple[float, ...]
+    margin_cap_grid: tuple[float, ...]
     n_sims: int
     rng_seed: int
     holdout_seasons: int
@@ -169,8 +183,10 @@ class MovRegridReport:
     disciplines: tuple[Discipline, ...]
     baseline_rating_scale: float
     baseline_softening: float
+    baseline_margin_cap: float
     recommended_rating_scale: float
     recommended_softening: float
+    recommended_margin_cap: float
     initial_metrics: dict[str, Any] = field(default_factory=dict)
     final_metrics: dict[str, Any] = field(default_factory=dict)
     trials: list[MovTrial] = field(default_factory=list)
@@ -361,9 +377,19 @@ def _run_trial(
 def _enumerate_grid(
     rating_scale_grid: tuple[float, ...],
     softening_grid: tuple[float, ...],
-) -> list[tuple[float, float]]:
-    """Cartesian product over (rating_scale, softening), in stable order."""
-    return [(rs, sf) for rs in rating_scale_grid for sf in softening_grid]
+    margin_cap_grid: tuple[float, ...] = DEFAULT_MARGIN_CAP_GRID,
+) -> list[tuple[float, float, float]]:
+    """Cartesian product over (rating_scale, softening, margin_cap), stable order.
+
+    ``margin_cap`` is the outermost loop so a 2-D sweep (single margin_cap) keeps
+    the historical (rating_scale, softening) ordering inside each cap block.
+    """
+    return [
+        (rs, sf, mc)
+        for mc in margin_cap_grid
+        for rs in rating_scale_grid
+        for sf in softening_grid
+    ]
 
 
 def _in_band(p95: float, lo: float, hi: float) -> bool:
@@ -410,15 +436,17 @@ def run_regrid(
     output_path: Path,
     rating_scale_grid: tuple[float, ...] = DEFAULT_RATING_SCALE_GRID,
     softening_grid: tuple[float, ...] = DEFAULT_SOFTENING_GRID,
+    margin_cap_grid: tuple[float, ...] = DEFAULT_MARGIN_CAP_GRID,
     n_sims: int = DEFAULT_N_SIMS,
     rng_seed: int = DEFAULT_RNG_SEED,
     holdout_seasons: int = DEFAULT_HOLDOUT_SEASONS,
     mu_p95_min: float = DEFAULT_MU_P95_MIN,
     mu_p95_max: float = DEFAULT_MU_P95_MAX,
     disciplines: tuple[Discipline, ...] = (Discipline.LEAD, Discipline.BOULDER),
+    json_path: Path | None = None,
     progress: bool = True,
 ) -> MovRegridReport:
-    """Cartesian grid search of (mov_rating_scale, mov_softening) against backtest.
+    """Cartesian grid search of (rating_scale, softening, margin_cap) vs backtest.
 
     See module docstring for design overview.
 
@@ -427,12 +455,15 @@ def run_regrid(
         output_path: Where the markdown report is written.
         rating_scale_grid: Candidate MOV_RATING_SCALE values to sweep.
         softening_grid: Candidate MOV_SOFTENING values to sweep.
+        margin_cap_grid: Candidate MARGIN_CAP values to sweep (optional third
+            dimension; defaults to the single production cap = 2-D sweep).
         n_sims: Monte Carlo simulations per round.
         rng_seed: Seed for reproducible MC draws.
         holdout_seasons: Trailing seasons to hold out.
         mu_p95_min, mu_p95_max: Target μ-p95 band — winners must land here.
         disciplines: Which disciplines to score (defaults to LEAD + BOULDER —
             Speed has its own bracket model and is excluded by default).
+        json_path: If set, the full sweep is also serialised to this JSON file.
         progress: Print one line per trial when True.
 
     Returns:
@@ -440,9 +471,10 @@ def run_regrid(
     """
     started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-    grid_points = _enumerate_grid(rating_scale_grid, softening_grid)
+    grid_points = _enumerate_grid(rating_scale_grid, softening_grid, margin_cap_grid)
     baseline_rs = DEFAULT_CONFIG.mov_rating_scale
     baseline_sf = DEFAULT_CONFIG.mov_softening
+    baseline_mc = DEFAULT_CONFIG.margin_cap
     # Pin a base K table so MOV is the only varying knob across trials.
     base_k_table = copy.deepcopy(DEFAULT_CONFIG.k_factor_table)
 
@@ -453,7 +485,8 @@ def run_regrid(
                 f"holdout_seasons={holdout_seasons} n_sims={n_sims} "
                 f"grid_points={len(grid_points)} "
                 f"(rating_scale={list(rating_scale_grid)}, "
-                f"softening={list(softening_grid)})",
+                f"softening={list(softening_grid)}, "
+                f"margin_cap={list(margin_cap_grid)})",
                 flush=True,
             )
             print("[mov-regrid] computing initial baseline metrics...", flush=True)
@@ -464,6 +497,7 @@ def run_regrid(
                 k_factor_table=copy.deepcopy(base_k_table),
                 mov_rating_scale=baseline_rs,
                 mov_softening=baseline_sf,
+                margin_cap=baseline_mc,
             ),
             disciplines,
             holdout_seasons,
@@ -472,7 +506,8 @@ def run_regrid(
         )
         if progress:
             print(
-                f"[mov-regrid] initial (rs={baseline_rs:.0f}, sf={baseline_sf:.2f}): "
+                f"[mov-regrid] initial (rs={baseline_rs:.0f}, sf={baseline_sf:.2f}, "
+                f"mc={baseline_mc:.2f}): "
                 f"top-3={initial['hit_rate_top3']:.4f} "
                 f"μ p50={initial['mu_p50']:.0f} p95={initial['mu_p95']:.0f} "
                 f"p99={initial['mu_p99']:.0f}",
@@ -480,11 +515,12 @@ def run_regrid(
             )
 
         trials: list[MovTrial] = []
-        for idx, (rs, sf) in enumerate(grid_points, 1):
+        for idx, (rs, sf, mc) in enumerate(grid_points, 1):
             cfg = EloConfig(
                 k_factor_table=copy.deepcopy(base_k_table),
                 mov_rating_scale=rs,
                 mov_softening=sf,
+                margin_cap=mc,
             )
             metrics = _run_trial(
                 db,
@@ -497,6 +533,7 @@ def run_regrid(
             trial = MovTrial(
                 rating_scale=rs,
                 softening=sf,
+                margin_cap=mc,
                 top3_hit_rate=float(metrics["hit_rate_top3"]),
                 top1_hit_rate=float(metrics["hit_rate_top1"]),
                 log_loss_podium=float(metrics["log_loss_podium"]),
@@ -514,7 +551,7 @@ def run_regrid(
                 band_mark = "✓" if trial.in_band else " "
                 print(
                     f"  [{idx:3d}/{len(grid_points)}] rs={rs:5.0f} sf={sf:.2f} "
-                    f"{band_mark} top3={trial.top3_hit_rate:.4f} "
+                    f"mc={mc:.2f} {band_mark} top3={trial.top3_hit_rate:.4f} "
                     f"LLpod={trial.log_loss_podium:.4f} "
                     f"μp95={trial.mu_p95:.0f}",
                     flush=True,
@@ -524,8 +561,8 @@ def run_regrid(
         if progress:
             print(
                 f"[mov-regrid] winner: rs={winner.rating_scale:.0f} "
-                f"sf={winner.softening:.2f} top3={winner.top3_hit_rate:.4f} "
-                f"μp95={winner.mu_p95:.0f}",
+                f"sf={winner.softening:.2f} mc={winner.margin_cap:.2f} "
+                f"top3={winner.top3_hit_rate:.4f} μp95={winner.mu_p95:.0f}",
                 flush=True,
             )
             print(
@@ -538,6 +575,7 @@ def run_regrid(
                 k_factor_table=copy.deepcopy(base_k_table),
                 mov_rating_scale=winner.rating_scale,
                 mov_softening=winner.softening,
+                margin_cap=winner.margin_cap,
             ),
             disciplines,
             holdout_seasons,
@@ -552,6 +590,7 @@ def run_regrid(
         finished_at=finished_at,
         rating_scale_grid=tuple(rating_scale_grid),
         softening_grid=tuple(softening_grid),
+        margin_cap_grid=tuple(margin_cap_grid),
         n_sims=n_sims,
         rng_seed=rng_seed,
         holdout_seasons=holdout_seasons,
@@ -560,8 +599,10 @@ def run_regrid(
         disciplines=disciplines,
         baseline_rating_scale=baseline_rs,
         baseline_softening=baseline_sf,
+        baseline_margin_cap=baseline_mc,
         recommended_rating_scale=winner.rating_scale,
         recommended_softening=winner.softening,
+        recommended_margin_cap=winner.margin_cap,
         initial_metrics=initial,
         final_metrics=final,
         trials=trials,
@@ -572,7 +613,68 @@ def run_regrid(
     if progress:
         print(f"[mov-regrid] wrote {output_path}", flush=True)
 
+    if json_path is not None:
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(_render_json(report))
+        if progress:
+            print(f"[mov-regrid] wrote {json_path}", flush=True)
+
     return report
+
+
+def _render_json(report: MovRegridReport) -> str:
+    """Serialise the full sweep to a JSON document.
+
+    Captures every trial's metrics + μ stats plus the run config and the
+    recommended values, so the sweep is reproducible / re-analysable offline.
+    """
+    payload = {
+        "issue": 85,
+        "started_at": report.started_at,
+        "finished_at": report.finished_at,
+        "disciplines": [d.value for d in report.disciplines],
+        "holdout_seasons": report.holdout_seasons,
+        "n_sims": report.n_sims,
+        "rng_seed": report.rng_seed,
+        "mu_p95_band": [report.mu_p95_min, report.mu_p95_max],
+        "grid": {
+            "rating_scale": list(report.rating_scale_grid),
+            "softening": list(report.softening_grid),
+            "margin_cap": list(report.margin_cap_grid),
+        },
+        "baseline": {
+            "mov_rating_scale": report.baseline_rating_scale,
+            "mov_softening": report.baseline_softening,
+            "margin_cap": report.baseline_margin_cap,
+            "metrics": report.initial_metrics,
+        },
+        "recommended": {
+            "mov_rating_scale": report.recommended_rating_scale,
+            "mov_softening": report.recommended_softening,
+            "margin_cap": report.recommended_margin_cap,
+            "metrics": report.final_metrics,
+        },
+        "trials": [
+            {
+                "rating_scale": t.rating_scale,
+                "softening": t.softening,
+                "margin_cap": t.margin_cap,
+                "top3_hit_rate": t.top3_hit_rate,
+                "top1_hit_rate": t.top1_hit_rate,
+                "log_loss_podium": t.log_loss_podium,
+                "log_loss_win": t.log_loss_win,
+                "brier_podium": t.brier_podium,
+                "mu_min": t.mu_min,
+                "mu_p50": t.mu_p50,
+                "mu_p95": t.mu_p95,
+                "mu_p99": t.mu_p99,
+                "mu_max": t.mu_max,
+                "in_band": t.in_band,
+            }
+            for t in report.trials
+        ],
+    }
+    return json.dumps(payload, indent=2, sort_keys=False)
 
 
 # ---------------------------------------------------------------------------
@@ -600,16 +702,19 @@ def _render_markdown(report: MovRegridReport) -> str:
     lines.append(f"- RNG seed: {report.rng_seed}")
     lines.append(f"- MOV_RATING_SCALE grid: {list(report.rating_scale_grid)}")
     lines.append(f"- MOV_SOFTENING grid: {list(report.softening_grid)}")
+    lines.append(f"- MARGIN_CAP grid: {list(report.margin_cap_grid)}")
     lines.append(
         f"- μ-p95 target band: [{report.mu_p95_min:.0f}, {report.mu_p95_max:.0f}]"
     )
     lines.append(
         f"- Baseline: rating_scale=**{report.baseline_rating_scale:.0f}**, "
-        f"softening=**{report.baseline_softening:.2f}**"
+        f"softening=**{report.baseline_softening:.2f}**, "
+        f"margin_cap=**{report.baseline_margin_cap:.2f}**"
     )
     lines.append(
         f"- Recommended: rating_scale=**{report.recommended_rating_scale:.0f}**, "
-        f"softening=**{report.recommended_softening:.2f}**"
+        f"softening=**{report.recommended_softening:.2f}**, "
+        f"margin_cap=**{report.recommended_margin_cap:.2f}**"
     )
     lines.append("")
 
@@ -664,51 +769,59 @@ def _render_markdown(report: MovRegridReport) -> str:
     lines.append("## Grid sweep results")
     lines.append("")
     lines.append(
-        "Rows = `MOV_RATING_SCALE`, columns = `MOV_SOFTENING`. Cell shows "
-        "**top-3 hit rate** (μ-p95). ✓ marks in-band trials; ★ marks the "
-        "recommended cell."
+        "Rows = `MOV_RATING_SCALE`, columns = `MOV_SOFTENING`, one table per "
+        "`MARGIN_CAP`. Cell shows **top-3 hit rate** (μ-p95). ✓ marks in-band "
+        "trials; ★ marks the recommended cell."
     )
     lines.append("")
 
-    header = (
-        "| rating_scale \\ softening | "
-        + " | ".join(f"{sf:.2f}" for sf in report.softening_grid)
-        + " |"
-    )
-    sep = "|---|" + "|".join("---" for _ in report.softening_grid) + "|"
-    lines.append(header)
-    lines.append(sep)
-
-    # Build a lookup by (rs, sf) for fast cell rendering.
-    by_point: dict[tuple[float, float], MovTrial] = {
-        (t.rating_scale, t.softening): t for t in report.trials
+    # Build a lookup by (rs, sf, mc) for fast cell rendering.
+    by_point: dict[tuple[float, float, float], MovTrial] = {
+        (t.rating_scale, t.softening, t.margin_cap): t for t in report.trials
     }
-    rec_key = (report.recommended_rating_scale, report.recommended_softening)
+    rec_key = (
+        report.recommended_rating_scale,
+        report.recommended_softening,
+        report.recommended_margin_cap,
+    )
 
-    for rs in report.rating_scale_grid:
-        cells: list[str] = []
-        for sf in report.softening_grid:
-            t = by_point.get((rs, sf))
-            if t is None:
-                cells.append("—")
-                continue
-            band_mark = " ✓" if t.in_band else ""
-            rec_mark = " ★" if (rs, sf) == rec_key else ""
-            cells.append(f"{t.top3_hit_rate:.4f} ({t.mu_p95:.0f}){band_mark}{rec_mark}")
-        lines.append(f"| **{rs:.0f}** | " + " | ".join(cells) + " |")
-    lines.append("")
+    for mc in report.margin_cap_grid:
+        lines.append(f"### MARGIN_CAP = {mc:.2f}")
+        lines.append("")
+        header = (
+            "| rating_scale \\ softening | "
+            + " | ".join(f"{sf:.2f}" for sf in report.softening_grid)
+            + " |"
+        )
+        sep = "|---|" + "|".join("---" for _ in report.softening_grid) + "|"
+        lines.append(header)
+        lines.append(sep)
+        for rs in report.rating_scale_grid:
+            cells: list[str] = []
+            for sf in report.softening_grid:
+                t = by_point.get((rs, sf, mc))
+                if t is None:
+                    cells.append("—")
+                    continue
+                band_mark = " ✓" if t.in_band else ""
+                rec_mark = " ★" if (rs, sf, mc) == rec_key else ""
+                cells.append(
+                    f"{t.top3_hit_rate:.4f} ({t.mu_p95:.0f}){band_mark}{rec_mark}"
+                )
+            lines.append(f"| **{rs:.0f}** | " + " | ".join(cells) + " |")
+        lines.append("")
 
     lines.append("## Full per-trial table")
     lines.append("")
     lines.append(
-        "| rating_scale | softening | Top-3 | Top-1 | LL win | LL podium | "
-        "Brier podium | μ p50 | μ p95 | μ p99 | In band |"
+        "| rating_scale | softening | margin_cap | Top-3 | Top-1 | LL win | "
+        "LL podium | Brier podium | μ p50 | μ p95 | μ p99 | In band |"
     )
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for t in report.trials:
-        mark = " ←" if (t.rating_scale, t.softening) == rec_key else ""
+        mark = " ←" if (t.rating_scale, t.softening, t.margin_cap) == rec_key else ""
         lines.append(
-            f"| {t.rating_scale:.0f} | {t.softening:.2f} | "
+            f"| {t.rating_scale:.0f} | {t.softening:.2f} | {t.margin_cap:.2f} | "
             f"{_fmt_float(t.top3_hit_rate)} | "
             f"{_fmt_float(t.top1_hit_rate)} | "
             f"{_fmt_float(t.log_loss_win)} | "
@@ -732,14 +845,20 @@ def _render_markdown(report: MovRegridReport) -> str:
     rs_new = report.recommended_rating_scale
     sf_old = report.baseline_softening
     sf_new = report.recommended_softening
+    mc_old = report.baseline_margin_cap
+    mc_new = report.recommended_margin_cap
     rs_comment = (
         f"  # was {rs_old:.1f}" if abs(rs_new - rs_old) > 1e-9 else "  # unchanged"
     )
     sf_comment = (
         f"  # was {sf_old:.2f}" if abs(sf_new - sf_old) > 1e-9 else "  # unchanged"
     )
+    mc_comment = (
+        f"  # was {mc_old:.2f}" if abs(mc_new - mc_old) > 1e-9 else "  # unchanged"
+    )
     lines.append(f"mov_rating_scale: float = {rs_new:.1f}{rs_comment}")
     lines.append(f"mov_softening: float = {sf_new:.2f}{sf_comment}")
+    lines.append(f"margin_cap: float = {mc_new:.2f}{mc_comment}")
     lines.append("```")
     lines.append("")
     lines.append("## Next steps")
@@ -828,8 +947,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--softening-grid",
         type=_parse_float_grid,
         default=DEFAULT_SOFTENING_GRID,
+        help=("Comma-separated MOV_SOFTENING candidates (default: 1.5,2.2,3.0,4.0)."),
+    )
+    p.add_argument(
+        "--margin-cap-grid",
+        type=_parse_float_grid,
+        default=DEFAULT_MARGIN_CAP_GRID,
         help=(
-            "Comma-separated MOV_SOFTENING candidates (default: 1.0,1.5,2.2,3.0,4.5)."
+            "Comma-separated MARGIN_CAP candidates (default: 1.5 — single value = "
+            "2-D sweep). Pass e.g. 1.3,1.5,1.7,2.0 for the full 3-D sweep (#85)."
+        ),
+    )
+    p.add_argument(
+        "--json",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to write the full sweep as JSON "
+            "(e.g. data/grid_search/mov/sweep.json)."
         ),
     )
     p.add_argument(
@@ -892,12 +1027,14 @@ def main(argv: list[str] | None = None) -> int:
         output_path=args.output,
         rating_scale_grid=tuple(args.rating_scale_grid),
         softening_grid=tuple(args.softening_grid),
+        margin_cap_grid=tuple(args.margin_cap_grid),
         n_sims=args.n_sims,
         rng_seed=args.rng_seed,
         holdout_seasons=args.holdout_seasons,
         mu_p95_min=args.mu_p95_min,
         mu_p95_max=args.mu_p95_max,
         disciplines=tuple(args.disciplines),
+        json_path=args.json,
         progress=not args.quiet,
     )
     return 0

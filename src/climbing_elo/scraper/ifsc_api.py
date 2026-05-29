@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -46,6 +47,44 @@ from climbing_elo.models import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def normalize_name(name: str | None) -> str:
+    """Return a canonical, comparison-friendly form of an athlete name.
+
+    Used to recover IFSC athlete IDs whose ``firstname``/``lastname`` casing,
+    accenting, or whitespace drifts across events (Issue #103). The transform:
+
+    1. Unicode NFKD-decomposes and strips combining marks so accented letters
+       fold to their ASCII base (``KÖHLER`` → ``kohler``, ``RÂPĂ`` → ``rapa``).
+       Turkish dotted/undotted ``i`` and German ``ß`` are special-cased before
+       decomposition so they fold predictably (``İ`` → ``i``, ``ß`` → ``ss``).
+    2. Replaces hyphens / underscores with spaces (``Anne-Sophie`` matches
+       ``Anne Sophie``).
+    3. Casefolds and collapses all runs of whitespace to a single space, then
+       trims — so leading/trailing/double spaces in stored names (30 prod rows)
+       no longer break the exact match.
+
+    Returns ``""`` for ``None`` / blank input.
+    """
+    if not name:
+        return ""
+    # Pre-fold a few characters NFKD doesn't decompose to ASCII.
+    pre = (
+        name.replace("ß", "ss")
+        .replace("İ", "i")
+        .replace("ı", "i")
+        .replace("Ø", "o")
+        .replace("ø", "o")
+        .replace("Đ", "d")
+        .replace("đ", "d")
+        .replace("Ł", "l")
+        .replace("ł", "l")
+    )
+    decomposed = unicodedata.normalize("NFKD", pre)
+    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
+    stripped = stripped.replace("-", " ").replace("_", " ")
+    return re.sub(r"\s+", " ", stripped).strip().casefold()
 
 
 def _is_postgres(session: Session) -> bool:

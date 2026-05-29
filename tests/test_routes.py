@@ -366,7 +366,10 @@ def test_profile_route_full_athlete_renders_200(profile_client, profile_factory)
     # Header content
     assert "Sora Climber" in html
     assert "JPN" in html
-    assert "Born 2006" in html
+    # Age is computed from year_of_birth (#106), not the raw year.
+    from datetime import date as _date
+
+    assert f"Age {_date.today().year - 2006}" in html
     # Photo URL is rendered into an <img>
     assert "https://example.com/sora.jpg" in html
     # Body metrics card (header div)
@@ -411,8 +414,10 @@ def test_profile_route_minimal_athlete_no_photo_no_metrics(
     assert r.status_code == 200, r.text[:500]
     html = r.text
 
-    # Fallback "No photo" text instead of a broken <img>
-    assert "No photo" in html
+    # Initials placeholder avatar instead of a broken <img> (Issue #103).
+    # "Minimal Climber" → "MC".
+    assert 'class="athlete-photo-fallback"' in html
+    assert ">MC</div>" in html
     # No "Body metrics" card when all metric columns are NULL — we look for the
     # rendered section-header div, not the substring (which appears in CSS).
     assert ">Body metrics</div>" not in html
