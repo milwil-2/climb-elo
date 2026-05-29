@@ -16,7 +16,12 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from sqlalchemy import func, or_, select
 
-from climbing_elo.cache import likely_roster_cache, predictions_cache
+from climbing_elo.cache import (
+    html_page_cache,
+    likely_roster_cache,
+    predictions_cache,
+    ratings_fingerprint,
+)
 from climbing_elo.database import get_session_factory
 from climbing_elo.engine.activity import (
     INACTIVE_THRESHOLD_MONTHS,
@@ -247,25 +252,85 @@ def _get_rankings_v2(
 
 
 def _get_90d_delta(session, athlete_id: int, discipline: Discipline) -> float:
-    """Return the rating delta over the last ~90 days (3 most-recent events)."""
-    rows = list(
-        session.execute(
-            select(RatingHistory, Event)
-            .join(Event, RatingHistory.event_id == Event.id)
-            .where(
-                RatingHistory.athlete_id == athlete_id,
-                Event.discipline == discipline,
-            )
-            .order_by(Event.start_date.desc())
-            .limit(3)
-        ).all()
+    """Return the rating delta over the last ~90 days (3 most-recent events).
+
+    Kept for any single-athlete caller; the leaderboard now uses the batched
+    :func:`_get_90d_deltas` to avoid an N+1 across the page.
+    """
+    return _get_90d_deltas(session, [athlete_id], discipline).get(athlete_id, 0.0)
+
+
+def _get_90d_deltas(
+    session, athlete_ids: list[int], discipline: Discipline
+) -> dict[int, float]:
+    """Batched 90d rating delta for many athletes in a single query.
+
+    For each athlete the delta is ``latest.mu_after - earliest.mu_before``
+    across that athlete's 3 most-recent ``RatingHistory`` rows (ordered by
+    ``Event.start_date`` descending) in the given discipline — identical
+    semantics to the per-athlete :func:`_get_90d_delta`, but computed for every
+    id in ``athlete_ids`` with one round-trip instead of one query per row.
+
+    Returns ``{athlete_id: delta}``; athletes with no history in the discipline
+    are omitted (callers should default to ``0.0``).
+    """
+    if not athlete_ids:
+        return {}
+
+    # Rank each athlete's history rows by recency (most-recent event first),
+    # partitioned per athlete. ``RatingHistory.id`` is a deterministic
+    # tiebreaker for rows sharing a start_date (multiple rounds / a tpb row in
+    # one event); the original per-row query left ties unordered, so this is a
+    # strict superset of its behaviour and matches on all non-tied data.
+    rn = (
+        func.row_number()
+        .over(
+            partition_by=RatingHistory.athlete_id,
+            order_by=(Event.start_date.desc(), RatingHistory.id.desc()),
+        )
+        .label("rn")
     )
-    if not rows:
-        return 0.0
-    # Δ = latest mu_after - earliest mu_before in this window
-    latest_rh = rows[0][0]
-    earliest_rh = rows[-1][0]
-    return round(latest_rh.mu_after - earliest_rh.mu_before, 1)
+    ranked = (
+        select(
+            RatingHistory.athlete_id.label("athlete_id"),
+            RatingHistory.mu_after.label("mu_after"),
+            RatingHistory.mu_before.label("mu_before"),
+            rn,
+        )
+        .join(Event, RatingHistory.event_id == Event.id)
+        .where(
+            RatingHistory.athlete_id.in_(athlete_ids),
+            Event.discipline == discipline,
+        )
+        .subquery()
+    )
+
+    # Pull only the top-3 rows per athlete (<=3 * len(athlete_ids) rows) and
+    # collapse in Python: rn==1 is the latest, max(rn) is the earliest.
+    deltas: dict[int, float] = {}
+    rows = session.execute(
+        select(
+            ranked.c.athlete_id,
+            ranked.c.mu_after,
+            ranked.c.mu_before,
+            ranked.c.rn,
+        )
+        .where(ranked.c.rn <= 3)
+        .order_by(ranked.c.athlete_id, ranked.c.rn)
+    ).all()
+
+    latest_after: dict[int, float] = {}
+    earliest_before: dict[int, float] = {}
+    for aid, mu_after, mu_before, rank in rows:
+        if rank == 1:
+            latest_after[aid] = mu_after
+        # The last row seen per athlete (largest rn, ordered asc) is the
+        # earliest; overwriting on each row leaves the max-rn value.
+        earliest_before[aid] = mu_before
+
+    for aid, latest in latest_after.items():
+        deltas[aid] = round(latest - earliest_before[aid], 1)
+    return deltas
 
 
 def _ticker_context(session) -> dict:
@@ -384,40 +449,55 @@ async def v2_landing(request: Request):
     t = _templates(request)
 
     with _session() as session:
-        # Top 8 athletes by mu in Boulder, Men (default)
-        men_boulder = _get_rankings_v2(session, Gender.M, Discipline.BOULDER, limit=8)
-        women_boulder = _get_rankings_v2(session, Gender.F, Discipline.BOULDER, limit=8)
-        men_lead = _get_rankings_v2(session, Gender.M, Discipline.LEAD, limit=8)
-        women_lead = _get_rankings_v2(session, Gender.F, Discipline.LEAD, limit=8)
-        men_speed = _get_rankings_v2(session, Gender.M, Discipline.SPEED, limit=8)
-        women_speed = _get_rankings_v2(session, Gender.F, Discipline.SPEED, limit=8)
-        men_bl = _get_rankings_v2(session, Gender.M, Discipline.BOULDER_LEAD, limit=8)
-        women_bl = _get_rankings_v2(session, Gender.F, Discipline.BOULDER_LEAD, limit=8)
+        cache_key = f"html:landing:fp:{ratings_fingerprint(session)}"
+        ctx = html_page_cache.get(cache_key)
+        if ctx is None:
+            # Top 8 athletes by mu per discipline / gender.
+            men_boulder = _get_rankings_v2(
+                session, Gender.M, Discipline.BOULDER, limit=8
+            )
+            women_boulder = _get_rankings_v2(
+                session, Gender.F, Discipline.BOULDER, limit=8
+            )
+            men_lead = _get_rankings_v2(session, Gender.M, Discipline.LEAD, limit=8)
+            women_lead = _get_rankings_v2(session, Gender.F, Discipline.LEAD, limit=8)
+            men_speed = _get_rankings_v2(session, Gender.M, Discipline.SPEED, limit=8)
+            women_speed = _get_rankings_v2(session, Gender.F, Discipline.SPEED, limit=8)
+            men_bl = _get_rankings_v2(
+                session, Gender.M, Discipline.BOULDER_LEAD, limit=8
+            )
+            women_bl = _get_rankings_v2(
+                session, Gender.F, Discipline.BOULDER_LEAD, limit=8
+            )
 
-        # App metrics
-        total_athletes = session.execute(select(func.count(Athlete.id))).scalar_one()
-        total_events = session.execute(select(func.count(Event.id))).scalar_one()
-        total_ratings = session.execute(
-            select(func.count(RatingHistory.id))
-        ).scalar_one()
+            # App metrics
+            total_athletes = session.execute(
+                select(func.count(Athlete.id))
+            ).scalar_one()
+            total_events = session.execute(select(func.count(Event.id))).scalar_one()
+            total_ratings = session.execute(
+                select(func.count(RatingHistory.id))
+            ).scalar_one()
 
+            ctx = {
+                "leaderboard": {
+                    "B": {"men": men_boulder, "women": women_boulder},
+                    "L": {"men": men_lead, "women": women_lead},
+                    "S": {"men": men_speed, "women": women_speed},
+                    "BL": {"men": men_bl, "women": women_bl},
+                },
+                "stats": {
+                    "total_athletes": total_athletes,
+                    "total_events": total_events,
+                    "total_ratings": total_ratings,
+                },
+            }
+            html_page_cache.set(cache_key, ctx)
+
+        # Ticker is time-sensitive — compute fresh, outside the cached data.
         ticker = _ticker_context(session)
 
-    ctx = {
-        "leaderboard": {
-            "B": {"men": men_boulder, "women": women_boulder},
-            "L": {"men": men_lead, "women": women_lead},
-            "S": {"men": men_speed, "women": women_speed},
-            "BL": {"men": men_bl, "women": women_bl},
-        },
-        "stats": {
-            "total_athletes": total_athletes,
-            "total_events": total_events,
-            "total_ratings": total_ratings,
-        },
-        **ticker,
-        **_nav_context("landing"),
-    }
+    ctx = {**ctx, **ticker, **_nav_context("landing")}
 
     return t.TemplateResponse(request, "landing.html", ctx)
 
@@ -450,48 +530,57 @@ async def v2_leaderboard(
     )
 
     with _session() as session:
-        rows = _get_rankings_v2(
-            session, gender_enum, disc_enum, limit=20, view=view_norm, today=today
+        cache_key = (
+            f"html:leaderboard:disc:{disc_enum.value}:gender:{gender_enum.value}"
+            f":view:{view_norm}:fp:{ratings_fingerprint(session)}"
         )
+        ctx = html_page_cache.get(cache_key)
+        if ctx is None:
+            # Fetch the summary set once (limit=200) and slice the top 20 for
+            # display — replaces the previous two full _get_rankings_v2 calls
+            # (one at limit=20, one at limit=200) with a single materialisation.
+            all_rows = _get_rankings_v2(
+                session, gender_enum, disc_enum, limit=200, view=view_norm, today=today
+            )
+            rows = all_rows[:20]
+
+            # Batched 90d delta for the displayed rows — one query instead of a
+            # per-row N+1 (was up to 20 separate round-trips).
+            deltas = _get_90d_deltas(session, [r["id"] for r in rows], disc_enum)
+            for row in rows:
+                row["delta_90d"] = deltas.get(row["id"], 0.0)
+                last = row.get("last_event_at")
+                if last is None:
+                    row["activity_label"] = None
+                elif last >= badge_active_cutoff:
+                    row["activity_label"] = "Active"
+                else:
+                    months = max(1, int((today - last).days / 30.4375))
+                    row["activity_label"] = f"Inactive {months}mo"
+
+            top_mu = all_rows[0]["mu"] if all_rows else 0
+            mid_idx = len(all_rows) // 2
+            median_mu = all_rows[mid_idx]["mu"] if all_rows else 0
+            total_count = len(all_rows)
+
+            ctx = {
+                "rows": rows,
+                "disc": disc.upper(),
+                "disc_label": _DISC_LABEL.get(disc_enum, disc),
+                "gender": gender_enum.value,
+                "gender_label": _GENDER_LABEL.get(gender_enum, gender),
+                "view": view_norm,
+                "top_mu": top_mu,
+                "median_mu": median_mu,
+                "total_count": total_count,
+            }
+            html_page_cache.set(cache_key, ctx)
+
+        # Ticker is time-sensitive (countdowns) and cheap — compute fresh,
+        # outside the cached page data.
         ticker = _ticker_context(session)
 
-        # Add 90d delta + activity badge (only rendered in the "all" view).
-        for row in rows:
-            row["delta_90d"] = _get_90d_delta(session, row["id"], disc_enum)
-            last = row.get("last_event_at")
-            if last is None:
-                row["activity_label"] = None
-            elif last >= badge_active_cutoff:
-                row["activity_label"] = "Active"
-            else:
-                months = max(1, int((today - last).days / 30.4375))
-                row["activity_label"] = f"Inactive {months}mo"
-
-        # Summary stats — use the same view so counts reflect what users see.
-        all_rows = _get_rankings_v2(
-            session, gender_enum, disc_enum, limit=200, view=view_norm, today=today
-        )
-        top_mu = all_rows[0]["mu"] if all_rows else 0
-        mid_idx = len(all_rows) // 2
-        median_mu = all_rows[mid_idx]["mu"] if all_rows else 0
-        total_count = len(all_rows)
-
-    disc_label = _DISC_LABEL.get(disc_enum, disc)
-    gender_label = _GENDER_LABEL.get(gender_enum, gender)
-
-    ctx = {
-        "rows": rows,
-        "disc": disc.upper(),
-        "disc_label": disc_label,
-        "gender": gender_enum.value,
-        "gender_label": gender_label,
-        "view": view_norm,
-        "top_mu": top_mu,
-        "median_mu": median_mu,
-        "total_count": total_count,
-        **ticker,
-        **_nav_context("leaderboard"),
-    }
+    ctx = {**ctx, **ticker, **_nav_context("leaderboard")}
     return t.TemplateResponse(request, "leaderboard.html", ctx)
 
 
@@ -519,31 +608,35 @@ async def v2_athletes_index(
     gender_enum = Gender.M if gender.upper() == "M" else Gender.F
 
     with _session() as session:
-        # Active-view ranked rows for the selected discipline + gender. Cap at
-        # 300 so the page stays light; the typeahead covers the long tail.
-        rows = _get_rankings_v2(
-            session,
-            gender_enum,
-            disc_enum,
-            limit=300,
-            view="active",
+        cache_key = (
+            f"html:athletes:disc:{disc_enum.value}:gender:{gender_enum.value}"
+            f":fp:{ratings_fingerprint(session)}"
         )
-        total_count = len(rows)
+        ctx = html_page_cache.get(cache_key)
+        if ctx is None:
+            # Active-view ranked rows for the selected discipline + gender. Cap
+            # at 300 so the page stays light; the typeahead covers the long tail.
+            rows = _get_rankings_v2(
+                session,
+                gender_enum,
+                disc_enum,
+                limit=300,
+                view="active",
+            )
+            ctx = {
+                "rows": rows,
+                "disc": disc_enum.value,
+                "disc_label": _DISC_LABEL.get(disc_enum, disc),
+                "gender": gender_enum.value,
+                "gender_label": _GENDER_LABEL.get(gender_enum, gender),
+                "total_count": len(rows),
+            }
+            html_page_cache.set(cache_key, ctx)
+
+        # Ticker is time-sensitive — compute fresh, outside the cached data.
         ticker = _ticker_context(session)
 
-    disc_label = _DISC_LABEL.get(disc_enum, disc)
-    gender_label = _GENDER_LABEL.get(gender_enum, gender)
-
-    ctx = {
-        "rows": rows,
-        "disc": disc_enum.value,
-        "disc_label": disc_label,
-        "gender": gender_enum.value,
-        "gender_label": gender_label,
-        "total_count": total_count,
-        **ticker,
-        **_nav_context("athletes"),
-    }
+    ctx = {**ctx, **ticker, **_nav_context("athletes")}
     return t.TemplateResponse(request, "athletes_index.html", ctx)
 
 
@@ -1981,6 +2074,12 @@ _V2_PREDICTIONS_DISCIPLINES = [
 ]
 _V2_MAX_UPCOMING_PER_DISCIPLINE = 50
 _V2_MAX_ATHLETES_PER_PROJECTION_CARD = 64
+# The /predictions HTML route only renders top-3 win/podium %, which is stable
+# at far fewer Monte Carlo draws than the public REST API uses. Lowering the
+# per-card sim count from 10k to 2k cuts cold-cache render time (#97) with no
+# visible change to the displayed percentages. The REST API
+# (POST /api/v1/projections) keeps the full 10k for numerical precision.
+_V2_PAGE_SIM_COUNT = 2_000
 
 
 @router.get("/predictions", response_class=HTMLResponse)
@@ -2061,12 +2160,13 @@ async def v2_predictions(request: Request):
                             f"projections:event:{ev.id}"
                             f":disc:{disc_enum.value}"
                             f":gender:{gender_enum.value}"
+                            f":n:{_V2_PAGE_SIM_COUNT}"
                             f":athletes:{_fp}"
                         )
                         probs = predictions_cache.get(_cache_key)
                         if probs is None:
                             probs = compute_podium_probabilities(
-                                proj_inputs, n_simulations=10_000
+                                proj_inputs, n_simulations=_V2_PAGE_SIM_COUNT
                             )
                             predictions_cache.set(_cache_key, probs)
 
@@ -2134,12 +2234,13 @@ async def v2_predictions(request: Request):
                             f"projections:likely:{ev.id}"
                             f":disc:{disc_enum.value}"
                             f":gender:{gender_enum.value}"
+                            f":n:{_V2_PAGE_SIM_COUNT}"
                             f":athletes:{_fp_fb}"
                         )
                         probs_fb = predictions_cache.get(_cache_key_fb)
                         if probs_fb is None:
                             probs_fb = compute_podium_probabilities(
-                                proj_inputs_fb, n_simulations=10_000
+                                proj_inputs_fb, n_simulations=_V2_PAGE_SIM_COUNT
                             )
                             predictions_cache.set(_cache_key_fb, probs_fb)
 
