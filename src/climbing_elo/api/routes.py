@@ -231,6 +231,11 @@ def _get_rankings_v2(
             "name": athlete.name,
             "nationality": athlete.nationality or "—",
             "year_of_birth": athlete.year_of_birth,
+            # Computed age for table views (#106) — bare birth year looked like
+            # a rating next to the μ column. Nullable: None renders as "—".
+            "age": (date.today().year - athlete.year_of_birth)
+            if athlete.year_of_birth
+            else None,
             "mu": round(rating.mu, 1),
             "sigma": round(rating.sigma, 1),
             "n_events": rating.n_events,
