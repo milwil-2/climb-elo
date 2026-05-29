@@ -157,24 +157,38 @@ def test_mov_regrid_smoke_runs_against_synthetic_db(tmp_path: Path) -> None:
 
 
 def test_enumerate_grid_cartesian_product_stable_order() -> None:
-    """The grid enumeration must be stable: rating_scale outer, softening inner."""
+    """The grid enumeration must be stable: margin_cap outer, then rating_scale,
+    softening inner. Single-margin_cap default keeps the historical 2-D shape."""
     rs_grid = (100.0, 200.0, 300.0)
     sf_grid = (1.0, 2.0)
+    # Default single margin_cap → (rs, sf, mc) triples in the historical order.
     points = _enumerate_grid(rs_grid, sf_grid)
+    default_mc = elo_module.DEFAULT_CONFIG.margin_cap
     assert points == [
-        (100.0, 1.0),
-        (100.0, 2.0),
-        (200.0, 1.0),
-        (200.0, 2.0),
-        (300.0, 1.0),
-        (300.0, 2.0),
+        (100.0, 1.0, default_mc),
+        (100.0, 2.0, default_mc),
+        (200.0, 1.0, default_mc),
+        (200.0, 2.0, default_mc),
+        (300.0, 1.0, default_mc),
+        (300.0, 2.0, default_mc),
+    ]
+
+
+def test_enumerate_grid_three_dimensional_margin_cap() -> None:
+    """A multi-value margin_cap grid produces one (rs, sf) block per cap."""
+    points = _enumerate_grid((100.0, 200.0), (1.0,), (1.5, 2.0))
+    assert points == [
+        (100.0, 1.0, 1.5),
+        (200.0, 1.0, 1.5),
+        (100.0, 1.0, 2.0),
+        (200.0, 1.0, 2.0),
     ]
 
 
 def test_grid_default_constants_size() -> None:
-    """The default grid is 6 × 5 = 30 combinations as documented."""
+    """The default grid is 6 × 4 = 24 (rating_scale × softening) combinations."""
     assert len(DEFAULT_RATING_SCALE_GRID) == 6
-    assert len(DEFAULT_SOFTENING_GRID) == 5
+    assert len(DEFAULT_SOFTENING_GRID) == 4
     # Current values should both be inside their respective grids so the
     # baseline is always evaluated as one of the trials.
     assert elo_module.DEFAULT_CONFIG.mov_rating_scale in DEFAULT_RATING_SCALE_GRID
