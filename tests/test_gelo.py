@@ -280,9 +280,9 @@ def test_default_lead_multiplier_unchanged_without_buckets():
 def test_default_boulder_multiplier_unchanged_without_buckets():
     cfg = EloConfig()
     # 1500-point gap, no rating gap → continuous formula:
-    #   base = min(1 + 1500/1000, 1.5) = 1.5
+    #   base = min(1 + 1500/1000, margin_cap) = margin_cap (the gap saturates it)
     mult = compute_boulder_margin_multiplier(2500.0, 1000.0, rating_gap=0.0, config=cfg)
-    assert math.isclose(mult, 1.5)
+    assert math.isclose(mult, cfg.margin_cap)
 
 
 def test_default_speed_multiplier_unchanged_without_buckets():
