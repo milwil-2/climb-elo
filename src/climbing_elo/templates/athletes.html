@@ -221,9 +221,9 @@
             <div class="athlete-name">{{ athlete.name }}</div>
             <div class="athlete-sub">
               <span>{{ athlete.nationality }}</span>
-              {%- if athlete.year_of_birth -%}
+              {%- if athlete.age -%}
               <span class="sep">&middot;</span>
-              <span>Born {{ athlete.year_of_birth }}</span>
+              <span>Age {{ athlete.age }}</span>
               {%- endif -%}
               <span class="sep">&middot;</span>
               <span>{{ 'Men' if athlete.gender == 'M' else 'Women' }}</span>
