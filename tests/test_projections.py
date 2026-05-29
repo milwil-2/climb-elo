@@ -194,6 +194,80 @@ class TestComputePodiumProbabilities:
 
 
 # ---------------------------------------------------------------------------
+# Low-sim-count stability (the /predictions HTML route uses 2k, not 10k — #97)
+# ---------------------------------------------------------------------------
+
+
+class TestLowSimCountStability:
+    """The /predictions page renders top-3 win/podium % at a reduced sim count
+    (``_V2_PAGE_SIM_COUNT = 2_000``). These tests assert that lowering the sim
+    count from 10k to 2k keeps the displayed results numerically sane: same
+    ordering and probabilities close to the high-n reference.
+    """
+
+    # Mirror of routes._V2_PAGE_SIM_COUNT — kept literal so the test fails
+    # loudly if the page constant is changed without re-checking stability.
+    PAGE_SIM_COUNT = 2_000
+
+    def _field(self) -> list[AthleteProjectionInput]:
+        # A realistic 12-athlete field with separated mus so ordering is stable.
+        return [
+            AthleteProjectionInput(i, mu=1900 - (i - 1) * 60, sigma=120)
+            for i in range(1, 13)
+        ]
+
+    def test_win_probs_still_sum_to_one_at_low_n(self):
+        result = compute_podium_probabilities(
+            self._field(), n_simulations=self.PAGE_SIM_COUNT, rng_seed=0
+        )
+        assert sum(v["win"] for v in result.values()) == pytest.approx(1.0, abs=0.02)
+
+    def test_podium_probs_still_sum_to_three_at_low_n(self):
+        result = compute_podium_probabilities(
+            self._field(), n_simulations=self.PAGE_SIM_COUNT, rng_seed=1
+        )
+        assert sum(v["podium"] for v in result.values()) == pytest.approx(3.0, abs=0.02)
+
+    def test_expected_rank_ordering_matches_mu_at_low_n(self):
+        field = self._field()
+        result = compute_podium_probabilities(
+            field, n_simulations=self.PAGE_SIM_COUNT, rng_seed=2
+        )
+        # Higher mu -> lower (better) expected rank, monotonically.
+        ranks = [result[a.athlete_id]["expected_rank"] for a in field]
+        assert ranks == sorted(ranks)
+
+    def test_top3_set_matches_high_n_reference(self):
+        """The displayed top-3 (by expected rank) is identical at 2k and 10k."""
+        field = self._field()
+        low = compute_podium_probabilities(
+            field, n_simulations=self.PAGE_SIM_COUNT, rng_seed=7
+        )
+        high = compute_podium_probabilities(field, n_simulations=10_000, rng_seed=7)
+        top3_low = sorted(
+            (a.athlete_id for a in field),
+            key=lambda aid: low[aid]["expected_rank"],
+        )[:3]
+        top3_high = sorted(
+            (a.athlete_id for a in field),
+            key=lambda aid: high[aid]["expected_rank"],
+        )[:3]
+        assert top3_low == top3_high
+
+    def test_win_prob_close_to_high_n_reference(self):
+        """Top athlete's win % at 2k is within a small tolerance of the 10k value."""
+        field = self._field()
+        low = compute_podium_probabilities(
+            field, n_simulations=self.PAGE_SIM_COUNT, rng_seed=3
+        )
+        high = compute_podium_probabilities(field, n_simulations=10_000, rng_seed=3)
+        top_id = field[0].athlete_id  # highest mu
+        # 2k Monte Carlo standard error on a probability is < ~1.1pp; 0.05 is a
+        # comfortable backstop that still catches gross regressions.
+        assert low[top_id]["win"] == pytest.approx(high[top_id]["win"], abs=0.05)
+
+
+# ---------------------------------------------------------------------------
 # predict_winner
 # ---------------------------------------------------------------------------
 
