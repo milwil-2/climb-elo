@@ -289,12 +289,13 @@ def main() -> None:
     parser.add_argument(
         "--since-year",
         type=int,
-        default=None,
+        default=2018,
         help="Only walk events from this season onward during IFSC-id discovery. "
-        "Default: None (walk ALL seasons). Issue #103: the old 2018 floor "
-        "stranded ~744 missing-photo athletes whose last competition predated "
-        "2018, so their IFSC id was never harvested. Set a year to trade "
-        "coverage for a faster walk.",
+        "Default: 2018 (cron-safe: keeps the daily scrape-supabase.yml walk "
+        "well inside the 60-min Actions budget). Issue #103: the 2018 floor "
+        "strands ~744 missing-photo athletes whose last competition predated "
+        "2018. To harvest them, run the ONE-TIME full backfill LOCALLY with an "
+        "early floor, e.g. --since-year 2000 (slow; not for CI).",
     )
     parser.add_argument(
         "--dry-run",
