@@ -244,6 +244,10 @@ def run_backfill(
                 ar = ratings_cache[upd.athlete_id]
                 ar.mu = upd.mu_after
                 ar.sigma = upd.sigma_after
+                # Issue #81 — carry the refit Glicko-2 volatility forward in
+                # the in-memory cache so it evolves across the backfill run.
+                # No DB column; a fresh backfill re-seeds deterministically.
+                ar.volatility = upd.volatility_after
                 # Issue #89 Fix 3 — set last_event_at to this event's date so
                 # subsequent rounds of the SAME event see zero inactivity gap
                 # and don't re-inflate σ. Without this, the round 2 / round 3

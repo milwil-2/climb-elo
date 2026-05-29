@@ -898,6 +898,14 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
 
         ticker = _ticker_context(session)
 
+        # Computed age from year_of_birth (#106). The column is nullable; when
+        # it is NULL we leave ``age`` as None and the template renders nothing.
+        # We only store the birth *year* (not the full date), so this is the
+        # conventional current-year − birth-year estimate.
+        athlete_age = None
+        if athlete.year_of_birth:
+            athlete_age = date.today().year - athlete.year_of_birth
+
         # Capture all athlete fields inside the session — accessing them after
         # session close would trigger a DetachedInstanceError.
         athlete_ctx = {
@@ -905,6 +913,7 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
             "name": athlete.name,
             "nationality": athlete.nationality or "—",
             "year_of_birth": athlete.year_of_birth,
+            "age": athlete_age,
             "gender": athlete.gender.value,
             "photo_url": athlete.photo_url,
             "height_cm": athlete.height_cm,
