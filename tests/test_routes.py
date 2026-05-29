@@ -366,7 +366,10 @@ def test_profile_route_full_athlete_renders_200(profile_client, profile_factory)
     # Header content
     assert "Sora Climber" in html
     assert "JPN" in html
-    assert "Born 2006" in html
+    # Age is computed from year_of_birth (#106), not the raw year.
+    from datetime import date as _date
+
+    assert f"Age {_date.today().year - 2006}" in html
     # Photo URL is rendered into an <img>
     assert "https://example.com/sora.jpg" in html
     # Body metrics card (header div)
