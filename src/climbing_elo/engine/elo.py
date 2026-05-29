@@ -31,16 +31,25 @@ Three design decisions (recorded in issue #51, comment from 2026-05-26):
    the practical effect (wider draws for less-certain athletes) is
    directionally correct. Tracked for refinement in a follow-up issue.
 
+Volatility update (Issue #81)
+-----------------------------
+
+The per-round φ update runs the **full Glicko-2 Step 5 volatility refit** via
+the Illinois root-find (:func:`glicko2_update_volatility`), replacing the
+earlier simplified closed-form (``1/φ'² = 1/φ_inflated² + v_inv``). Each round:
+
+1. Refit σ' from the round's (v, Δ) evidence (Step 5, Illinois algorithm).
+2. Inflate φ by the refit volatility — ``φ* = sqrt(φ² + σ'²)`` (Step 6).
+3. Shrink with the variance evidence — ``1/φ'² = 1/φ*² + 1/v`` (Step 7).
+
+Volatility evolves in-memory across a backfill run (seeded at
+``GLICKO2_DEFAULT_VOLATILITY``); it has no DB column, so a fresh backfill
+re-seeds deterministically. Calendar-time inactivity inflation
+(:func:`glicko2_inflate_phi`) still runs first, before the round update.
+
 Simplifications (deferred to follow-up issues filed against #51)
 ----------------------------------------------------------------
 
-* **Volatility update**: we run a *simplified closed-form* φ update
-  (``1/φ'² = 1/φ_inflated² + v_inv_sum``) without iterating Glickman's full
-  Step 5 volatility-σ refit. The volatility is held fixed at the system
-  constant ``GLICKO2_DEFAULT_VOLATILITY`` for inflation purposes only. This
-  is the standard Glicko-1.5-style approximation; the full Glicko-2
-  iteration buys an additional 1-2% calibration in long-running implementations
-  and can be ported later.
 * **K-factor table** values are halved as a conservative starting point —
   variable effective-K averages around constant K, so halving the base keeps
   per-round magnitudes within the previously-tuned operating range. A proper
@@ -83,9 +92,11 @@ DEFAULT_SIGMA = 350.0  # display-scale RD for fresh athletes (high uncertainty)
 
 # Glicko-2 system constants (Glickman 2013).
 GLICKO2_SCALE = 173.7178  # display-scale ↔ internal-scale conversion
-GLICKO2_DEFAULT_VOLATILITY = 0.06  # σ in Glicko-2 internal units (held fixed)
+GLICKO2_DEFAULT_VOLATILITY = 0.06  # σ in Glicko-2 internal units (initial value)
 GLICKO2_INACTIVITY_GRACE_DAYS = 30  # no inflation for activity gaps < 30 days
 GLICKO2_DAYS_PER_MONTH = 30.0
+GLICKO2_VOLATILITY_EPSILON = 1e-6  # Illinois root-find convergence tolerance
+GLICKO2_VOLATILITY_MAX_ITER = 100  # Illinois iteration hard cap (safety)
 
 # Default K-factor table. Halved from prior production values as a
 # conservative starting point — under variable effective-K each round will
@@ -187,8 +198,8 @@ class EloConfig:
         * ``glicko2_sigma_inactivity`` — Wiener-process σ that drives φ
           inflation during competitive sabbaticals (display scale).
         * ``glicko2_tau`` — system constant τ, recommended [0.3, 1.2];
-          0.5 is a moderate default. Currently unused by the simplified
-          closed-form φ update; reserved for the full volatility-σ refit.
+          0.5 is a moderate default. Constrains how fast the per-round
+          volatility refit (Issue #81 Illinois iteration) can move σ.
 
     σ clamping
         * ``sigma_floor`` — display-scale RD floor (≈ φ=0.29; established
@@ -224,7 +235,9 @@ class EloConfig:
     provisional_threshold: int = 3
 
     # Margin-of-victory
-    margin_cap: float = 1.5
+    # margin_cap bumped 1.5 → 1.7 on 2026-05-28 per the #85 MOV grid sweep
+    # (docs/MOV_REGRID_REPORT.md, data/grid_search/mov/sweep_2026-05-28.json).
+    margin_cap: float = 1.7  # was 1.5
     boulder_margin_max_gap: float = 1000.0
     speed_max_gap_seconds: float = 2.0
 
@@ -263,9 +276,14 @@ class EloConfig:
     # 0.0 = legacy over-counting (collapses σ to the floor after one event).
     sigma_field_normalization_exponent: float = 1.0
 
-    # MOV gap-conditioning (Issue #53)
-    mov_rating_scale: float = 400.0
-    mov_softening: float = 2.2
+    # MOV gap-conditioning (Issue #53). Values locked 2026-05-28 by the #85
+    # grid sweep: (rating_scale, softening, margin_cap) = (200, 2.2, 1.7) was
+    # the in-band winner — highest top-3 hit (0.8676 vs 0.8382 baseline) AND
+    # lowest podium log-loss (0.2516 vs 0.2733) with μ-p95=2045 in the
+    # [1900, 2200] elite band. See docs/MOV_REGRID_REPORT.md and
+    # data/grid_search/mov/sweep_2026-05-28.json.
+    mov_rating_scale: float = 200.0  # was 400.0
+    mov_softening: float = 2.2  # unchanged
 
     # K-factor table
     k_factor_table: dict[EventTier, dict[RoundType, float]] = field(
@@ -387,6 +405,10 @@ class RatingUpdate:
     sigma_before: float
     sigma_after: float
     contributing_pairs: list[PairContribution] = field(default_factory=list)
+    # Updated Glicko-2 internal-scale volatility (Issue #81). The backfill
+    # writes this back to the in-memory AthleteRating cache so it evolves
+    # across the run; it has no DB column.
+    volatility_after: float = GLICKO2_DEFAULT_VOLATILITY
 
 
 @dataclass
@@ -397,6 +419,11 @@ class AthleteRating:
     n_events: int = 0
     last_event_at: date | None = None
     provisional: bool = True
+    # Glicko-2 internal-scale volatility σ (Issue #81). Persisted in-memory
+    # across a backfill run; not stored in the DB (no schema change), so each
+    # fresh backfill re-seeds at GLICKO2_DEFAULT_VOLATILITY. Evolved per round
+    # by the full Illinois volatility iteration.
+    volatility: float = GLICKO2_DEFAULT_VOLATILITY
 
 
 @dataclass
@@ -477,6 +504,82 @@ def glicko2_inflate_phi(
         + sigma_inactivity * sigma_inactivity * months_inactive
     )
     return min(sigma_new, config.sigma_ceiling)
+
+
+def glicko2_update_volatility(
+    sigma: float,
+    phi: float,
+    v: float,
+    delta: float,
+    tau: float,
+    epsilon: float = GLICKO2_VOLATILITY_EPSILON,
+    max_iter: int = GLICKO2_VOLATILITY_MAX_ITER,
+) -> float:
+    """Full Glicko-2 Step 5 volatility update via the Illinois algorithm (#81).
+
+    Solves for the new volatility ``σ'`` such that ``f(x) = 0`` where (Glickman
+    2013, *Example of the Glicko-2 system*, Step 5)::
+
+        f(x) = e^x (Δ² − φ² − v − e^x) / (2 (φ² + v + e^x)²)  −  (x − ln σ²) / τ²
+
+    using the Illinois variant of regula falsi (the root-finder Glickman
+    recommends). All arguments are on the Glicko-2 **internal** scale (φ, σ
+    converted from display RD by dividing by ``GLICKO2_SCALE``; μ-derived Δ and
+    v likewise internal-scale).
+
+    Args:
+        sigma: current volatility σ (internal scale, ~0.06 for a fresh player).
+        phi: pre-update rating deviation φ (internal scale).
+        v: estimated variance of the rating from game outcomes (internal scale).
+        delta: estimated rating improvement Δ = v · Σ g(φ_j)(s_j − E_j).
+        tau: system constant τ constraining volatility change over time.
+        epsilon: convergence tolerance on the bracket width.
+        max_iter: safety cap on Illinois iterations.
+
+    Returns:
+        The updated volatility ``σ'`` (internal scale, always > 0).
+    """
+    a = math.log(sigma * sigma)
+    delta_sq = delta * delta
+    phi_sq = phi * phi
+    tau_sq = tau * tau
+
+    def f(x: float) -> float:
+        ex = math.exp(x)
+        denom = phi_sq + v + ex
+        return (ex * (delta_sq - phi_sq - v - ex)) / (2.0 * denom * denom) - (
+            x - a
+        ) / tau_sq
+
+    # Initial bracket [A, B] per Glickman Step 5.2.
+    big_a = a
+    if delta_sq > phi_sq + v:
+        big_b = math.log(delta_sq - phi_sq - v)
+    else:
+        # Expand downward by k·τ until f turns negative.
+        k = 1
+        while f(a - k * tau) < 0.0 and k < max_iter:
+            k += 1
+        big_b = a - k * tau
+
+    f_a = f(big_a)
+    f_b = f(big_b)
+
+    # Illinois iteration (modified regula falsi).
+    iters = 0
+    while abs(big_b - big_a) > epsilon and iters < max_iter:
+        c = big_a + (big_a - big_b) * f_a / (f_b - f_a)
+        f_c = f(c)
+        if f_c * f_b <= 0.0:
+            big_a = big_b
+            f_a = f_b
+        else:
+            f_a = f_a / 2.0  # Illinois weighting halves the stale endpoint
+        big_b = c
+        f_b = f_c
+        iters += 1
+
+    return math.exp(big_a / 2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -698,9 +801,11 @@ def calculate_round_updates(
               v_inv_i += g_i² · E · (1−E)
               g_j_internal = g(φ_i_internal)
               v_inv_j += g_j² · E_j · (1−E_j)   with E_j = 1−E
-    3. Per-athlete φ update (simplified closed-form):
-          1/φ_new² = 1/φ_inflated² + v_inv_sum
-       Clamped to [PHI_FLOOR, PHI_CEILING].
+    3. Per-athlete φ update (full Glicko-2 Step 5-7, Issue #81):
+          σ' = Illinois-refit volatility from (v, Δ)
+          φ* = sqrt(φ_inflated² + σ'²)
+          1/φ_new² = 1/φ*² + 1/v   (= 1/φ*² + v_inv after field-normalization)
+       Clamped to [sigma_floor, sigma_ceiling] on the display scale.
 
     Notes
     -----
@@ -755,6 +860,9 @@ def calculate_round_updates(
 
     deltas: dict[int, float] = {r.athlete_id: 0.0 for r in active}
     v_inv_sum: dict[int, float] = {r.athlete_id: 0.0 for r in active}
+    # Glicko-2 Step 4 accumulator: Σ_j g(φ_j) · (s_j − E_j) per athlete, on the
+    # internal scale (#81 full volatility iteration). Feeds Δ = v · this_sum.
+    delta_terms_sum: dict[int, float] = {r.athlete_id: 0.0 for r in active}
     pairs: dict[int, list[PairContribution]] = {r.athlete_id: [] for r in active}
 
     for i, res_i in enumerate(active):
@@ -838,6 +946,12 @@ def calculate_round_updates(
             v_inv_sum[res_i.athlete_id] += g_phi_j * g_phi_j * e_i * (1.0 - e_i)
             v_inv_sum[res_j.athlete_id] += g_phi_i * g_phi_i * e_j * (1.0 - e_j)
 
+            # Glicko-2 Step 4 outcome-weighted residual: g(φ_opp)·(s − E).
+            # Winner i: s=1; loser j: s=0. Drives the Δ estimate that the full
+            # volatility iteration (#81) consumes.
+            delta_terms_sum[res_i.athlete_id] += g_phi_j * (1.0 - e_i)
+            delta_terms_sum[res_j.athlete_id] += g_phi_i * (0.0 - e_j)
+
             pairs[res_i.athlete_id].append(
                 PairContribution(
                     opponent_id=res_j.athlete_id,
@@ -868,27 +982,53 @@ def calculate_round_updates(
         mu_before = rating.mu
         sigma_before = sigma_inflated[aid]
         phi_internal = sigma_before / GLICKO2_SCALE
+        volatility = rating.volatility or GLICKO2_DEFAULT_VOLATILITY
 
-        # Simplified closed-form Glicko-2 φ update:
-        #   1/φ_new² = 1/φ_inflated² + Σ g(φ_opp)² · E · (1-E)
-        # (full volatility iteration is a follow-up — see module docstring.)
-        #
-        # Field-size normalization (Issue #95): the v_inv accumulator sums
-        # one variance term per pairwise comparison, i.e. (n−1) Glicko-2
-        # "games" of evidence in an n-athlete round. But a single
+        # Field-size normalization (Issue #95): the v_inv / delta-term
+        # accumulators sum one term per pairwise comparison, i.e. (n−1)
+        # Glicko-2 "games" of evidence in an n-athlete round. But a single
         # Plackett-Luce-decomposed ranking is NOT (n−1) independent games —
-        # left undamped it collapses σ to the floor after one event (a
-        # first-event athlete lands at σ≈50 instead of retaining cold-start
-        # uncertainty). Divide v_inv by max(n−1, 1) ** exponent so one round
+        # left undamped it collapses σ to the floor after one event. Divide the
+        # accumulated evidence by max(n−1, 1) ** exponent so one round
         # contributes ≈ one game (exponent=1.0, the default). This mirrors the
         # μ-side ``pair_k = base_k/(n−1)`` normalization. exponent=0.0 restores
         # the legacy over-counting behaviour (escape hatch / ablation knob).
         v_inv = v_inv_sum.get(aid, 0.0)
+        delta_terms = delta_terms_sum.get(aid, 0.0)
         n_field = len(active)
-        if v_inv and n_field > 1 and config.sigma_field_normalization_exponent:
-            v_inv /= float(n_field - 1) ** config.sigma_field_normalization_exponent
-        inv_phi_sq_new = 1.0 / (phi_internal * phi_internal) + v_inv
-        phi_new = 1.0 / math.sqrt(inv_phi_sq_new)
+        if n_field > 1 and config.sigma_field_normalization_exponent:
+            norm = float(n_field - 1) ** config.sigma_field_normalization_exponent
+            v_inv /= norm
+            delta_terms /= norm
+
+        if v_inv > 0.0:
+            # Full Glicko-2 update (Issue #81): refit the volatility σ' via the
+            # Illinois root-find (Step 5), inflate φ by the new volatility
+            # (Step 6: φ* = sqrt(φ² + σ'²)), then shrink with the round's
+            # variance evidence (Step 7: 1/φ'² = 1/φ*² + 1/v).
+            v = 1.0 / v_inv
+            delta = v * delta_terms
+            volatility_after = glicko2_update_volatility(
+                volatility,
+                phi_internal,
+                v,
+                delta,
+                config.glicko2_tau,
+            )
+            phi_star_sq = (
+                phi_internal * phi_internal + volatility_after * volatility_after
+            )
+            inv_phi_sq_new = 1.0 / phi_star_sq + v_inv
+            phi_new = 1.0 / math.sqrt(inv_phi_sq_new)
+        else:
+            # Zero-game rating period for this athlete (e.g. all ties): no
+            # variance evidence, so only the volatility inflation acts on φ and
+            # the volatility itself is unchanged.
+            volatility_after = volatility
+            phi_new = math.sqrt(
+                phi_internal * phi_internal + volatility_after * volatility_after
+            )
+
         sigma_after_display = phi_new * GLICKO2_SCALE
         # Clamp to display-scale floor/ceiling (read from config so callers
         # can ablate σ decay by setting floor == ceiling == DEFAULT_SIGMA).
@@ -906,6 +1046,7 @@ def calculate_round_updates(
                 sigma_before=sigma_before,
                 sigma_after=sigma_after,
                 contributing_pairs=pairs[aid],
+                volatility_after=volatility_after,
             )
         )
 

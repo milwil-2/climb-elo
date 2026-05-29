@@ -29,6 +29,7 @@ from climbing_elo.engine.elo import (
     glicko2_expected_score,
     glicko2_g,
     glicko2_inflate_phi,
+    glicko2_update_volatility,
     normalize_boulder_score,
 )
 from climbing_elo.models import Discipline, EventTier, RoundType
@@ -692,9 +693,12 @@ def test_margin_multiplier_peer_matchup_full_bonus():
 def test_margin_multiplier_favourite_wins_damped():
     """Favourite wins → damped multiplier (smaller than the peer-matchup case)."""
     peer = compute_margin_multiplier(30.0, 20.0, max_gap=20.0, rating_gap=0.0)
-    favourite = compute_margin_multiplier(30.0, 20.0, max_gap=20.0, rating_gap=400.0)
+    # rating_gap == MOV_RATING_SCALE so the damping factor reduces to
+    # softening / (1 + softening) regardless of the locked-in scale value.
+    favourite = compute_margin_multiplier(
+        30.0, 20.0, max_gap=20.0, rating_gap=MOV_RATING_SCALE
+    )
     assert favourite < peer
-    # Same gap, scaling factor = 2.2 / (1 + 2.2) = 0.6875
     expected = peer * (MOV_SOFTENING / (1.0 + MOV_SOFTENING))
     assert math.isclose(favourite, expected, rel_tol=1e-9)
 
@@ -1169,3 +1173,123 @@ def test_speed_bracket_pair_update_zero_sum_at_pair_level():
         config=DEFAULT_CONFIG,
     )
     assert math.isclose(d_w + d_l, 0.0, abs_tol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Full Glicko-2 volatility iteration (Issue #81)
+# ---------------------------------------------------------------------------
+
+
+def test_volatility_iteration_glickman_reference_example():
+    """Reproduce Glickman 2013 "Example of the Glicko-2 system" Step 5.
+
+    The worked example: a player at r=1500, RD=200 (φ≈1.1513), σ=0.06, who
+    plays three games producing v≈1.7785 and Δ≈-0.4834. Glickman's published
+    answer is σ' ≈ 0.05999. We assert convergence to that value.
+    """
+    phi = 200.0 / GLICKO2_SCALE  # ≈ 1.1513
+    v = 1.7785
+    delta = -0.4834
+    sigma_prime = glicko2_update_volatility(
+        sigma=0.06, phi=phi, v=v, delta=delta, tau=0.5
+    )
+    assert math.isclose(sigma_prime, 0.05999, abs_tol=5e-5), (
+        f"Glickman reference σ' should be ≈0.05999; got {sigma_prime:.6f}"
+    )
+
+
+def test_volatility_iteration_always_positive_and_finite():
+    """For a spread of (σ, φ, v, Δ) inputs the refit σ' stays positive/finite."""
+    cases = [
+        (0.06, 1.0, 0.5, 0.3),
+        (0.06, 2.0, 5.0, -2.0),
+        (0.10, 0.3, 0.05, 0.9),
+        (0.04, 1.5, 1.0, 0.0),
+        (0.06, 2.014, 10.0, 4.0),  # cold-start high-φ, big upset
+    ]
+    for sigma, phi, v, delta in cases:
+        out = glicko2_update_volatility(sigma, phi, v, delta, tau=0.5)
+        assert out > 0.0 and math.isfinite(out), (
+            f"σ'={out} not positive/finite for (σ={sigma}, φ={phi}, v={v}, Δ={delta})"
+        )
+
+
+def test_volatility_iteration_large_surprise_inflates_volatility():
+    """A large unexpected result (Δ² ≫ φ²+v) should push σ' above σ."""
+    phi = 0.5
+    v = 0.4
+    # A big surprise: Δ far larger than the expected spread.
+    high = glicko2_update_volatility(0.06, phi, v, delta=3.0, tau=0.5)
+    # An on-expectation result: Δ ≈ 0.
+    low = glicko2_update_volatility(0.06, phi, v, delta=0.0, tau=0.5)
+    assert high > low, (
+        f"a big surprise should inflate volatility more than an expected "
+        f"result; got high={high:.5f}, low={low:.5f}"
+    )
+    assert high > 0.06, f"big surprise should raise σ' above 0.06; got {high:.5f}"
+
+
+def test_volatility_iteration_solves_f_root():
+    """The returned σ' must satisfy the Glickman volatility equation f(x*) ≈ 0."""
+    sigma, phi, v, delta, tau = 0.06, 1.1513, 1.7785, -0.4834, 0.5
+    sigma_prime = glicko2_update_volatility(sigma, phi, v, delta, tau)
+    x = 2.0 * math.log(sigma_prime)
+    ex = math.exp(x)
+    a = math.log(sigma * sigma)
+    denom = phi * phi + v + ex
+    f_x = (ex * (delta * delta - phi * phi - v - ex)) / (2.0 * denom * denom) - (
+        x - a
+    ) / (tau * tau)
+    assert abs(f_x) < 1e-4, f"σ' should solve f(x)=0; got f={f_x:.6e}"
+
+
+def test_full_volatility_round_keeps_zero_sum_on_mu():
+    """The full-volatility φ update must not disturb the μ zero-sum invariant."""
+    ratings = {
+        aid: AthleteRating(
+            athlete_id=aid,
+            mu=1500.0 + 20 * aid,
+            sigma=120.0,
+            n_events=8,
+            last_event_at=date(2024, 1, 1),
+            provisional=False,
+        )
+        for aid in range(1, 7)
+    }
+    results = [AthleteResult(athlete_id=aid, rank=aid) for aid in range(1, 7)]
+    updates = calculate_round_updates(
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.LEAD,
+    )
+    total = sum(u.mu_after - u.mu_before for u in updates)
+    assert abs(total) < 1e-6, f"μ updates should sum to zero; got {total:.6e}"
+
+
+def test_full_volatility_round_emits_evolving_volatility():
+    """Each RatingUpdate must carry a positive refit volatility (Issue #81)."""
+    ratings = {
+        aid: AthleteRating(
+            athlete_id=aid,
+            mu=1500.0 + 15 * aid,
+            sigma=150.0,
+            n_events=5,
+            last_event_at=date(2024, 1, 1),
+            provisional=False,
+        )
+        for aid in range(1, 5)
+    }
+    results = [AthleteResult(athlete_id=aid, rank=aid) for aid in range(1, 5)]
+    updates = calculate_round_updates(
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        date(2024, 6, 1),
+        discipline=Discipline.LEAD,
+    )
+    for u in updates:
+        assert u.volatility_after > 0.0 and math.isfinite(u.volatility_after)

@@ -38,6 +38,7 @@ from climbing_elo.engine.elo import (
     AthleteResult,
     EloConfig,
     calculate_round_updates,
+    glicko2_inflate_phi,
 )
 from climbing_elo.models import (
     Athlete,
@@ -463,4 +464,93 @@ def test_bertone_cold_start_glicko2(glicko2_boulder_session):
     assert rank <= 15, (
         f"Glicko-2 should place {name} in the top-15 "
         f"(AscentStats has her #{ext_rank}); got rank {rank}/{total}"
+    )
+
+
+def test_garnbret_present_and_elite_under_glicko2(glicko2_boulder_session):
+    """Real-data sanity: Garnbret (prod athlete id=60) is an elite veteran.
+
+    Backfilling the full Boulder history under the full-volatility engine (#81)
+    should still place the most-decorated competitor of the era near the top of
+    the women's leaderboard — a guard that the volatility refit didn't break
+    the long-tenure trajectory.
+    """
+    rank, total, name = _rank_of(glicko2_boulder_session, "Garnbret", Gender.F)
+    assert total >= 30, f"unexpectedly thin women's Boulder leaderboard: {total}"
+    assert rank <= 5, (
+        f"Glicko-2 should keep {name} in the women's Boulder top-5; "
+        f"got rank {rank}/{total}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sabbatical-return uncertainty widening (Issue #81 / plan §"sabbatical test")
+# ---------------------------------------------------------------------------
+
+
+def test_sabbatical_return_widens_then_round_reshrinks_uncertainty():
+    """A long inactivity gap inflates φ; the comeback round re-shrinks it.
+
+    Models the Garnbret-style post-Olympic break (id=60 in prod). Under the
+    full Glicko-2 volatility iteration (#81) the pre-period inflation must
+    visibly widen RD across a ~12-month gap (acceptance: post-gap RD ≥
+    pre-gap RD × 1.1, mirroring the plan's sabbatical-test bar), and the next
+    round of competition must then consume that uncertainty (σ shrinks back).
+    """
+    GARNBRET_ID = 60  # prod athlete id, per the #51 plan doc
+    veteran_ids = list(range(1, 8))
+    veteran_mus = [1750, 1730, 1710, 1690, 1670, 1650, 1630]
+
+    pre_gap_sigma = 110.0
+    ratings: dict[int, AthleteRating] = {
+        aid: AthleteRating(
+            athlete_id=aid,
+            mu=mu,
+            sigma=120.0,
+            n_events=20,
+            last_event_at=date(2024, 8, 1),
+            provisional=False,
+        )
+        for aid, mu in zip(veteran_ids, veteran_mus)
+    }
+    # Garnbret: strong, well-established, last competed a year before the return.
+    ratings[GARNBRET_ID] = AthleteRating(
+        athlete_id=GARNBRET_ID,
+        mu=1900.0,
+        sigma=pre_gap_sigma,
+        n_events=70,
+        last_event_at=date(2024, 8, 1),
+        provisional=False,
+    )
+
+    # The pre-period inflation alone (12-month gap) must widen RD by ≥10%.
+    inflated = glicko2_inflate_phi(pre_gap_sigma, date(2024, 8, 1), date(2025, 8, 1))
+    assert inflated >= pre_gap_sigma * 1.1, (
+        f"a ~12-month sabbatical should inflate RD by ≥10%; "
+        f"{pre_gap_sigma} → {inflated:.1f}"
+    )
+
+    # Comeback event a year later. Garnbret wins; the round should consume the
+    # inflated uncertainty (σ_after < the inflated σ_before).
+    return_date = date(2025, 8, 1)
+    results = [AthleteResult(athlete_id=GARNBRET_ID, rank=1)] + [
+        AthleteResult(athlete_id=aid, rank=i + 2) for i, aid in enumerate(veteran_ids)
+    ]
+    updates = calculate_round_updates(
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.FINAL,
+        return_date,
+        discipline=Discipline.BOULDER,
+    )
+    g_upd = next(u for u in updates if u.athlete_id == GARNBRET_ID)
+    # sigma_before on the update is the *inflated* RD the round started from.
+    assert g_upd.sigma_before >= pre_gap_sigma * 1.1, (
+        f"the round should see the inflated RD as its starting point; "
+        f"got σ_before={g_upd.sigma_before:.1f}"
+    )
+    assert g_upd.sigma_after < g_upd.sigma_before, (
+        f"the comeback round should shrink the inflated uncertainty; "
+        f"σ {g_upd.sigma_before:.1f} → {g_upd.sigma_after:.1f}"
     )
