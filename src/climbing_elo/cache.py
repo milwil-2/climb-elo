@@ -131,3 +131,40 @@ predictions_cache: TTLCache = TTLCache(ttl_seconds=3600)
 #: Call ``likely_roster_cache.clear()`` after a scrape for immediate freshness,
 #: or run ``uv run python scripts/clear_cache.py``.
 likely_roster_cache: TTLCache = TTLCache(ttl_seconds=3600)
+
+#: Server-side response cache for the read-heavy HTML landing/leaderboard/
+#: athletes pages (Issue #97).  TTL=10 min — short enough that a manual nudge is
+#: rarely needed, long enough to absorb traffic bursts.  Keys embed a *ratings
+#: fingerprint* (see :func:`ratings_fingerprint`) so a re-backfill that mutates
+#: μ/σ invalidates every entry automatically (mirrors how ``predictions_cache``
+#: folds μ/σ into its key).  Flushed alongside the others by
+#: ``scripts/clear_cache.py`` after the daily scrape.
+html_page_cache: TTLCache = TTLCache(ttl_seconds=600)
+
+
+def ratings_fingerprint(session) -> str:
+    """Cheap whole-table fingerprint of the ``ratings`` table.
+
+    Returns a stable string derived from aggregate stats (row count plus the
+    sum/max of μ, rounded to keep float noise out).  Any backfill that changes a
+    rating shifts the count or the μ-sum, so embedding this in a cache key makes
+    stale ratings impossible to serve — without paying for a full per-row scan
+    on every request.  This is the HTML-page analogue of the per-athlete μ/σ
+    fingerprint that ``predictions_cache`` folds into its key.
+
+    Computed with one aggregate query (no row materialisation).
+    """
+    # Imported lazily to keep the cache module dependency-free at import time
+    # and avoid any import-order coupling with the ORM models.
+    from sqlalchemy import func, select
+
+    from climbing_elo.models import Rating
+
+    count, mu_sum, mu_max = session.execute(
+        select(
+            func.count(Rating.id),
+            func.coalesce(func.sum(Rating.mu), 0.0),
+            func.coalesce(func.max(Rating.mu), 0.0),
+        )
+    ).one()
+    return f"{int(count)}:{round(float(mu_sum), 2)}:{round(float(mu_max), 4)}"
