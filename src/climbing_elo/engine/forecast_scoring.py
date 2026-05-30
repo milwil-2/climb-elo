@@ -174,6 +174,10 @@ def _upsert_score_row(
     is_backfill: bool,
     values: dict,
 ) -> EventForecastScore:
+    # ``engine_version`` is part of the unique key (#131) — it lives in
+    # ``values`` already, but the upsert conflict-target / lookup filter
+    # needs to reference it explicitly.
+    engine_version = values["engine_version"]
     if _is_postgres(session):
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -185,7 +189,12 @@ def _upsert_score_row(
         )
         update_cols = {key: stmt.excluded[key] for key in values.keys()}
         stmt = stmt.on_conflict_do_update(
-            index_elements=["event_id", "gender", "is_backfill"],
+            index_elements=[
+                "event_id",
+                "gender",
+                "is_backfill",
+                "engine_version",
+            ],
             set_=update_cols,
         )
         session.execute(stmt)
@@ -194,6 +203,7 @@ def _upsert_score_row(
                 EventForecastScore.event_id == event_id,
                 EventForecastScore.gender == gender,
                 EventForecastScore.is_backfill == is_backfill,
+                EventForecastScore.engine_version == engine_version,
             )
         ).scalar_one()
         return row
@@ -204,6 +214,7 @@ def _upsert_score_row(
             EventForecastScore.event_id == event_id,
             EventForecastScore.gender == gender,
             EventForecastScore.is_backfill == is_backfill,
+            EventForecastScore.engine_version == engine_version,
         )
     ).scalar_one_or_none()
     if existing is not None:
