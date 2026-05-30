@@ -57,6 +57,49 @@
 
   td.brk a{color:var(--ink-2);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--line-2);padding-bottom:1px;transition:border-color .15s,color .15s}
   td.brk a:hover{color:var(--ink);border-bottom-color:var(--ink)}
+
+  /* ── Prediction recap panel ─────────────────────────────────── */
+  .recap-wrap{margin-bottom:36px}
+  .recap-head{
+    display:flex;align-items:baseline;gap:14px;margin-bottom:14px;
+    padding-bottom:10px;border-bottom:1px solid var(--line);
+  }
+  .recap-head .ttl{font-size:18px;font-weight:600;letter-spacing:-0.01em}
+  .recap-head .sub{font-size:11px;color:var(--dim);letter-spacing:0.12em;text-transform:uppercase}
+  .recap-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media (max-width:760px){.recap-grid{grid-template-columns:1fr}}
+  .recap-card{padding:18px;border:1px solid var(--line);background:transparent}
+  .recap-card-head{
+    display:flex;align-items:baseline;justify-content:space-between;
+    padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid var(--line);
+  }
+  .recap-card-head .g{font-size:13px;font-weight:600;letter-spacing:-0.005em}
+  .recap-card-head .meta{font-size:10.5px;color:var(--dim);letter-spacing:0.1em;text-transform:uppercase}
+  table.recap-tbl{width:100%;border-collapse:collapse;font-size:13px}
+  table.recap-tbl th{
+    text-align:left;padding:6px 8px;font-size:10px;font-weight:500;color:var(--dim);
+    letter-spacing:0.12em;text-transform:uppercase;border-bottom:1px solid var(--line);
+  }
+  table.recap-tbl td{padding:8px;vertical-align:middle;border-bottom:1px solid var(--line)}
+  table.recap-tbl tbody tr:last-child td{border-bottom:none}
+  td.recap-mark{
+    width:24px;text-align:center;font-variant-numeric:tabular-nums;
+    color:var(--dim);font-size:13px;
+  }
+  td.recap-mark.hit{color:var(--ink);font-weight:600}
+  td.recap-name a{transition:color .15s}
+  td.recap-name a:hover{color:var(--dim)}
+  td.recap-pct,td.recap-rk{
+    text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2);
+    font-size:12.5px;width:64px;
+  }
+  td.recap-rk.top{color:var(--ink);font-weight:600}
+  .recap-summary{
+    margin-top:14px;padding-top:10px;border-top:1px solid var(--line);
+    font-size:11.5px;color:var(--dim);letter-spacing:0.04em;font-variant-numeric:tabular-nums;
+  }
+  .recap-summary strong{color:var(--ink-2);font-weight:500}
+  .recap-empty{font-size:12px;color:var(--dim);padding:8px 0}
 </style>
 {% endblock %}
 
@@ -78,6 +121,68 @@
   </section>
 
   <section class="ev-section">
+    {%- if forecast_panels -%}
+    <div class="recap-wrap reveal">
+      <div class="recap-head">
+        <span class="ttl">Predicted vs Actual</span>
+        <span class="sub">Locked-in forecast &middot; top 3</span>
+      </div>
+      <div class="recap-grid">
+        {%- for p in forecast_panels -%}
+        <div class="recap-card">
+          <div class="recap-card-head">
+            <span class="g">{{ p.gender_label }}</span>
+            <span class="meta">
+              {% if p.has_score %}n = {{ p.n_athletes }}{% else %}awaiting score{% endif %}
+            </span>
+          </div>
+          {%- if p.rows -%}
+          <table class="recap-tbl">
+            <thead><tr>
+              <th></th>
+              <th>Athlete</th>
+              <th style="text-align:right">Podium %</th>
+              <th style="text-align:right">Actual</th>
+            </tr></thead>
+            <tbody>
+              {%- for row in p.rows -%}
+              <tr>
+                <td class="recap-mark {% if row.marker == 'hit' %}hit{% endif %}">
+                  {%- if row.marker == 'hit' -%}&#10003;
+                  {%- elif row.marker == 'predicted_only' -%}&middot;
+                  {%- else -%}&#9675;
+                  {%- endif -%}
+                </td>
+                <td class="recap-name">
+                  <a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a>
+                </td>
+                <td class="recap-pct">
+                  {% if row.prob_podium is not none %}{{ '%.0f' % (row.prob_podium * 100) }}%{% else %}&mdash;{% endif %}
+                </td>
+                <td class="recap-rk{% if row.actual_rank and row.actual_rank <= 3 %} top{% endif %}">
+                  {% if row.actual_rank %}#{{ row.actual_rank }}{% else %}&mdash;{% endif %}
+                </td>
+              </tr>
+              {%- endfor -%}
+            </tbody>
+          </table>
+          {%- else -%}
+          <div class="recap-empty">No forecast rows.</div>
+          {%- endif -%}
+          {%- if p.has_score -%}
+          <div class="recap-summary">
+            Top-3 intersection:
+            <strong>{{ p.top3_intersection }}/3</strong>
+            &middot; Podium Brier:
+            <strong>{{ '%.3f' % p.brier_podium }}</strong>
+          </div>
+          {%- endif -%}
+        </div>
+        {%- endfor -%}
+      </div>
+    </div>
+    {%- endif -%}
+
     {%- if not rounds -%}
     <div class="card" style="padding:48px;text-align:center;color:var(--dim)">
       No rounds recorded for this event yet.

@@ -124,11 +124,181 @@
     font-family:'Manrope',sans-serif;font-size:12px;
     background:var(--paper-2);padding:2px 6px;border:1px solid var(--line);
   }
+
+  /* ── Recap-mode panels (reused on /predictions/{event_id}) ────────── */
+  .recap-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:36px}
+  @media (max-width:760px){.recap-grid{grid-template-columns:1fr}}
+  .recap-card{padding:22px;border:1px solid var(--line);background:transparent}
+  .recap-card-head{
+    display:flex;align-items:baseline;justify-content:space-between;
+    padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid var(--line);
+  }
+  .recap-card-head .g{font-size:15px;font-weight:600;letter-spacing:-0.005em}
+  .recap-card-head .meta{font-size:10.5px;color:var(--dim);letter-spacing:0.12em;text-transform:uppercase}
+  table.recap-tbl{width:100%;border-collapse:collapse;font-size:13px}
+  table.recap-tbl th{
+    text-align:left;padding:8px 8px;font-size:10.5px;font-weight:500;color:var(--dim);
+    letter-spacing:0.12em;text-transform:uppercase;border-bottom:1px solid var(--line);
+  }
+  table.recap-tbl td{padding:10px 8px;vertical-align:middle;border-bottom:1px solid var(--line)}
+  table.recap-tbl tbody tr:last-child td{border-bottom:none}
+  td.recap-mark{
+    width:24px;text-align:center;font-variant-numeric:tabular-nums;
+    color:var(--dim);font-size:13px;
+  }
+  td.recap-mark.hit{color:var(--ink);font-weight:600}
+  td.recap-name a{transition:color .15s}
+  td.recap-name a:hover{color:var(--dim)}
+  td.recap-pct,td.recap-rk{
+    text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2);font-size:12.5px;
+  }
+  td.recap-rk.top{color:var(--ink);font-weight:600}
+  .recap-summary{
+    margin-top:16px;padding-top:12px;border-top:1px solid var(--line);
+    font-size:12px;color:var(--dim);letter-spacing:0.04em;font-variant-numeric:tabular-nums;
+  }
+  .recap-summary strong{color:var(--ink);font-weight:600}
+  .recap-empty{font-size:12.5px;color:var(--dim);padding:8px 0}
+
+  /* ── Forward-mode (per-event projection card) ─────────────────────── */
+  .fwd-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:36px}
+  @media (max-width:760px){.fwd-grid{grid-template-columns:1fr}}
+  .fwd-card{padding:22px;border:1px solid var(--line);background:transparent}
+  .fwd-card-head{
+    display:flex;align-items:baseline;justify-content:space-between;
+    padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid var(--line);
+  }
+  .fwd-card-head .g{font-size:15px;font-weight:600;letter-spacing:-0.005em}
+  .fwd-card-head .meta{font-size:10.5px;color:var(--dim);letter-spacing:0.12em;text-transform:uppercase}
+  .fwd-row{
+    display:grid;grid-template-columns:28px 1fr auto auto;gap:10px;align-items:baseline;
+    padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;
+  }
+  .fwd-row:last-child{border-bottom:none}
+  .fwd-row .rk{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;font-weight:600}
+  .fwd-row .rk.top{color:var(--ink)}
+  .fwd-row .pct{font-size:12.5px;color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+  .fwd-row .lbl{font-size:10px;color:var(--dim);letter-spacing:0.1em;text-transform:uppercase}
 </style>
 {% endblock %}
 
 {% block body %}
 <main>
+  {%- if mode == 'recap' -%}
+  <section class="page-head">
+    <div class="crumbs reveal">
+      <a href="/">Home</a> /
+      <a href="/predictions">Predictions</a> /
+      <a href="/events/{{ event.id }}">{{ event.name }}</a>
+    </div>
+    <h1 class="reveal d2">{{ event.name }} <em>recap</em>.</h1>
+    <p class="lead reveal d3">
+      The forecast was locked in before the event started. Below: predicted
+      top-3 versus the actual finishers, plus the per-stage Brier score.
+    </p>
+  </section>
+
+  <section class="pred-section">
+    <div class="section-label reveal"><span class="dash"></span>Predicted vs actual</div>
+    <div class="recap-grid reveal d2">
+      {%- for p in recap_panels -%}
+      <div class="recap-card">
+        <div class="recap-card-head">
+          <span class="g">{{ p.gender_label }}</span>
+          <span class="meta">
+            {% if p.has_score %}n = {{ p.n_athletes }}{% else %}awaiting score{% endif %}
+          </span>
+        </div>
+        {%- if p.rows -%}
+        <table class="recap-tbl">
+          <thead><tr>
+            <th></th>
+            <th>Athlete</th>
+            <th style="text-align:right">Podium %</th>
+            <th style="text-align:right">Actual</th>
+          </tr></thead>
+          <tbody>
+            {%- for row in p.rows -%}
+            <tr>
+              <td class="recap-mark {% if row.marker == 'hit' %}hit{% endif %}">
+                {%- if row.marker == 'hit' -%}&#10003;
+                {%- elif row.marker == 'predicted_only' -%}&middot;
+                {%- else -%}&#9675;
+                {%- endif -%}
+              </td>
+              <td class="recap-name">
+                <a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a>
+              </td>
+              <td class="recap-pct">
+                {% if row.prob_podium is not none %}{{ '%.0f' % (row.prob_podium * 100) }}%{% else %}&mdash;{% endif %}
+              </td>
+              <td class="recap-rk{% if row.actual_rank and row.actual_rank <= 3 %} top{% endif %}">
+                {% if row.actual_rank %}#{{ row.actual_rank }}{% else %}&mdash;{% endif %}
+              </td>
+            </tr>
+            {%- endfor -%}
+          </tbody>
+        </table>
+        {%- else -%}
+        <div class="recap-empty">No forecast rows.</div>
+        {%- endif -%}
+        {%- if p.has_score -%}
+        <div class="recap-summary">
+          Top-3 intersection:
+          <strong>{{ p.top3_intersection }}/3</strong>
+          &middot; Podium Brier:
+          <strong>{{ '%.3f' % p.brier_podium }}</strong>
+        </div>
+        {%- endif -%}
+      </div>
+      {%- endfor -%}
+    </div>
+  </section>
+  </main>
+  {%- elif mode == 'forward' -%}
+  <section class="page-head">
+    <div class="crumbs reveal">
+      <a href="/">Home</a> /
+      <a href="/predictions">Predictions</a> /
+      <a href="/events/{{ event.id }}">{{ event.name }}</a>
+    </div>
+    <h1 class="reveal d2">{{ event.name }} <em>forward projection</em>.</h1>
+    <p class="lead reveal d3">
+      Monte Carlo over the current rating distribution for {{ event.discipline_label }}.
+      Cards below show predicted top-8 per gender.
+    </p>
+  </section>
+
+  <section class="pred-section">
+    <div class="section-label reveal"><span class="dash"></span>Projected top finishers</div>
+    {%- if forward_genders -%}
+    <div class="fwd-grid reveal d2">
+      {%- for gp in forward_genders -%}
+      <div class="fwd-card">
+        <div class="fwd-card-head">
+          <span class="g">{{ gp.gender_label }}</span>
+          <span class="meta">{{ gp.total_athletes }} athletes</span>
+        </div>
+        {%- for row in gp.top_rows -%}
+        <div class="fwd-row">
+          <span class="rk{% if loop.index == 1 %} top{% endif %}">{{ '%02d' % loop.index }}</span>
+          <span class="nm"><a href="/athletes/{{ row.athlete_id }}">{{ row.name }}</a></span>
+          <span class="pct">{{ row.win }}%</span>
+          <span class="lbl">win</span>
+        </div>
+        {%- endfor -%}
+      </div>
+      {%- endfor -%}
+    </div>
+    {%- else -%}
+    <div class="empty-state reveal">
+      <h3>No projection available</h3>
+      <p>No athletes are registered yet and the likely-roster fallback returned no candidates.</p>
+    </div>
+    {%- endif -%}
+  </section>
+  </main>
+  {%- else -%}
   <section class="page-head">
     <div class="crumbs reveal"><a href="/">Home</a> / Predictions</div>
     <h1 class="reveal d2">Upcoming events,<br/><em>forecast</em>.</h1>
@@ -234,5 +404,6 @@
     {% endfor %}
     {% endif %}
   </section>
-</main>
+  </main>
+  {%- endif -%}
 {% endblock %}
