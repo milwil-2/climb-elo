@@ -117,6 +117,14 @@ jobs:
         run: uv run python scripts/compute_combined_ratings.py
 
       # ----------------------------------------------------------------------
+      # Issue #118: real failing guard over the freshly-computed data + ratings.
+      # Fails the job on recoverable parse failures (#115 class), σ-collapse
+      # (#95), or μ-p95 drifting out of the calibrated band. Known-deferred
+      # states (e.g. #117 scale drift) surface as non-failing warnings.
+      - name: Data + rating health guard
+        run: uv run python scripts/health_data_guard.py
+
+      # ----------------------------------------------------------------------
       # Issue #93: incrementally enrich any newly-discovered athletes with their
       # IFSC photo + body metrics. --only-missing makes this cheap in steady
       # state (skips rows whose photo_url is already set). The one-time backfill
