@@ -430,6 +430,8 @@
 
 {% block scripts %}
 {%- if rating_history_by_discipline -%}
+<!-- Chart.js loaded only on pages that render a chart (not in base.html). -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
 (function() {
   var canvas = document.getElementById('athlete-chart');
