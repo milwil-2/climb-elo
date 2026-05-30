@@ -371,10 +371,14 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
     ss(base_url + f"/athletes/{POPULAR_ATHLETE}", f"athlete_{POPULAR_ATHLETE}")
 
     # 10. Breakdown page
+    # Use strings rendered unconditionally by templates/breakdown.html (heading
+    # + lead copy). The previous "Opponent"/"Expected" strings live inside the
+    # `{% for rnd in rounds %}` loop, so they vanish when the chosen athlete +
+    # event lose their `contributing_pairs` rows after an engine re-backfill.
     assert_route(
         f"GET /breakdown/{BREAKDOWN_ATHLETE}/{BREAKDOWN_EVENT} — pairwise pairs",
         f"/breakdown/{BREAKDOWN_ATHLETE}/{BREAKDOWN_EVENT}",
-        must_contain=["Opponent", "Expected"],
+        must_contain=["Rating <em>breakdown</em>", "Pairwise contests for"],
         base_url=base_url,
     )
     ss(

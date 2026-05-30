@@ -165,6 +165,31 @@ class ProgressionResult:
             the top 3 of the **final** round (win + 2nd + 3rd combined).
         final_win_prob: Fraction of simulations where the athlete finished 1st
             in the final round.
+        prob_reach_semi: Cumulative probability the athlete is alive entering
+            the semifinal round.  If the event format has no semifinal round
+            (single-round / Continental-final format), this is left at the
+            default ``1.0`` — the convention being that everyone who started is
+            already "in the final".
+        prob_reach_final: Cumulative probability the athlete is alive entering
+            the final round.  If the event format has no separate final round,
+            this mirrors ``prob_reach_semi``.  Default ``1.0`` (degenerate /
+            single-round case).
+        prob_qualify: Probability the athlete makes the start list.  The Monte
+            Carlo sim does NOT touch this value — it is plumbed through by the
+            caller (e.g. ``snapshot_forecast`` in ``engine/forecasting.py``)
+            based on roster-source confidence.  Defaults to ``1.0`` (confirmed
+            roster).
+        expected_rank: Mean finishing rank across all simulations (#122). For
+            athletes that reached the final, contributes their 1-indexed rank
+            in the final round.  For athletes eliminated before the final,
+            contributes the sentinel value ``n + 1`` (worse than last in the
+            final, without leaking finishing-order info from the round in
+            which they were eliminated).  For single-round formats, this is
+            simply the mean rank in the only round.
+
+    Monotonicity contract (by construction):
+        ``1.0 >= prob_qualify >= prob_reach_semi >= prob_reach_final
+        >= final_podium_prob >= final_win_prob``.
     """
 
     athlete_id: int
@@ -173,6 +198,15 @@ class ProgressionResult:
     advance_probs: dict[str, float] = field(default_factory=dict)
     final_podium_prob: float = 0.0
     final_win_prob: float = 0.0
+    # New cumulative fields (additive — kept at end for back-compat).
+    prob_reach_semi: float = 1.0
+    prob_reach_final: float = 1.0
+    prob_qualify: float = 1.0
+    # Monte Carlo mean finishing rank (#122).  Always populated by
+    # ``simulate_event_progression`` — the ``1.0`` default exists only so
+    # callers that construct ``ProgressionResult`` manually (e.g. tests, mocks)
+    # don't need to supply it.
+    expected_rank: float = 1.0
 
 
 def simulate_event_progression(
@@ -195,6 +229,20 @@ def simulate_event_progression(
     athlete reached that round.  The first round probability is always 1.0.
     Final-round podium/win probabilities are the fraction of simulations in
     which the athlete earned that outcome **given that they reached the final**.
+
+    The returned :class:`ProgressionResult` also exposes cumulative
+    ``prob_reach_semi`` and ``prob_reach_final`` (alias views of
+    ``advance_probs["semifinal"]`` / ``advance_probs["final"]`` when those
+    rounds exist; ``1.0`` otherwise — see ``ProgressionResult`` for the
+    monotonicity contract).  ``prob_qualify`` is left at its default ``1.0``
+    here — it's intended to be set by the caller (forecasting layer) based on
+    roster-source confidence.
+
+    ``expected_rank`` (#122) is the per-athlete Monte Carlo mean finishing
+    rank.  Athletes that reached the final contribute their 1-indexed rank in
+    the final round; athletes eliminated before the final contribute the
+    sentinel value ``n_athletes + 1``.  In a single-round format (no separate
+    final), it reduces to the mean rank in that round.
 
     Args:
         athletes: Athletes to simulate.  Must not exceed MAX_ATHLETES_PER_PROJECTION.
@@ -253,6 +301,17 @@ def simulate_event_progression(
     # Podium/win counts are only tallied for the final round.
     final_podium = np.zeros(n, dtype=np.int64)
     final_win = np.zeros(n, dtype=np.int64)
+    # Per-athlete finishing-rank accumulator (#122). For each sim:
+    #   - athletes that reach the final round contribute their 1-indexed rank
+    #     in that round;
+    #   - athletes eliminated before the final contribute the sentinel rank
+    #     ``n + 1`` (worse than last in the final).  This avoids leaking
+    #     finishing-order info from the round in which they were eliminated
+    #     while keeping ``expected_rank`` strictly monotone in advancement.
+    # Stored as float64 because the per-sim sum can be large; the final mean
+    # is in [1, n + 1].
+    final_rank_sum = np.zeros(n, dtype=np.float64)
+    eliminated_rank_sentinel = float(n + 1)
 
     # All athletes start in round 0.
     reached[:, 0] = n_simulations
@@ -260,6 +319,9 @@ def simulate_event_progression(
     for sim in range(n_simulations):
         # active_indices: indices (into the full athletes array) of those currently competing
         active = np.arange(n, dtype=np.int64)
+        # Track who was eliminated this sim so we can sentinel-fill at the end.
+        # Start with everyone "active"; mark False as athletes drop out.
+        alive_this_sim = np.ones(n, dtype=bool)
 
         for round_idx, rc in enumerate(rounds):
             n_active = len(active)
@@ -274,12 +336,16 @@ def simulate_event_progression(
                 k = min(rc.advance_count, n_active)
                 # argsort descending — take first k positions
                 sorted_local = np.argsort(-perf)[:k]
+                eliminated = np.setdiff1d(
+                    active, active[sorted_local], assume_unique=True
+                )
+                alive_this_sim[eliminated] = False
                 active = active[sorted_local]
                 # Record that these athletes reached the next round.
                 if round_idx + 1 < len(rounds):
                     reached[active, round_idx + 1] += 1
             else:
-                # Final round: tally podium outcomes.
+                # Final round: tally podium outcomes + record per-athlete rank.
                 sorted_local = np.argsort(-perf)  # best to worst
                 # Top-1
                 final_win[active[sorted_local[0]]] += 1
@@ -287,6 +353,30 @@ def simulate_event_progression(
                 podium_k = min(3, n_active)
                 for pos in range(podium_k):
                     final_podium[active[sorted_local[pos]]] += 1
+                # Per-athlete finishing rank: 1-indexed in the final round.
+                # active[sorted_local[pos]] finished at rank (pos + 1).
+                final_rank_sum[active[sorted_local]] += np.arange(
+                    1, n_active + 1, dtype=np.float64
+                )
+
+        # Sentinel-fill eliminated athletes for this sim.
+        # (Athletes that reached the final already got their actual rank above.)
+        if alive_this_sim.sum() < n:
+            final_rank_sum[~alive_this_sim] += eliminated_rank_sentinel
+
+    # Map round_type → round_idx so we can pull the cumulative "alive entering
+    # this round" counts (which are exactly what reached[:, round_idx] holds).
+    # If a round_type is absent from the format the cumulative prob falls back
+    # to 1.0 — the degenerate-format convention documented on
+    # ``ProgressionResult``.
+    round_idx_by_type: dict[str, int] = {}
+    for round_idx, rc in enumerate(rounds):
+        # If a format repeats a round_type, take the first occurrence so the
+        # cumulative prob aligns with the earliest stage that bears that name.
+        round_idx_by_type.setdefault(rc.round_type, round_idx)
+
+    semi_idx = round_idx_by_type.get("semifinal")
+    final_idx = round_idx_by_type.get("final")
 
     # Build results.
     results: list[ProgressionResult] = []
@@ -294,6 +384,21 @@ def simulate_event_progression(
         adv: dict[str, float] = {}
         for round_idx, rc in enumerate(rounds):
             adv[rc.round_type] = round(float(reached[i, round_idx]) / n_simulations, 4)
+
+        # Cumulative reach-probabilities are pulled straight from the alive
+        # counter, then divided by n_simulations. When the format lacks a
+        # round, leave the field at its default 1.0 — i.e. "trivially reached".
+        if semi_idx is not None:
+            prob_reach_semi = round(float(reached[i, semi_idx]) / n_simulations, 4)
+        else:
+            prob_reach_semi = 1.0
+
+        if final_idx is not None:
+            prob_reach_final = round(float(reached[i, final_idx]) / n_simulations, 4)
+        else:
+            # No separate final → mirror semi (which itself defaulted to 1.0 if
+            # neither stage exists).
+            prob_reach_final = prob_reach_semi
 
         results.append(
             ProgressionResult(
@@ -303,6 +408,10 @@ def simulate_event_progression(
                 advance_probs=adv,
                 final_podium_prob=round(float(final_podium[i]) / n_simulations, 4),
                 final_win_prob=round(float(final_win[i]) / n_simulations, 4),
+                prob_reach_semi=prob_reach_semi,
+                prob_reach_final=prob_reach_final,
+                # prob_qualify is plumbed by the caller; sim never sets it.
+                expected_rank=round(float(final_rank_sum[i]) / n_simulations, 2),
             )
         )
 

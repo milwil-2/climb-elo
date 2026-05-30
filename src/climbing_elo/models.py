@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import enum
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
+    DateTime,
     Enum,
     Float,
     ForeignKey,
@@ -17,6 +18,15 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+def _utcnow() -> datetime:
+    """Tz-aware UTC ``now()`` for SQLAlchemy ``default=`` factories.
+
+    ``datetime.utcnow`` is deprecated in 3.12 and returns a naive datetime.
+    Forecast snapshot timestamps need to round-trip to Postgres as UTC.
+    """
+    return datetime.now(timezone.utc)
 
 
 def _enum_values(cls):
@@ -217,4 +227,153 @@ class RatingHistory(Base):
             name="uq_rating_history_athlete_round_kind",
         ),
         CheckConstraint("kind IN ('pair', 'tpb')", name="rating_history_kind_check"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Persistent forecasts (joyful-swinging-map plan)
+# ---------------------------------------------------------------------------
+#
+# Two additive tables that freeze a per-event, per-athlete Monte Carlo
+# prediction snapshot (``EventForecast``) and the post-event accuracy scoring
+# (``EventForecastScore``) against actual results. Mirrors the
+# ``uq_rating_history_athlete_round_kind`` idempotency pattern above:
+# upserts are keyed on the unique constraint so daily re-snapshots in the
+# 7-day pre-event window overwrite cleanly, and a separate ``is_backfill``
+# row co-exists for retro-replay rows.
+#
+# ``engine_version`` is a stable identifier produced by
+# :func:`climbing_elo.engine.elo.engine_version_tag` — sha256-12 of the
+# ``EloConfig`` field tuple plus the short git SHA. The version is part of
+# the unique constraint, so a re-snapshot at a new engine version inserts a
+# fresh row alongside the prior-version one rather than overwriting it.
+
+
+class EventForecast(Base):
+    """Frozen Monte Carlo forecast for one (event, gender, athlete, is_backfill).
+
+    Daily snapshot job upserts on the unique constraint so the most-recent
+    pre-start row is the canonical "locked" forecast for scoring. A separate
+    row with ``is_backfill=True`` may co-exist for retro-replay rows.
+    """
+
+    __tablename__ = "event_forecasts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("events.id"), nullable=False, index=True
+    )
+    gender: Mapped[Gender] = mapped_column(
+        Enum(Gender, values_callable=_enum_values), nullable=False
+    )
+    athlete_id: Mapped[int] = mapped_column(
+        ForeignKey("athletes.id"), nullable=False, index=True
+    )
+
+    # Cumulative stage probabilities (all in [0, 1]).
+    # Monotone non-increasing for a single athlete:
+    # prob_qualify >= prob_reach_semi >= prob_reach_final >= prob_podium >= prob_win
+    prob_qualify: Mapped[float] = mapped_column(Float, nullable=False)
+    prob_reach_semi: Mapped[float] = mapped_column(Float, nullable=False)
+    prob_reach_final: Mapped[float] = mapped_column(Float, nullable=False)
+    prob_podium: Mapped[float] = mapped_column(Float, nullable=False)
+    prob_win: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_rank: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Snapshot of the rating used as the sim input — kept for reproducibility
+    # so we can re-run a forecast offline without consulting RatingHistory.
+    mu_at_forecast: Mapped[float] = mapped_column(Float, nullable=False)
+    sigma_at_forecast: Mapped[float] = mapped_column(Float, nullable=False)
+    n_simulations: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # 'confirmed' = scraped registration list; 'likely' = engine.likely_roster
+    # fallback; 'backfill' = retro-replay using actual competitors.
+    roster_source: Mapped[str] = mapped_column(String, nullable=False)
+
+    is_backfill: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Stable short identifier of the engine version that produced this row.
+    # See ``climbing_elo.engine.elo.engine_version_tag``. Indexed because the
+    # ``/model-performance`` aggregation pages filter on it.
+    engine_version: Mapped[str] = mapped_column(String, nullable=False, index=True)
+
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    event: Mapped[Event] = relationship()
+    athlete: Mapped[Athlete] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint(
+            "event_id",
+            "gender",
+            "athlete_id",
+            "is_backfill",
+            "engine_version",
+            name="uq_event_forecast_event_gender_athlete_backfill_version",
+        ),
+    )
+
+
+class EventForecastScore(Base):
+    """Post-event scoring of a frozen forecast against actual results.
+
+    One row per (event, gender, is_backfill). Aggregates Brier / log-loss
+    across the per-stage cumulative probabilities, plus top-K intersection
+    and Spearman rank correlation of predicted vs actual finishing order.
+    """
+
+    __tablename__ = "event_forecast_scores"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("events.id"), nullable=False, index=True
+    )
+    gender: Mapped[Gender] = mapped_column(
+        Enum(Gender, values_callable=_enum_values), nullable=False
+    )
+    is_backfill: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    engine_version: Mapped[str] = mapped_column(String, nullable=False)
+
+    n_athletes: Mapped[int] = mapped_column(Integer, nullable=False)
+    n_simulations: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Mean ``(p - y)^2`` across athletes for each cumulative stage.
+    brier_semi: Mapped[float] = mapped_column(Float, nullable=False)
+    brier_final: Mapped[float] = mapped_column(Float, nullable=False)
+    brier_podium: Mapped[float] = mapped_column(Float, nullable=False)
+    brier_win: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Mean cross-entropy across athletes for each cumulative stage; clipped
+    # at ε=1e-9 inside ``score_forecast`` to avoid ``log(0)``.
+    logloss_semi: Mapped[float] = mapped_column(Float, nullable=False)
+    logloss_final: Mapped[float] = mapped_column(Float, nullable=False)
+    logloss_podium: Mapped[float] = mapped_column(Float, nullable=False)
+    logloss_win: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Size of predicted top-K ∩ actual top-K. 0–3 and 0–8 respectively.
+    top3_intersection: Mapped[int] = mapped_column(Integer, nullable=False)
+    top8_intersection: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Spearman rank correlation of predicted vs actual finishing rank.
+    # Nullable because it is undefined for a 1-athlete field or for
+    # all-tied predictions (zero variance).
+    spearman_rank: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    event: Mapped[Event] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint(
+            "event_id",
+            "gender",
+            "is_backfill",
+            "engine_version",
+            name="uq_event_forecast_score_event_gender_backfill_version",
+        ),
     )
