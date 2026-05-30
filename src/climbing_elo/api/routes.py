@@ -2688,9 +2688,7 @@ def _aggregate_model_performance(
         # Speed excluded from the default aggregate — the projection layer's
         # finishing-order MC is a poor fit for Speed's bracket format. See
         # #132 for the bracket-native Speed forecast follow-up.
-        stmt = stmt.where(
-            Event.discipline.in_([Discipline.LEAD, Discipline.BOULDER])
-        )
+        stmt = stmt.where(Event.discipline.in_([Discipline.LEAD, Discipline.BOULDER]))
     if gender is not None:
         stmt = stmt.where(EventForecastScore.gender == gender)
 
