@@ -13,14 +13,22 @@ from climbing_elo.api.limiter import limiter
 from climbing_elo.api.routes import router as html_router
 from climbing_elo.api.v1_routes import router as v1_router
 from climbing_elo.api.sse import router as sse_router
-from climbing_elo.database import init_db
+from climbing_elo.database import _database_url, init_db
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
 def create_app() -> FastAPI:
-    init_db()
+    # ``init_db()`` runs ``Base.metadata.create_all`` — a schema-reflection +
+    # DDL round-trip to the database. On Postgres (prod / local Supabase) the
+    # tables already exist and are managed by the data pipeline, so this is pure
+    # cold-start latency against a cold cross-region pooler with no benefit. Skip
+    # it for Postgres and keep it only for SQLite (the in-memory/throwaway DBs the
+    # test suite and local file backends rely on to materialise the schema).
+    url = _database_url()
+    if url is None or url.startswith("sqlite"):
+        init_db()
 
     application = FastAPI(
         title="Climbing ELO",
