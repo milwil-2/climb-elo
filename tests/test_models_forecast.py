@@ -1,13 +1,18 @@
 """Persistent forecast model schema + engine version stamp.
 
-Covers the additive plan from ``.claude/plans/joyful-swinging-map.md``:
+Covers the additive plan from ``.claude/plans/joyful-swinging-map.md`` plus
+the #124 follow-up that folds ``engine_version`` into the EventForecast
+unique key:
 
 * ``EventForecast`` and ``EventForecastScore`` rows persist and round-trip
   through SQLAlchemy.
-* Their UniqueConstraints (``uq_event_forecast_event_gender_athlete_backfill``
-  and ``uq_event_forecast_score_event_gender_backfill``) actually block
-  duplicate inserts — the idempotency contract the snapshot/score jobs rely
-  on for upsert behaviour.
+* The ``EventForecast`` unique constraint
+  (``uq_event_forecast_event_gender_athlete_backfill_version``) blocks
+  duplicates only when every key column matches — including
+  ``engine_version`` — so prior-engine snapshots survive a version bump.
+* ``EventForecastScore`` 's
+  ``uq_event_forecast_score_event_gender_backfill`` still blocks duplicate
+  inserts — the idempotency contract the score job relies on.
 * ``engine_version_tag()`` returns a deterministic ``<12hex>-<sha>`` string
   whose shape is stable across calls within a process.
 """
@@ -94,16 +99,98 @@ def test_event_forecast_unique_constraint_blocks_duplicates(
     db_session.add(EventForecast(**base_kwargs))
     db_session.flush()
 
+    # All five key columns match (including engine_version) -> blocked.
     db_session.add(EventForecast(**base_kwargs))
     with pytest.raises(IntegrityError):
         db_session.flush()
     db_session.rollback()
 
-    # A backfill row with the SAME (event, gender, athlete) is allowed —
-    # the unique key includes ``is_backfill`` so live + retro can coexist.
+    # A backfill row with the SAME (event, gender, athlete, engine_version)
+    # is allowed -- ``is_backfill`` is part of the key so live + retro
+    # coexist.
     backfill_kwargs = {**base_kwargs, "is_backfill": True}
     db_session.add(EventForecast(**backfill_kwargs))
     db_session.flush()
+
+
+def test_event_forecast_allows_different_engine_versions(
+    db_session: Session, sample_event: Event
+) -> None:
+    """#124: prior-engine snapshots must survive a version bump.
+
+    Two rows that match on (event, gender, athlete, is_backfill) but differ
+    only in engine_version should both insert successfully.
+    """
+    athlete = _make_athlete(db_session)
+    base_kwargs = dict(
+        event_id=sample_event.id,
+        gender=Gender.M,
+        athlete_id=athlete.id,
+        prob_qualify=1.0,
+        prob_reach_semi=0.5,
+        prob_reach_final=0.3,
+        prob_podium=0.1,
+        prob_win=0.05,
+        expected_rank=8.0,
+        mu_at_forecast=1700.0,
+        sigma_at_forecast=150.0,
+        n_simulations=10_000,
+        roster_source="likely",
+        is_backfill=False,
+    )
+
+    db_session.add(EventForecast(**base_kwargs, engine_version="aaaaaaaaaaaa-1234567"))
+    db_session.flush()
+    db_session.add(EventForecast(**base_kwargs, engine_version="bbbbbbbbbbbb-1234567"))
+    db_session.flush()  # must not raise
+
+    persisted = (
+        db_session.query(EventForecast)
+        .filter_by(
+            event_id=sample_event.id,
+            gender=Gender.M,
+            athlete_id=athlete.id,
+            is_backfill=False,
+        )
+        .all()
+    )
+    assert len(persisted) == 2
+    assert {row.engine_version for row in persisted} == {
+        "aaaaaaaaaaaa-1234567",
+        "bbbbbbbbbbbb-1234567",
+    }
+
+
+def test_event_forecast_blocks_full_key_duplicates(
+    db_session: Session, sample_event: Event
+) -> None:
+    """#124: rows that match on all five key columns (including
+    engine_version) still raise IntegrityError."""
+    athlete = _make_athlete(db_session)
+    kwargs = dict(
+        event_id=sample_event.id,
+        gender=Gender.M,
+        athlete_id=athlete.id,
+        prob_qualify=1.0,
+        prob_reach_semi=0.5,
+        prob_reach_final=0.3,
+        prob_podium=0.1,
+        prob_win=0.05,
+        expected_rank=8.0,
+        mu_at_forecast=1700.0,
+        sigma_at_forecast=150.0,
+        n_simulations=10_000,
+        roster_source="likely",
+        is_backfill=False,
+        engine_version="aaaaaaaaaaaa-1234567",
+    )
+    db_session.add(EventForecast(**kwargs))
+    db_session.flush()
+
+    db_session.add(EventForecast(**kwargs))
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
 
 
 def test_event_forecast_score_persists_and_blocks_duplicates(
