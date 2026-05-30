@@ -7,11 +7,13 @@ brief edge TTL with ``stale-while-revalidate`` is safe: the edge serves
 instantly and refreshes in the background.
 
 The same responses also receive ``Vercel-CDN-Cache-Control`` (Issue #101).
-Vercel's edge ignores plain ``Cache-Control`` in production — it overrides it
-with its own ``public, max-age=0, must-revalidate`` and ``x-vercel-cache`` stays
-``MISS``. ``Vercel-CDN-Cache-Control`` is the explicit CDN directive Vercel
-honors for edge caching, independent of ``Cache-Control``, so we emit both: the
-CDN header drives the edge, the plain header still steers browsers.
+Vercel's edge *does* honor our plain ``Cache-Control: public, s-maxage=…`` on
+GET 200s — a repeat GET to the same full URL returns ``x-vercel-cache: HIT``
+(the earlier "always MISS" finding in #101/#112 was a probing artifact: ``HEAD``
+requests 405 here because routes are GET-only, and each distinct URL's first
+hit is necessarily a MISS that populates the cache). We still emit the explicit
+``Vercel-CDN-Cache-Control`` belt-and-suspenders so the CDN policy is
+unambiguous and decoupled from what browsers see via ``Cache-Control``.
 
 Implemented as a **pure-ASGI** middleware rather than ``BaseHTTPMiddleware`` so
 it never buffers the response body — important for the SSE streaming endpoint
@@ -35,13 +37,23 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 #: Shared-cache directive. ``s-maxage`` targets the CDN/edge specifically
 #: (browsers use the implicit default); ``stale-while-revalidate`` lets the
 #: edge serve a slightly-stale copy instantly while it refreshes in the
-#: background. 5 min fresh / 10 min stale-grace is well within the daily
-#: data-refresh cadence.
-DEFAULT_CACHE_CONTROL = "public, s-maxage=300, stale-while-revalidate=600"
+#: background.
+#:
+#: Ratings only change once a day (the 04:00 UTC scrape) and the site is
+#: low-traffic, so the dominant cost is *cold* edge misses re-invoking (and
+#: cold-starting) the Python function. We keep a modest 10-min fresh window but
+#: a very generous 24-h ``stale-while-revalidate``: a returning visitor past the
+#: fresh window is served the last-good copy *instantly* from the edge while the
+#: function revalidates in the background — they never wait on a cold start.
+#: Correctness holds because the in-function ``html_page_cache`` keys on a
+#: ratings fingerprint, so a background revalidation after a scrape recomputes
+#: fresh data. Max user-visible staleness is bounded by the 10-min fresh window,
+#: then self-healing via SWR.
+DEFAULT_CACHE_CONTROL = "public, s-maxage=600, stale-while-revalidate=86400"
 
-#: Vercel-specific CDN directive. Vercel's edge honors this header for edge
-#: caching even though it overrides plain ``Cache-Control`` in production
-#: (Issue #101). Same policy value as ``DEFAULT_CACHE_CONTROL`` — the edge TTL
+#: Vercel-specific CDN directive (Issue #101) — the explicit edge-cache policy,
+#: emitted alongside plain ``Cache-Control`` so the CDN behaviour is
+#: unambiguous. Same policy value as ``DEFAULT_CACHE_CONTROL`` — the edge TTL
 #: and stale-grace are identical; only the header name differs.
 VERCEL_CDN_CACHE_CONTROL_HEADER = "vercel-cdn-cache-control"
 
@@ -68,9 +80,9 @@ class CacheControlMiddleware:
             if message["type"] == "http.response.start" and message["status"] == 200:
                 headers = MutableHeaders(raw=message["headers"])
                 headers.setdefault("cache-control", self.header_value)
-                # Vercel's edge ignores plain Cache-Control; this is the header
-                # it actually honors for CDN caching (Issue #101). Same policy
-                # value, so a route that sets its own still wins via setdefault.
+                # Explicit CDN directive emitted alongside Cache-Control so the
+                # edge policy is unambiguous (Issue #101). Same policy value, so
+                # a route that sets its own still wins via setdefault.
                 headers.setdefault(VERCEL_CDN_CACHE_CONTROL_HEADER, self.header_value)
             await send(message)
 
