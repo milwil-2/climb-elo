@@ -11,8 +11,9 @@ unique key:
   duplicates only when every key column matches — including
   ``engine_version`` — so prior-engine snapshots survive a version bump.
 * ``EventForecastScore`` 's
-  ``uq_event_forecast_score_event_gender_backfill`` still blocks duplicate
-  inserts — the idempotency contract the score job relies on.
+  ``uq_event_forecast_score_event_gender_backfill_version`` blocks duplicates
+  only when every key column matches — including ``engine_version`` (#131) —
+  so prior-engine score rows survive a version bump.
 * ``engine_version_tag()`` returns a deterministic ``<12hex>-<sha>`` string
   whose shape is stable across calls within a process.
 """
@@ -223,7 +224,93 @@ def test_event_forecast_score_persists_and_blocks_duplicates(
     assert fetched.spearman_rank == pytest.approx(0.78)
     assert fetched.computed_at is not None
 
+    # All four key columns match (including engine_version) -> blocked.
     db_session.add(EventForecastScore(**score_kwargs))
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
+
+
+def test_event_forecast_score_allows_different_engine_versions(
+    db_session: Session, sample_event: Event
+) -> None:
+    """#131: prior-engine score rows must survive a version bump.
+
+    Two rows that match on (event, gender, is_backfill) but differ only in
+    engine_version should both insert successfully.
+    """
+    base_kwargs = dict(
+        event_id=sample_event.id,
+        gender=Gender.M,
+        is_backfill=False,
+        n_athletes=8,
+        n_simulations=10_000,
+        brier_semi=0.15,
+        brier_final=0.18,
+        brier_podium=0.10,
+        brier_win=0.05,
+        logloss_semi=0.40,
+        logloss_final=0.45,
+        logloss_podium=0.30,
+        logloss_win=0.20,
+        top3_intersection=2,
+        top8_intersection=7,
+        spearman_rank=0.78,
+    )
+
+    db_session.add(
+        EventForecastScore(**base_kwargs, engine_version="aaaaaaaaaaaa-1234567")
+    )
+    db_session.flush()
+    db_session.add(
+        EventForecastScore(**base_kwargs, engine_version="bbbbbbbbbbbb-1234567")
+    )
+    db_session.flush()  # must not raise
+
+    persisted = (
+        db_session.query(EventForecastScore)
+        .filter_by(
+            event_id=sample_event.id,
+            gender=Gender.M,
+            is_backfill=False,
+        )
+        .all()
+    )
+    assert len(persisted) == 2
+    assert {row.engine_version for row in persisted} == {
+        "aaaaaaaaaaaa-1234567",
+        "bbbbbbbbbbbb-1234567",
+    }
+
+
+def test_event_forecast_score_blocks_full_key_duplicates(
+    db_session: Session, sample_event: Event
+) -> None:
+    """#131: rows that match on all four key columns (including
+    engine_version) still raise IntegrityError."""
+    kwargs = dict(
+        event_id=sample_event.id,
+        gender=Gender.M,
+        is_backfill=False,
+        engine_version="aaaaaaaaaaaa-1234567",
+        n_athletes=8,
+        n_simulations=10_000,
+        brier_semi=0.15,
+        brier_final=0.18,
+        brier_podium=0.10,
+        brier_win=0.05,
+        logloss_semi=0.40,
+        logloss_final=0.45,
+        logloss_podium=0.30,
+        logloss_win=0.20,
+        top3_intersection=2,
+        top8_intersection=7,
+        spearman_rank=0.78,
+    )
+    db_session.add(EventForecastScore(**kwargs))
+    db_session.flush()
+
+    db_session.add(EventForecastScore(**kwargs))
     with pytest.raises(IntegrityError):
         db_session.flush()
     db_session.rollback()

@@ -373,6 +373,7 @@ class EventForecastScore(Base):
             "event_id",
             "gender",
             "is_backfill",
-            name="uq_event_forecast_score_event_gender_backfill",
+            "engine_version",
+            name="uq_event_forecast_score_event_gender_backfill_version",
         ),
     )

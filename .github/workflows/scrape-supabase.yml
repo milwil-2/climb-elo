@@ -80,6 +80,10 @@ jobs:
         run: uv run python scripts/migrate_forecast_engine_version_constraint.py
 
       # ----------------------------------------------------------------------
+      - name: Migrate forecast-score unique constraint to include engine_version (#131, idempotent)
+        run: uv run python scripts/migrate_forecast_score_engine_version_constraint.py
+
+      # ----------------------------------------------------------------------
       - name: Snapshot forecasts for upcoming events
         run: uv run python scripts/snapshot_forecasts.py --within-days 7
 
