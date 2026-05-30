@@ -375,15 +375,18 @@ def snapshot_forecast(
     upserted: list[EventForecast] = []
     for pr in results:
         mu, sigma = mu_sigma_by_id.get(pr.athlete_id, (DEFAULT_MU, DEFAULT_SIGMA))
+        # ``expected_rank`` is the true Monte Carlo mean rank computed inside
+        # ``simulate_event_progression`` (#122): athletes that reach the final
+        # contribute their 1-indexed rank in that round, eliminated athletes
+        # contribute a sentinel of ``n + 1``.  Pre-#122 this field stored the
+        # monotone proxy ``1 + (n - 1) * (1 - prob_reach_final)``.
         values = {
             "prob_qualify": base_qualify,
             "prob_reach_semi": min(base_qualify, pr.prob_reach_semi),
             "prob_reach_final": min(base_qualify, pr.prob_reach_final),
             "prob_podium": min(base_qualify, pr.final_podium_prob),
             "prob_win": min(base_qualify, pr.final_win_prob),
-            "expected_rank": pr.expected_rank
-            if hasattr(pr, "expected_rank") and pr.expected_rank
-            else float(len(results)),
+            "expected_rank": float(pr.expected_rank),
             "mu_at_forecast": mu,
             "sigma_at_forecast": sigma,
             "n_simulations": n_simulations,
@@ -391,17 +394,6 @@ def snapshot_forecast(
             "engine_version": version,
             "generated_at": generated_at,
         }
-        # ``ProgressionResult`` does not carry expected_rank — compute it
-        # from advance_probs / final podium ordering. We use the projection
-        # mean rank approximation: rank ≈ 1 + (n - 1) * (1 - prob_reach_final)
-        # for a quick monotone proxy when the sim doesn't expose it directly.
-        # The actual mean rank requires recomputing — but advancing far in the
-        # bracket implies a low expected rank, so this stays directionally
-        # correct. Plan only requires the value to be stored; downstream
-        # ranking uses it as a sort key.
-        values["expected_rank"] = float(
-            1.0 + (len(results) - 1) * (1.0 - pr.prob_reach_final)
-        )
 
         row = _upsert_forecast_row(
             session,
