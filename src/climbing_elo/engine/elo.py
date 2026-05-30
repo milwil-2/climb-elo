@@ -653,10 +653,12 @@ def compute_margin_multiplier(
     return base * _gap_conditioning_factor(rating_gap, config)
 
 
-# Regex for the old-format ordinal Boulder score: e.g. "1T2z 3 4" or "2T2 3B4"
+# Regex for the old-format ordinal Boulder score: e.g. "1T2z 3 4" or "2T2 3B4".
+# Attempt counts are optional in the lowercase pre-2018 feed (e.g. "0t 4b10");
+# kept in sync with normalize_boulder_score (#115). Currently unused.
 _OLD_BOULDER_RE = re.compile(
     r"(\d+)[Tt](\d+)[Zz]\s+(\d+)\s+(\d+)"  # "NTMz A B"
-    r"|(\d+)[Tt](\d+)\s+(\d+)[Bb](\d+)",  # "NT A MBB"
+    r"|(\d+)[Tt](\d*)\s+(\d+)[Bb](\d*)",  # "Nt[att] M b[att]"
 )
 
 
@@ -676,9 +678,11 @@ def normalize_boulder_score(raw_score: str) -> float | None:
     Handles both formats:
 
     * **New format (2025+):** a decimal string like ``"34.5"`` — returned as-is.
-    * **Old format (pre-2025):** an ordinal string like ``"1T2z 3 4"`` or
-      ``"2T2 3B4"`` — parsed into
-      ``tops * 1000 + zones * 100 - top_att * 10 - zone_att``.
+    * **Old format (pre-2025):** an ordinal string like ``"1T2z 3 4"``,
+      ``"2T2 3B4"``, or the lowercase pre-2018 feed ``"5t6 5b6"`` — parsed into
+      ``tops * 1000 + zones * 100 - top_att * 10 - zone_att``. In the lowercase
+      feed the attempt counts are omitted when a count is 0 (``"0t 4b10"``,
+      ``"0t 0b"``); those are read as 0 attempts rather than rejected (#115).
 
     Returns ``None`` if the score cannot be parsed.
     """
@@ -694,9 +698,17 @@ def normalize_boulder_score(raw_score: str) -> float | None:
         tops, zones, top_att, zone_att = (int(x) for x in m.groups())
         return float(tops * 1000 + zones * 100 - top_att * 10 - zone_att)
 
-    m = re.match(r"(\d+)[Tt](\d+)\s+(\d+)[Bb](\d+)", raw)
+    # ``Nt[att] M b[att]`` form. The attempt counts are OPTIONAL: the pre-2018
+    # lowercase feed omits them for 0-top athletes (e.g. ``"0t 4b10"`` = 0 tops,
+    # 4 zones, 10 zone-attempts) and sometimes for 0-zone too (``"0t 0b"``).
+    # Without ``\d*``/default-0 those 1,523 real results normalised to ``None``
+    # and silently vanished from the boulder field pre-2018 (Issue #115).
+    m = re.match(r"(\d+)[Tt](\d*)\s+(\d+)[Bb](\d*)", raw)
     if m:
-        tops, top_att, zones, zone_att = (int(x) for x in m.groups())
+        tops = int(m.group(1))
+        top_att = int(m.group(2) or 0)
+        zones = int(m.group(3))
+        zone_att = int(m.group(4) or 0)
         return float(tops * 1000 + zones * 100 - top_att * 10 - zone_att)
 
     return None
