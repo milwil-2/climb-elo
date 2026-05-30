@@ -2,10 +2,16 @@
 """Snapshot live Monte Carlo forecasts for upcoming events.
 
 Walks the ``events`` table for entries starting within the next ``--within-days``
-days (default 7) and, for each (event, gender) that does not yet have a row in
-``event_forecasts`` for the **current** ``engine_version_tag()``, freezes one
-via :func:`climbing_elo.engine.forecasting.snapshot_forecast` with
+days (default 7) and freezes one row per (event, gender) via
+:func:`climbing_elo.engine.forecasting.snapshot_forecast` with
 ``is_backfill=False``. Designed for daily cron use alongside the scrape job.
+
+Idempotency is enforced by the
+``uq_event_forecast_event_gender_athlete_backfill_version`` unique constraint
+on ``event_forecasts``: re-running at the same ``engine_version_tag()``
+overwrites the prior row via the upsert path, and a snapshot at a new engine
+version inserts a fresh row alongside the prior-version one rather than
+replacing it.
 
 Usage
 -----
@@ -32,7 +38,7 @@ from sqlalchemy import select
 from climbing_elo.database import init_db
 from climbing_elo.engine.elo import engine_version_tag
 from climbing_elo.engine.forecasting import snapshot_forecast
-from climbing_elo.models import Event, EventForecast, Gender
+from climbing_elo.models import Event, Gender
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -51,36 +57,18 @@ def _events_in_window(session, *, today: date, within_days: int) -> list[Event]:
     )
 
 
-def _already_snapshotted(
-    session, *, event_id: int, gender: Gender, engine_version: str
-) -> bool:
-    row = session.execute(
-        select(EventForecast.id)
-        .where(
-            EventForecast.event_id == event_id,
-            EventForecast.gender == gender,
-            EventForecast.is_backfill.is_(False),
-            EventForecast.engine_version == engine_version,
-        )
-        .limit(1)
-    ).first()
-    return row is not None
+def _snapshot_event(session, *, event: Event) -> tuple[int, int, str]:
+    """Snapshot both genders for one event. Returns (m_rows, f_rows, source).
 
-
-def _snapshot_event(
-    session, *, event: Event, force: bool, engine_version: str
-) -> tuple[int, int, str]:
-    """Snapshot both genders for one event. Returns (m_rows, f_rows, source)."""
+    Idempotency is delegated to the
+    ``uq_event_forecast_event_gender_athlete_backfill_version`` unique
+    constraint: same engine version → upsert overwrites in place; new engine
+    version → insert alongside the prior row. No application-level skip
+    needed.
+    """
     counts = {"M": 0, "F": 0}
     sources: list[str] = []
     for gender in (Gender.M, Gender.F):
-        if not force and _already_snapshotted(
-            session,
-            event_id=event.id,
-            gender=gender,
-            engine_version=engine_version,
-        ):
-            continue
         rows = snapshot_forecast(
             session,
             event_id=event.id,
@@ -129,8 +117,8 @@ def main() -> int:
         metavar="ID",
         help=(
             "Snapshot exactly this event (both genders) regardless of date. "
-            "Overwrites any existing live snapshot for the current engine "
-            "version."
+            "Overwrites any existing live snapshot at the current engine "
+            "version; inserts a new row alongside prior-version snapshots."
         ),
     )
     args = parser.parse_args()
@@ -149,13 +137,11 @@ def main() -> int:
                 log.error("event_id=%s not found", args.event_id)
                 return 1
             events: list[Event] = [event]
-            force = True
         else:
             today = date.today()
             events = _events_in_window(
                 session, today=today, within_days=args.within_days
             )
-            force = False
 
         if not events:
             log.info(
@@ -173,8 +159,6 @@ def main() -> int:
             m_rows, f_rows, source = _snapshot_event(
                 session,
                 event=event,
-                force=force,
-                engine_version=engine_version,
             )
             session.commit()
             log.info(
