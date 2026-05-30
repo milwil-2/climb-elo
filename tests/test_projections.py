@@ -620,6 +620,124 @@ class TestProgressionCumulativeProbs:
 
 
 # ---------------------------------------------------------------------------
+# True Monte Carlo mean rank (#122)
+# ---------------------------------------------------------------------------
+
+
+class TestProgressionExpectedRank:
+    """``simulate_event_progression`` populates ``ProgressionResult.expected_rank``
+    with the true Monte Carlo mean finishing rank (#122).
+
+    Athletes that reach the final contribute their 1-indexed rank in that
+    round; athletes eliminated before the final contribute a sentinel rank of
+    ``n + 1`` (worse than last in the final), so the field stays strictly
+    monotone in advancement without leaking info from finishing-order in the
+    round they were eliminated in.  Single-round formats reduce to the mean
+    rank in that one round.
+    """
+
+    def test_expected_rank_bounds(self, eight_athletes_with_ratings):
+        """Every athlete's expected_rank lies in [1, n + 1] (the +1 is the
+        elimination sentinel).
+        """
+        fixture_mus = [1750, 1700, 1680, 1650, 1620, 1600, 1570, 1540]
+        athletes = [
+            AthleteProjectionInput(
+                athlete_id=a.id,
+                mu=mu,
+                sigma=100.0,
+                name=a.name,
+            )
+            for a, mu in zip(eight_athletes_with_ratings, fixture_mus)
+        ]
+        # 3-round format with eliminations at every level so the sentinel
+        # branch is actually exercised.
+        rounds = [
+            RoundConfig(round_type="qualification", advance_count=8),
+            RoundConfig(round_type="semifinal", advance_count=4),
+            RoundConfig(round_type="final", advance_count=4),
+        ]
+        results = simulate_event_progression(
+            athletes, rounds=rounds, n_simulations=2000, rng_seed=42
+        )
+        n = len(athletes)
+        for pr in results:
+            assert 1.0 - 1e-9 <= pr.expected_rank <= float(n + 1) + 1e-9, (
+                f"athlete {pr.athlete_id}: expected_rank={pr.expected_rank} "
+                f"outside [1, {n + 1}]"
+            )
+
+    def test_expected_rank_correlates_with_mu(self, eight_athletes_with_ratings):
+        """The top-3 athletes ranked by ``expected_rank`` (lowest first) are
+        drawn from the top-5 by μ.
+
+        The fixture mus span 1750..1540 — a tight 210-point spread.  With
+        σ=100 there's enough variance that the strict mu-ordering won't
+        always come out of the sim, but a low-μ athlete climbing into the
+        top-3 by expected_rank would signal a real bug, not Monte Carlo
+        noise.  5k sims keeps the per-athlete MC standard error well under
+        the rank-spacing.
+        """
+        fixture_mus = [1750, 1700, 1680, 1650, 1620, 1600, 1570, 1540]
+        athletes = [
+            AthleteProjectionInput(
+                athlete_id=a.id,
+                mu=mu,
+                sigma=100.0,
+                name=a.name,
+            )
+            for a, mu in zip(eight_athletes_with_ratings, fixture_mus)
+        ]
+        rounds = [
+            RoundConfig(round_type="qualification", advance_count=8),
+            RoundConfig(round_type="semifinal", advance_count=4),
+            RoundConfig(round_type="final", advance_count=4),
+        ]
+        results = simulate_event_progression(
+            athletes, rounds=rounds, n_simulations=5000, rng_seed=42
+        )
+        # Top-5 by μ = first 5 athletes from the fixture (sorted desc by μ).
+        top5_by_mu = {a.id for a in eight_athletes_with_ratings[:5]}
+        # Sort by ascending expected_rank → best first.
+        top3_by_rank = sorted(results, key=lambda r: r.expected_rank)[:3]
+        for pr in top3_by_rank:
+            assert pr.athlete_id in top5_by_mu, (
+                f"athlete {pr.athlete_id} (expected_rank={pr.expected_rank}) "
+                f"reached top-3 by expected_rank without being top-5 by μ; "
+                f"top-5-by-μ ids = {top5_by_mu}"
+            )
+
+    def test_expected_rank_single_round_equals_mean_rank(
+        self, eight_athletes_with_ratings
+    ):
+        """In a 1-round format (the only round IS the final), expected_rank
+        is just the mean of the 1-indexed rank in that round — no sentinel
+        ever applied.  All 8 athletes always finish in some position 1..8,
+        so the sum of expected ranks must equal n*(n+1)/2 = 36.
+        """
+        fixture_mus = [1750, 1700, 1680, 1650, 1620, 1600, 1570, 1540]
+        athletes = [
+            AthleteProjectionInput(
+                athlete_id=a.id,
+                mu=mu,
+                sigma=100.0,
+                name=a.name,
+            )
+            for a, mu in zip(eight_athletes_with_ratings, fixture_mus)
+        ]
+        rounds = [RoundConfig(round_type="final", advance_count=8)]
+        results = simulate_event_progression(
+            athletes, rounds=rounds, n_simulations=2000, rng_seed=11
+        )
+        n = len(athletes)
+        total = sum(pr.expected_rank for pr in results)
+        # In every sim ranks 1..n are dealt out exactly once → sum is fixed.
+        assert total == pytest.approx(n * (n + 1) / 2.0, abs=0.02)
+        for pr in results:
+            assert 1.0 - 1e-9 <= pr.expected_rank <= float(n) + 1e-9
+
+
+# ---------------------------------------------------------------------------
 # default_event_format
 # ---------------------------------------------------------------------------
 
