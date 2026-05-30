@@ -565,6 +565,132 @@ def _seed_speed_event(session, name, event_date, athletes, ordering, times):
     return event
 
 
+def _seed_multi_gender_event(
+    session, name, event_date, m_athletes, m_order, f_athletes, f_order
+):
+    """Create an event with separate M and F final rounds. M is added FIRST to
+    match the IFSC scrape order — that ordering is what triggered the #130 bug
+    where the women's final silently skipped TPB.
+    """
+    event = Event(
+        name=name,
+        tier=EventTier.WORLD_CUP,
+        season=event_date.year,
+        start_date=event_date,
+        discipline=Discipline.LEAD,
+    )
+    session.add(event)
+    session.flush()
+
+    m_round = Round(
+        event_id=event.id,
+        round_type=RoundType.FINAL,
+        gender=Gender.M,
+        athlete_count=len(m_order),
+    )
+    session.add(m_round)
+    session.flush()
+    for rank, athlete_idx in enumerate(m_order, 1):
+        session.add(
+            Result(
+                round_id=m_round.id,
+                athlete_id=m_athletes[athlete_idx].id,
+                rank=rank,
+            )
+        )
+
+    f_round = Round(
+        event_id=event.id,
+        round_type=RoundType.FINAL,
+        gender=Gender.F,
+        athlete_count=len(f_order),
+    )
+    session.add(f_round)
+    session.flush()
+    for rank, athlete_idx in enumerate(f_order, 1):
+        session.add(
+            Result(
+                round_id=f_round.id,
+                athlete_id=f_athletes[athlete_idx].id,
+                rank=rank,
+            )
+        )
+
+    session.flush()
+    return event, m_round, f_round
+
+
+def test_tpb_applied_to_both_gender_finals(db_session):
+    """Issue #130: TPB must be applied to EVERY final round in an event, not
+    just the first one returned by the rounds list. IFSC scrape order places
+    the men's final ahead of the women's, so the pre-fix ``next(...)`` picker
+    silently skipped every women's final from 2023 onwards (#90 ship date).
+    """
+    m_athletes = []
+    for name in ["M1", "M2", "M3", "M4"]:
+        a = Athlete(name=name, gender=Gender.M)
+        db_session.add(a)
+        m_athletes.append(a)
+    f_athletes = []
+    for name in ["F1", "F2", "F3", "F4"]:
+        a = Athlete(name=name, gender=Gender.F)
+        db_session.add(a)
+        f_athletes.append(a)
+    db_session.flush()
+
+    event, m_round, f_round = _seed_multi_gender_event(
+        db_session,
+        "WC Multi-Gender",
+        date(2024, 4, 1),
+        m_athletes,
+        [0, 1, 2, 3],
+        f_athletes,
+        [0, 1, 2, 3],
+    )
+    db_session.commit()
+
+    run_backfill(db_session, Discipline.LEAD)
+
+    m_tpb = list(
+        db_session.execute(
+            select(RatingHistory).where(
+                RatingHistory.round_id == m_round.id,
+                RatingHistory.kind == "tpb",
+            )
+        ).scalars()
+    )
+    f_tpb = list(
+        db_session.execute(
+            select(RatingHistory).where(
+                RatingHistory.round_id == f_round.id,
+                RatingHistory.kind == "tpb",
+            )
+        ).scalars()
+    )
+
+    # Both rounds must have one TPB row per non-DNS athlete.
+    assert len(m_tpb) == 4, (
+        f"Men's final has {len(m_tpb)} TPB rows; expected 4 (one per athlete)"
+    )
+    assert len(f_tpb) == 4, (
+        f"Women's final has {len(f_tpb)} TPB rows; expected 4 (one per athlete). "
+        f"This is the Issue #130 regression — TPB skipped the second final."
+    )
+
+    # Each TPB layer is independently zero-sum.
+    m_delta_sum = sum(r.mu_after - r.mu_before for r in m_tpb)
+    f_delta_sum = sum(r.mu_after - r.mu_before for r in f_tpb)
+    assert abs(m_delta_sum) < 1e-6, f"Men's TPB not zero-sum: {m_delta_sum}"
+    assert abs(f_delta_sum) < 1e-6, f"Women's TPB not zero-sum: {f_delta_sum}"
+
+    # TPB athletes match each final's roster exactly (no cross-contamination).
+    m_tpb_athletes = {r.athlete_id for r in m_tpb}
+    f_tpb_athletes = {r.athlete_id for r in f_tpb}
+    assert m_tpb_athletes == {a.id for a in m_athletes}
+    assert f_tpb_athletes == {a.id for a in f_athletes}
+    assert m_tpb_athletes.isdisjoint(f_tpb_athletes)
+
+
 def test_backfill_speed_event_uses_bracket_path(db_session):
     """Issue #56: backfill on a Speed event runs the bracket-native engine and
     produces sensible ratings.
