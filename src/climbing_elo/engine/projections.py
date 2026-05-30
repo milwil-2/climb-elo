@@ -26,8 +26,25 @@ if calibration analysis shows it's needed.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
+
+
+def _numpy() -> "np":
+    """Lazily import and return the ``numpy`` module.
+
+    numpy is a ~0.5s import and is only needed when a Monte Carlo simulation
+    actually runs. Deferring it keeps merely importing this module (which the
+    API route layer does at app load) off the cold-start critical path on
+    serverless. The module object is cached by ``sys.modules`` after the first
+    call, so repeated lookups are effectively free.
+    """
+    import numpy as np
+
+    return np
+
 
 MAX_ATHLETES_PER_PROJECTION = 256
 MAX_SIMULATIONS = 50_000
@@ -75,6 +92,7 @@ def compute_podium_probabilities(
         )
     n_simulations = max(1, min(int(n_simulations), MAX_SIMULATIONS))
 
+    np = _numpy()
     rng = np.random.default_rng(rng_seed)
     n = len(athletes)
 
@@ -207,6 +225,7 @@ def simulate_event_progression(
         )
 
     n_simulations = max(1, min(int(n_simulations), MAX_SIMULATIONS))
+    np = _numpy()
     rng = np.random.default_rng(rng_seed)
 
     n = len(athletes)
@@ -408,6 +427,7 @@ def compute_partial_event_probabilities(
 
     # Monte Carlo: simulate performance of remaining athletes and assign ranks.
     n_simulations = max(1, min(int(n_simulations), MAX_SIMULATIONS))
+    np = _numpy()
     rng = np.random.default_rng(rng_seed)
     n = len(remaining_athletes)
 
