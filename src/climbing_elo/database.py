@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from climbing_elo.models import Base
 
@@ -13,6 +15,24 @@ from climbing_elo.models import Base
 def _database_url() -> str | None:
     """Return DATABASE_URL from environment, or None if unset/empty."""
     return os.environ.get("DATABASE_URL") or None
+
+
+def _is_transaction_pooler(url: str) -> bool:
+    """Detect Supabase transaction pooler URLs (pgBouncer on port 6543).
+
+    The transaction pooler recycles backend connections per transaction, so a
+    client-side SQLAlchemy pool can hold a connection pgBouncer has already
+    detached — leading to stale-connection errors on serverless cold starts.
+    NullPool is the matching contract: open+close per checkout.
+    """
+    if not (url.startswith("postgresql://") or url.startswith("postgresql+")):
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    return host.endswith("pooler.supabase.com") and parsed.port == 6543
 
 
 def get_engine(db_path: Path | str | None = None) -> Engine:
@@ -48,6 +68,17 @@ def get_engine(db_path: Path | str | None = None) -> Engine:
         return create_engine(url, echo=False, connect_args={"timeout": 60})
 
     # Postgres / Supabase — require SSL for external connections.
+    # Supabase transaction pooler (port 6543) needs NullPool so SQLAlchemy
+    # doesn't fight pgBouncer's per-transaction connection recycling. The
+    # session pooler (5432) and direct connections keep the default pool.
+    if _is_transaction_pooler(url):
+        return create_engine(
+            url,
+            echo=False,
+            poolclass=NullPool,
+            connect_args={"sslmode": "require"},
+        )
+
     return create_engine(
         url,
         echo=False,

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from climbing_elo.api.limiter import limiter
 
@@ -27,6 +28,8 @@ from climbing_elo.models import (
     Athlete,
     Discipline,
     Event,
+    EventForecast,
+    EventForecastScore,
     Gender,
     Rating,
     RatingHistory,
@@ -43,12 +46,17 @@ from climbing_elo.api.schemas import (
     CombinedLeaderboardResponse,
     DisciplineInfo,
     EventDetail,
+    EventForecastResponse,
+    EventForecastRow,
+    EventForecastScoreRow,
     EventsResponse,
     EventSummary,
     GenderPrediction,
     HistoryPoint,
     LeaderboardEntry,
     LeaderboardResponse,
+    ModelPerformanceEventEntry,
+    ModelPerformanceResponse,
     PredictedAthlete,
     ProjectionEntry,
     ProjectionRequest,
@@ -1227,4 +1235,277 @@ async def predictions_upcoming(
         season=effective_season,
         total=len(all_entries),
         items=all_entries,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/events/{event_id}/forecast
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/events/{event_id}/forecast",
+    response_model=EventForecastResponse,
+    summary="Get frozen forecast for one event + gender",
+)
+async def event_forecast(
+    event_id: int,
+    gender: str = Query(..., description="Gender: M or F"),
+    is_backfill: bool = Query(
+        False,
+        description=(
+            "Set to ``true`` to return retro-replay rows (forecasts seeded by "
+            "the historical backfill script). Defaults to live forecasts only."
+        ),
+    ),
+) -> EventForecastResponse:
+    """
+    Return the frozen :class:`EventForecast` rows for one (event, gender,
+    is_backfill) tuple plus the matching :class:`EventForecastScore` row if
+    the event has been scored.
+
+    Rows are ordered by ``prob_win`` descending (with ``expected_rank``
+    ascending as a tiebreak — lower rank is better).
+
+    ``score`` is ``null`` when post-event scoring has not yet run (e.g. the
+    event is upcoming or in-progress). A missing forecast altogether returns
+    ``404``.
+    """
+    gen = _resolve_gender(gender)
+
+    with _session() as session:
+        event = session.get(Event, event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
+
+        try:
+            rows = list(
+                session.execute(
+                    select(EventForecast, Athlete)
+                    .join(Athlete, EventForecast.athlete_id == Athlete.id)
+                    .where(
+                        EventForecast.event_id == event_id,
+                        EventForecast.gender == gen,
+                        EventForecast.is_backfill == is_backfill,
+                    )
+                    .order_by(
+                        EventForecast.prob_win.desc(),
+                        EventForecast.expected_rank.asc(),
+                    )
+                ).all()
+            )
+        except SQLAlchemyError:
+            # Tables not yet provisioned on this deploy — treat as 404.
+            session.rollback()
+            rows = []
+
+        if not rows:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"No forecast found for event {event_id}, gender {gen.value}, "
+                    f"is_backfill={is_backfill}"
+                ),
+            )
+
+        forecast_items = [
+            EventForecastRow(
+                athlete_id=athlete.id,
+                name=athlete.name,
+                mu_at_forecast=round(fc.mu_at_forecast, 2),
+                sigma_at_forecast=round(fc.sigma_at_forecast, 2),
+                prob_qualify=fc.prob_qualify,
+                prob_reach_semi=fc.prob_reach_semi,
+                prob_reach_final=fc.prob_reach_final,
+                prob_podium=fc.prob_podium,
+                prob_win=fc.prob_win,
+                expected_rank=round(fc.expected_rank, 4),
+                roster_source=fc.roster_source,
+                engine_version=fc.engine_version,
+                generated_at=fc.generated_at,
+            )
+            for fc, athlete in rows
+        ]
+
+        score_row = session.execute(
+            select(EventForecastScore).where(
+                EventForecastScore.event_id == event_id,
+                EventForecastScore.gender == gen,
+                EventForecastScore.is_backfill == is_backfill,
+            )
+        ).scalar_one_or_none()
+
+        score_out: Optional[EventForecastScoreRow] = None
+        if score_row is not None:
+            score_out = EventForecastScoreRow(
+                event_id=score_row.event_id,
+                gender=score_row.gender.value,
+                is_backfill=score_row.is_backfill,
+                engine_version=score_row.engine_version,
+                n_athletes=score_row.n_athletes,
+                n_simulations=score_row.n_simulations,
+                brier_semi=score_row.brier_semi,
+                brier_final=score_row.brier_final,
+                brier_podium=score_row.brier_podium,
+                brier_win=score_row.brier_win,
+                logloss_semi=score_row.logloss_semi,
+                logloss_final=score_row.logloss_final,
+                logloss_podium=score_row.logloss_podium,
+                logloss_win=score_row.logloss_win,
+                top3_intersection=score_row.top3_intersection,
+                top8_intersection=score_row.top8_intersection,
+                spearman_rank=score_row.spearman_rank,
+                computed_at=score_row.computed_at,
+            )
+
+    return EventForecastResponse(forecast=forecast_items, score=score_out)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/model-performance
+# ---------------------------------------------------------------------------
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+@router.get(
+    "/model-performance",
+    response_model=ModelPerformanceResponse,
+    summary="Aggregate model-performance metrics across scored events",
+)
+async def model_performance(
+    season: Optional[int] = Query(
+        None,
+        ge=2000,
+        le=2100,
+        description=(
+            "Season year to aggregate over. Defaults to the current calendar year. "
+            "Public dashboards should keep this at the default so historical "
+            "backfill rows from prior seasons stay hidden."
+        ),
+    ),
+    discipline: Optional[str] = Query(
+        None,
+        description=(
+            "Optional discipline filter: lead, boulder, speed. ``boulder_lead`` "
+            "is rejected (combined events are not separately forecast). Omit to "
+            "aggregate across all three atomic disciplines."
+        ),
+    ),
+    gender: Optional[str] = Query(
+        None, description="Optional gender filter: M or F. Omit for both."
+    ),
+    include_backfill: bool = Query(
+        False,
+        description=(
+            "When ``false`` (default) only live forecast scores are returned. "
+            "Set to ``true`` to include retro-replay rows."
+        ),
+    ),
+) -> ModelPerformanceResponse:
+    """
+    Aggregate :class:`EventForecastScore` rows across the requested filters.
+
+    Returns mean Brier / log-loss for the podium and win stages plus the
+    top-3 intersection rate (``sum(top3_intersection) / (3 * n_events)``) and a
+    per-event slim summary suitable for a calibration / hit-miss list view.
+
+    An empty result set returns ``200`` with ``n_events_scored=0`` and an empty
+    ``aggregates`` object — clients should treat that as "nothing scored yet"
+    rather than an error.
+    """
+    effective_season = season if season is not None else datetime.now(timezone.utc).year
+
+    disc_enum: Optional[Discipline] = None
+    if discipline is not None:
+        disc_enum = _resolve_discipline(discipline)
+        if disc_enum == Discipline.BOULDER_LEAD:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "boulder_lead / combined is not available for model-performance "
+                    "aggregation. Use lead, boulder, or speed individually, or omit."
+                ),
+            )
+
+    gen_enum: Optional[Gender] = None
+    if gender is not None:
+        gen_enum = _resolve_gender(gender)
+
+    discipline_label = _discipline_label(disc_enum) if disc_enum is not None else "all"
+
+    with _session() as session:
+        stmt = (
+            select(EventForecastScore, Event)
+            .join(Event, EventForecastScore.event_id == Event.id)
+            .where(
+                EventForecastScore.is_backfill == include_backfill,
+                Event.season == effective_season,
+            )
+        )
+        if disc_enum is not None:
+            stmt = stmt.where(Event.discipline == disc_enum)
+        else:
+            # Exclude BOULDER_LEAD by default — combined events aren't
+            # separately forecast.
+            stmt = stmt.where(
+                Event.discipline.in_(
+                    [Discipline.LEAD, Discipline.BOULDER, Discipline.SPEED]
+                )
+            )
+        if gen_enum is not None:
+            stmt = stmt.where(EventForecastScore.gender == gen_enum)
+
+        try:
+            rows = list(session.execute(stmt.order_by(Event.start_date.asc())).all())
+        except SQLAlchemyError:
+            # event_forecast_scores not provisioned yet on this deploy.
+            session.rollback()
+            rows = []
+
+        n_events = len(rows)
+
+        if n_events == 0:
+            return ModelPerformanceResponse(
+                season=effective_season,
+                discipline=discipline_label,
+                n_events_scored=0,
+                aggregates={},
+                events=[],
+            )
+
+        brier_podium = [s.brier_podium for s, _ in rows]
+        brier_win = [s.brier_win for s, _ in rows]
+        logloss_podium = [s.logloss_podium for s, _ in rows]
+        logloss_win = [s.logloss_win for s, _ in rows]
+        top3_total = sum(s.top3_intersection for s, _ in rows)
+
+        aggregates: dict[str, float] = {
+            "brier_podium_mean": _mean(brier_podium),
+            "brier_win_mean": _mean(brier_win),
+            "logloss_podium_mean": _mean(logloss_podium),
+            "logloss_win_mean": _mean(logloss_win),
+            "top3_intersection_rate": top3_total / (3 * n_events),
+        }
+
+        events_out = [
+            ModelPerformanceEventEntry(
+                event_id=ev.id,
+                name=ev.name,
+                gender=score.gender.value,
+                brier_podium=score.brier_podium,
+                top3_intersection=score.top3_intersection,
+                n_athletes=score.n_athletes,
+            )
+            for score, ev in rows
+        ]
+
+    return ModelPerformanceResponse(
+        season=effective_season,
+        discipline=discipline_label,
+        n_events_scored=n_events,
+        aggregates=aggregates,
+        events=events_out,
     )

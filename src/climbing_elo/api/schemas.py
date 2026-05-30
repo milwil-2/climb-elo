@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date
-from typing import List, Optional
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -306,3 +306,98 @@ class UpcomingPredictionsResponse(BaseModel):
     season: Optional[int]
     total: int
     items: list[UpcomingPredictionEntry]
+
+
+# ---------------------------------------------------------------------------
+# Persistent forecasts (joyful-swinging-map plan)
+# ---------------------------------------------------------------------------
+
+
+class EventForecastRow(BaseModel):
+    """One frozen per-athlete forecast row.
+
+    Mirrors :class:`climbing_elo.models.EventForecast` with the athlete name
+    joined in. Cumulative probabilities are monotone non-increasing:
+    ``prob_qualify >= prob_reach_semi >= prob_reach_final >= prob_podium >= prob_win``.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    athlete_id: int
+    name: str
+    mu_at_forecast: float
+    sigma_at_forecast: float
+    prob_qualify: float
+    prob_reach_semi: float
+    prob_reach_final: float
+    prob_podium: float
+    prob_win: float
+    expected_rank: float
+    roster_source: str
+    engine_version: str
+    generated_at: datetime
+
+
+class EventForecastScoreRow(BaseModel):
+    """Post-event scoring summary for a single (event, gender, is_backfill).
+
+    Brier and log-loss are averaged across athletes for each cumulative stage.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    event_id: int
+    gender: str
+    is_backfill: bool
+    engine_version: str
+    n_athletes: int
+    n_simulations: int
+    brier_semi: float
+    brier_final: float
+    brier_podium: float
+    brier_win: float
+    logloss_semi: float
+    logloss_final: float
+    logloss_podium: float
+    logloss_win: float
+    top3_intersection: int
+    top8_intersection: int
+    spearman_rank: Optional[float]
+    computed_at: datetime
+
+
+class EventForecastResponse(BaseModel):
+    """Response for GET /api/v1/events/{event_id}/forecast.
+
+    ``score`` is ``None`` when the event has not been scored yet (typically
+    because it hasn't finished, or the post-event scoring job hasn't run).
+    """
+
+    forecast: list[EventForecastRow]
+    score: Optional[EventForecastScoreRow]
+
+
+class ModelPerformanceEventEntry(BaseModel):
+    """One event-level row in the model-performance summary."""
+
+    event_id: int
+    name: str
+    gender: str
+    brier_podium: float
+    top3_intersection: int
+    n_athletes: int
+
+
+class ModelPerformanceResponse(BaseModel):
+    """Response for GET /api/v1/model-performance.
+
+    ``discipline`` is the requested filter or ``"all"`` when no filter was
+    supplied. ``aggregates`` is empty (``{}``) when no scored events match the
+    filters.
+    """
+
+    season: int
+    discipline: str
+    n_events_scored: int
+    aggregates: Dict[str, Any]
+    events: list[ModelPerformanceEventEntry]
