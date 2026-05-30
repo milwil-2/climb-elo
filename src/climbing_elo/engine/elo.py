@@ -68,8 +68,12 @@ round) and are NOT zero-sum — Glicko-2 explicitly allows the round to
 from __future__ import annotations
 
 import copy
+import dataclasses
+import hashlib
+import json
 import math
 import re
+import subprocess
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -311,6 +315,75 @@ class EloConfig:
 
 
 DEFAULT_CONFIG = EloConfig()
+
+
+# ---------------------------------------------------------------------------
+# Engine version stamping (joyful-swinging-map plan)
+# ---------------------------------------------------------------------------
+#
+# Frozen-forecast rows (``EventForecast`` / ``EventForecastScore``) carry a
+# stable identifier of the engine that produced them. The tag is the SHA-256
+# (truncated to 12 hex chars) of the canonical JSON of the ``EloConfig``
+# field tuple, concatenated with the short git SHA — so a knob change OR a
+# code change yields a fresh version string. The git SHA is read once at
+# module import via ``subprocess`` and cached; a non-git environment (e.g.
+# a Vercel build that strips ``.git``) falls back to ``"unknown"`` cleanly.
+
+
+def _read_git_sha() -> str:
+    """Return short git SHA of HEAD, or ``"unknown"`` if unavailable."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    sha = result.stdout.strip()
+    return sha or "unknown"
+
+
+# Cached at import time per the plan: forecast snapshotting may run many
+# times in a single process and we don't want to re-fork a git subprocess
+# for every call. A stale SHA across long-lived workers is fine — engine
+# behaviour is fully captured by the config-hash half of the tag.
+_GIT_SHA: str = _read_git_sha()
+
+
+def engine_version_tag(config: EloConfig | None = None) -> str:
+    """Stable short identifier for the engine version that produced a forecast.
+
+    Returns ``f"{sha256_12(config)}-{short_git_sha}"`` — a 12-char hash of
+    the canonical-JSON-serialized config field tuple, joined to the
+    module-cached short git SHA (or ``"unknown"`` outside a git checkout).
+
+    Parameters
+    ----------
+    config:
+        The :class:`EloConfig` whose hash is computed. Defaults to
+        :data:`DEFAULT_CONFIG`.
+
+    Notes
+    -----
+    Deterministic and side-effect-free. Used by the forecast snapshot job to
+    stamp ``EventForecast.engine_version`` and ``EventForecastScore.engine_version``
+    so changes to K factors, σ_inactivity, MOV, TPB are all reflected. Frozen
+    rows are never re-snapshotted across version bumps; the new version applies
+    only to events that don't yet have a row for that version.
+    """
+    cfg = config or DEFAULT_CONFIG
+    payload = json.dumps(
+        dataclasses.asdict(cfg),
+        sort_keys=True,
+        default=str,
+    )
+    config_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+    return f"{config_hash}-{_GIT_SHA}"
 
 
 # ---------------------------------------------------------------------------
