@@ -2685,10 +2685,11 @@ def _aggregate_model_performance(
     if discipline is not None:
         stmt = stmt.where(Event.discipline == discipline)
     else:
+        # Speed excluded from the default aggregate — the projection layer's
+        # finishing-order MC is a poor fit for Speed's bracket format. See
+        # #132 for the bracket-native Speed forecast follow-up.
         stmt = stmt.where(
-            Event.discipline.in_(
-                [Discipline.LEAD, Discipline.BOULDER, Discipline.SPEED]
-            )
+            Event.discipline.in_([Discipline.LEAD, Discipline.BOULDER])
         )
     if gender is not None:
         stmt = stmt.where(EventForecastScore.gender == gender)
@@ -2795,6 +2796,10 @@ async def v2_model_performance(
         season_choices.sort(reverse=True)
 
     # Pill filter state for the discipline.
+    # Speed intentionally omitted — the projection layer uses a finishing-order
+    # MC that's a poor approximation for Speed's bracket format. See #132 for
+    # the planned bracket-native Speed forecast model; re-add the pill once
+    # that lands.
     disc_pills = [
         {"key": "", "label": "All", "active": disc_enum is None},
         {
@@ -2806,11 +2811,6 @@ async def v2_model_performance(
             "key": "boulder",
             "label": "Boulder",
             "active": disc_enum == Discipline.BOULDER,
-        },
-        {
-            "key": "speed",
-            "label": "Speed",
-            "active": disc_enum == Discipline.SPEED,
         },
     ]
 

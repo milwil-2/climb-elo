@@ -1448,12 +1448,14 @@ async def model_performance(
         if disc_enum is not None:
             stmt = stmt.where(Event.discipline == disc_enum)
         else:
-            # Exclude BOULDER_LEAD by default — combined events aren't
-            # separately forecast.
+            # Exclude BOULDER_LEAD (combined events aren't separately
+            # forecast) AND Speed (#132 — the projection layer's
+            # finishing-order MC is a poor fit for Speed's bracket format,
+            # so we don't surface noisy Speed numbers in the aggregate).
+            # Speed forecast rows still exist in the DB; clients can pass
+            # ?discipline=speed explicitly if they want to inspect them.
             stmt = stmt.where(
-                Event.discipline.in_(
-                    [Discipline.LEAD, Discipline.BOULDER, Discipline.SPEED]
-                )
+                Event.discipline.in_([Discipline.LEAD, Discipline.BOULDER])
             )
         if gen_enum is not None:
             stmt = stmt.where(EventForecastScore.gender == gen_enum)
