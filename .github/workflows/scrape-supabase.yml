@@ -72,6 +72,10 @@ jobs:
         run: uv run python scripts/scrape_upcoming.py --all-disciplines
 
       # ----------------------------------------------------------------------
+      - name: Snapshot forecasts for upcoming events
+        run: uv run python scripts/snapshot_forecasts.py --within-days 7
+
+      # ----------------------------------------------------------------------
       - name: Scrape recent IFSC results (all disciplines, current + previous season)
         run: |
           CURRENT_YEAR=$(date +%Y)
@@ -115,6 +119,10 @@ jobs:
 
       - name: Compute combined Boulder+Lead ratings
         run: uv run python scripts/compute_combined_ratings.py
+
+      # ----------------------------------------------------------------------
+      - name: Score finished forecasts
+        run: uv run python scripts/score_forecasts.py --all-unscored
 
       # ----------------------------------------------------------------------
       # Issue #118: real failing guard over the freshly-computed data + ratings.
