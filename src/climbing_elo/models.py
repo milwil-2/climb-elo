@@ -244,9 +244,9 @@ class RatingHistory(Base):
 #
 # ``engine_version`` is a stable identifier produced by
 # :func:`climbing_elo.engine.elo.engine_version_tag` — sha256-12 of the
-# ``EloConfig`` field tuple plus the short git SHA. Frozen forecast rows are
-# NEVER re-snapshotted across engine-version bumps; the new version applies
-# only to events that don't yet have a row.
+# ``EloConfig`` field tuple plus the short git SHA. The version is part of
+# the unique constraint, so a re-snapshot at a new engine version inserts a
+# fresh row alongside the prior-version one rather than overwriting it.
 
 
 class EventForecast(Base):
@@ -310,7 +310,8 @@ class EventForecast(Base):
             "gender",
             "athlete_id",
             "is_backfill",
-            name="uq_event_forecast_event_gender_athlete_backfill",
+            "engine_version",
+            name="uq_event_forecast_event_gender_athlete_backfill_version",
         ),
     )
 

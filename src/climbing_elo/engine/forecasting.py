@@ -196,7 +196,14 @@ def _upsert_forecast_row(
     benefit from the dialect-specific RETURNING path. Either way, the row is
     flushed to the session but NOT committed — the caller controls the
     transaction.
+
+    The unique key is ``(event_id, gender, athlete_id, is_backfill,
+    engine_version)``. ``engine_version`` is read from ``values`` — re-running
+    at the same engine version overwrites in place; re-running at a new
+    engine version inserts a fresh row.
     """
+    engine_version = values["engine_version"]
+
     if _is_postgres(session):
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -218,7 +225,6 @@ def _upsert_forecast_row(
             "sigma_at_forecast": stmt.excluded.sigma_at_forecast,
             "n_simulations": stmt.excluded.n_simulations,
             "roster_source": stmt.excluded.roster_source,
-            "engine_version": stmt.excluded.engine_version,
             "generated_at": stmt.excluded.generated_at,
         }
         stmt = stmt.on_conflict_do_update(
@@ -227,6 +233,7 @@ def _upsert_forecast_row(
                 "gender",
                 "athlete_id",
                 "is_backfill",
+                "engine_version",
             ],
             set_=update_cols,
         )
@@ -238,6 +245,7 @@ def _upsert_forecast_row(
                 EventForecast.gender == gender,
                 EventForecast.athlete_id == athlete_id,
                 EventForecast.is_backfill == is_backfill,
+                EventForecast.engine_version == engine_version,
             )
         ).scalar_one()
         return row
@@ -249,6 +257,7 @@ def _upsert_forecast_row(
             EventForecast.gender == gender,
             EventForecast.athlete_id == athlete_id,
             EventForecast.is_backfill == is_backfill,
+            EventForecast.engine_version == engine_version,
         )
     ).scalar_one_or_none()
     if existing is not None:
