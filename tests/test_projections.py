@@ -510,6 +510,116 @@ class TestSimulateEventProgression:
 
 
 # ---------------------------------------------------------------------------
+# Cumulative per-stage probabilities (prob_qualify / reach_semi / reach_final)
+# ---------------------------------------------------------------------------
+
+
+class TestProgressionCumulativeProbs:
+    """Cumulative per-stage probabilities (Lane B of the forecasting feature).
+
+    The sim populates ``prob_reach_semi`` and ``prob_reach_final``;
+    ``prob_qualify`` is plumbed by the caller (forecasting layer) and the sim
+    leaves it at the dataclass default of ``1.0``.
+    """
+
+    def test_progression_cumulative_probs_monotonic(self, eight_athletes_with_ratings):
+        """Cumulative probs satisfy:
+        1.0 >= prob_qualify >= prob_reach_semi >= prob_reach_final
+              >= final_podium_prob >= final_win_prob, all in [0, 1].
+        """
+        # Mirror the fixture's mus (1750..1540) into AthleteProjectionInput.
+        # The fixture writes Rating rows with sigma=100 in the DB, but the sim
+        # only needs the projection-input view; reuse the same sigma so the
+        # field is realistic.
+        fixture_mus = [1750, 1700, 1680, 1650, 1620, 1600, 1570, 1540]
+        athletes = [
+            AthleteProjectionInput(
+                athlete_id=a.id,
+                mu=mu,
+                sigma=100.0,
+                name=a.name,
+            )
+            for a, mu in zip(eight_athletes_with_ratings, fixture_mus)
+        ]
+        # 3-round format with distinct advancement at every level so all four
+        # cumulative levels are numerically distinct: qual (8 in) → 8 advance to
+        # semi → 4 advance to final → top-3 podium → 1 winner.
+        rounds = [
+            RoundConfig(round_type="qualification", advance_count=8),
+            RoundConfig(round_type="semifinal", advance_count=4),
+            RoundConfig(round_type="final", advance_count=4),
+        ]
+        results = simulate_event_progression(
+            athletes, rounds=rounds, n_simulations=2000, rng_seed=42
+        )
+        assert len(results) == len(athletes)
+        for pr in results:
+            # prob_qualify defaults to 1.0 (sim never sets it).
+            assert pr.prob_qualify == pytest.approx(1.0, abs=0.0)
+            # Monotone (allow tiny rounding slack since values are rounded to 4dp).
+            assert pr.prob_qualify >= pr.prob_reach_semi - 1e-9, (
+                f"athlete {pr.athlete_id}: qualify {pr.prob_qualify} "
+                f"< reach_semi {pr.prob_reach_semi}"
+            )
+            assert pr.prob_reach_semi >= pr.prob_reach_final - 1e-9, (
+                f"athlete {pr.athlete_id}: reach_semi {pr.prob_reach_semi} "
+                f"< reach_final {pr.prob_reach_final}"
+            )
+            assert pr.prob_reach_final >= pr.final_podium_prob - 1e-9, (
+                f"athlete {pr.athlete_id}: reach_final {pr.prob_reach_final} "
+                f"< podium {pr.final_podium_prob}"
+            )
+            assert pr.final_podium_prob >= pr.final_win_prob - 1e-9, (
+                f"athlete {pr.athlete_id}: podium {pr.final_podium_prob} "
+                f"< win {pr.final_win_prob}"
+            )
+            # All within [0, 1].
+            for label, val in [
+                ("prob_qualify", pr.prob_qualify),
+                ("prob_reach_semi", pr.prob_reach_semi),
+                ("prob_reach_final", pr.prob_reach_final),
+                ("final_podium_prob", pr.final_podium_prob),
+                ("final_win_prob", pr.final_win_prob),
+            ]:
+                assert 0.0 <= val <= 1.0, (
+                    f"athlete {pr.athlete_id}: {label}={val} not in [0, 1]"
+                )
+
+    def test_progression_single_round_degenerate(self, eight_athletes_with_ratings):
+        """1-round format (single qualification, all 8 advance): the cumulative
+        reach-semi / reach-final fields stay at their defaults of 1.0 because
+        the format has no semifinal nor final stage in the sim sense.
+        """
+        fixture_mus = [1750, 1700, 1680, 1650, 1620, 1600, 1570, 1540]
+        athletes = [
+            AthleteProjectionInput(
+                athlete_id=a.id,
+                mu=mu,
+                sigma=100.0,
+                name=a.name,
+            )
+            for a, mu in zip(eight_athletes_with_ratings, fixture_mus)
+        ]
+        # Single round — degenerate "qualifier-only" format.
+        rounds = [RoundConfig(round_type="qualification", advance_count=8)]
+        results = simulate_event_progression(
+            athletes, rounds=rounds, n_simulations=1000, rng_seed=7
+        )
+        assert len(results) == len(athletes)
+        for pr in results:
+            assert pr.prob_reach_semi == pytest.approx(1.0, abs=0.0), (
+                f"athlete {pr.athlete_id}: prob_reach_semi={pr.prob_reach_semi} "
+                "expected 1.0 in single-round format"
+            )
+            assert pr.prob_reach_final == pytest.approx(1.0, abs=0.0), (
+                f"athlete {pr.athlete_id}: prob_reach_final={pr.prob_reach_final} "
+                "expected 1.0 in single-round format"
+            )
+            # Default for prob_qualify is also 1.0.
+            assert pr.prob_qualify == pytest.approx(1.0, abs=0.0)
+
+
+# ---------------------------------------------------------------------------
 # default_event_format
 # ---------------------------------------------------------------------------
 
