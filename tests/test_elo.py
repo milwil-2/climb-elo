@@ -452,6 +452,24 @@ def test_normalize_boulder_score_old_format_tb():
     assert normalize_boulder_score("2T3 4B5") == 2365.0
 
 
+def test_normalize_boulder_score_pre2018_lowercase_zerotop():
+    """Pre-2018 lowercase feed omits attempt counts for 0-top/0-zone rows (#115).
+
+    These ``"0t …"`` rows previously normalised to None and silently vanished
+    from the boulder field (1,523 real results across 808 athletes). The
+    attempt counts must be read as 0, not rejected. The separator in the live
+    feed is a non-breaking space (U+00A0), which ``\\s`` matches.
+    """
+    # With attempts present (already worked): "5t6 5b6" → 5*1000+5*100-6*10-6
+    assert normalize_boulder_score("5t6 5b6") == 5434.0
+    # 0 tops, attempt digit omitted: "0t 4b10" → 0 + 4*100 - 0 - 10 = 390
+    assert normalize_boulder_score("0t 4b10") == 390.0
+    assert normalize_boulder_score("0t\xa04b10") == 390.0  # nbsp separator
+    # both attempt digits omitted: "0t 0b" → 0
+    assert normalize_boulder_score("0t 0b") == 0.0
+    assert normalize_boulder_score("0t 3b7") == 293.0  # 300 - 7
+
+
 def test_normalize_boulder_score_dnf_dns():
     """DNF / DNS / empty strings return None."""
     assert normalize_boulder_score("DNF") is None
