@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, inspect as sa_inspect, or_, select
 
 from climbing_elo.cache import (
     html_page_cache,
@@ -1525,6 +1525,24 @@ async def v2_events(
 # ---------------------------------------------------------------------------
 
 
+def _forecast_tables_present(session) -> bool:
+    """Return True if both forecast tables have been provisioned on this DB.
+
+    First-deploy guard. `Base.metadata.create_all` is skipped against Postgres
+    in `create_app()` (see `api/app.py`), so the forecast tables only exist on
+    a prod DB once `scripts/init_forecast_tables.py` (run by the daily workflow
+    or manually) has executed. Until then any query against them would crash
+    every page that uses this helper — including the high-traffic event detail.
+
+    Inspect-based detection — avoids issuing a query that would fail and poison
+    the session's transaction state.
+    """
+    inspector = sa_inspect(session.get_bind())
+    return inspector.has_table(EventForecast.__tablename__) and inspector.has_table(
+        EventForecastScore.__tablename__
+    )
+
+
 def _build_forecast_recap(
     session,
     event: Event,
@@ -1552,8 +1570,14 @@ def _build_forecast_recap(
             "is_backfill": bool,
         }
 
-    Returns an empty list when no forecasts are stored for the event.
+    Returns an empty list when no forecasts are stored for the event, or when
+    the forecast tables don't exist yet (deploy hasn't run the table-creation
+    migration). The recap panel is purely additive, so a missing table must
+    not break the underlying event/predictions page.
     """
+    if not _forecast_tables_present(session):
+        return []
+
     panels: list[dict] = []
 
     for gender_enum in (Gender.M, Gender.F):
@@ -2668,6 +2692,9 @@ def _aggregate_model_performance(
         )
     if gender is not None:
         stmt = stmt.where(EventForecastScore.gender == gender)
+
+    if not _forecast_tables_present(session):
+        return {"aggregates": {}, "events": [], "n": 0}
 
     rows = list(session.execute(stmt.order_by(Event.start_date.desc())).all())
     n = len(rows)

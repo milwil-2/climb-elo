@@ -72,6 +72,10 @@ jobs:
         run: uv run python scripts/scrape_upcoming.py --all-disciplines
 
       # ----------------------------------------------------------------------
+      - name: Provision forecast tables (idempotent — first deploy only does work)
+        run: uv run python scripts/init_forecast_tables.py
+
+      # ----------------------------------------------------------------------
       - name: Snapshot forecasts for upcoming events
         run: uv run python scripts/snapshot_forecasts.py --within-days 7
 

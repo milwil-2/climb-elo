@@ -9,6 +9,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from climbing_elo.api.limiter import limiter
 
@@ -1277,21 +1278,26 @@ async def event_forecast(
         if not event:
             raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
 
-        rows = list(
-            session.execute(
-                select(EventForecast, Athlete)
-                .join(Athlete, EventForecast.athlete_id == Athlete.id)
-                .where(
-                    EventForecast.event_id == event_id,
-                    EventForecast.gender == gen,
-                    EventForecast.is_backfill == is_backfill,
-                )
-                .order_by(
-                    EventForecast.prob_win.desc(),
-                    EventForecast.expected_rank.asc(),
-                )
-            ).all()
-        )
+        try:
+            rows = list(
+                session.execute(
+                    select(EventForecast, Athlete)
+                    .join(Athlete, EventForecast.athlete_id == Athlete.id)
+                    .where(
+                        EventForecast.event_id == event_id,
+                        EventForecast.gender == gen,
+                        EventForecast.is_backfill == is_backfill,
+                    )
+                    .order_by(
+                        EventForecast.prob_win.desc(),
+                        EventForecast.expected_rank.asc(),
+                    )
+                ).all()
+            )
+        except SQLAlchemyError:
+            # Tables not yet provisioned on this deploy — treat as 404.
+            session.rollback()
+            rows = []
 
         if not rows:
             raise HTTPException(
@@ -1452,7 +1458,12 @@ async def model_performance(
         if gen_enum is not None:
             stmt = stmt.where(EventForecastScore.gender == gen_enum)
 
-        rows = list(session.execute(stmt.order_by(Event.start_date.asc())).all())
+        try:
+            rows = list(session.execute(stmt.order_by(Event.start_date.asc())).all())
+        except SQLAlchemyError:
+            # event_forecast_scores not provisioned yet on this deploy.
+            session.rollback()
+            rows = []
 
         n_events = len(rows)
 
