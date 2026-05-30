@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}Model performance &mdash; Climbing ELO{% endblock %}
+
+{% block head %}
+<style>
+  .page-head{padding:80px 0 32px;border-bottom:1px solid var(--line)}
+  .page-head h1{font-size:clamp(34px,4.4vw,46px);line-height:1.1;letter-spacing:-0.025em;font-weight:600}
+  .page-head h1 em{font-style:italic;font-weight:400}
+  .page-head .crumbs{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);margin-bottom:20px;font-weight:500}
+  .page-head .lead{margin-top:22px;max-width:560px;color:var(--ink-2);font-size:15.5px;line-height:1.6}
+
+  .perf-section{padding:24px 0 88px}
+
+  /* Filter bar */
+  .mp-filters{
+    display:flex;flex-wrap:wrap;gap:18px;align-items:center;
+    padding:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+    margin-bottom:32px;font-size:12.5px;
+  }
+  .mp-filters .grp{display:flex;align-items:center;gap:8px}
+  .mp-filters .lbl{
+    font-size:10.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);font-weight:500;
+  }
+  .mp-filters select{
+    padding:5px 10px;border:1px solid var(--line-2);background:var(--paper);
+    font-size:12px;color:var(--ink);letter-spacing:0.04em;
+    font-family:'Manrope',sans-serif;border-radius:0;
+  }
+  .mp-pills{display:flex}
+  .mp-pills a{
+    padding:5px 12px;border:1px solid var(--line-2);
+    font-size:11.5px;font-weight:500;letter-spacing:0.06em;text-decoration:none;
+    color:var(--ink-2);background:var(--paper);transition:all .15s;
+  }
+  .mp-pills a + a{margin-left:-1px}
+  .mp-pills a:hover{color:var(--ink);border-color:var(--ink-2)}
+  .mp-pills a.active{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .mp-check{display:flex;align-items:center;gap:8px;color:var(--ink-2);font-size:12.5px}
+  .mp-submit{
+    padding:6px 14px;border:1px solid var(--line-2);background:var(--paper);
+    color:var(--ink);font-size:11.5px;letter-spacing:0.06em;cursor:pointer;
+    font-family:'Manrope',sans-serif;transition:border-color .15s;
+  }
+  .mp-submit:hover{border-color:var(--ink)}
+
+  /* Aggregate cards */
+  .mp-cards{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;
+    margin-bottom:36px;
+  }
+  .mp-card{
+    padding:20px;border:1px solid var(--line);background:transparent;
+  }
+  .mp-card .lbl{
+    font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim);
+    font-weight:500;margin-bottom:8px;
+  }
+  .mp-card .val{
+    font-size:28px;font-weight:600;letter-spacing:-0.02em;color:var(--ink);
+    font-variant-numeric:tabular-nums;line-height:1;
+  }
+  .mp-card .sub{
+    font-size:11px;color:var(--dim);letter-spacing:0.06em;margin-top:6px;
+  }
+
+  /* Per-event table */
+  .mp-section-label{
+    font-size:10.5px;font-weight:500;color:var(--dim);letter-spacing:0.18em;
+    text-transform:uppercase;margin-bottom:14px;display:flex;align-items:center;gap:10px;
+  }
+  .mp-section-label .dash{width:18px;height:1px;background:var(--line-2)}
+
+  table.mp-tbl{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.mp-tbl thead th{
+    text-align:left;padding:12px 14px;font-size:10.5px;font-weight:500;color:var(--dim);
+    letter-spacing:0.14em;text-transform:uppercase;border-bottom:1px solid var(--line);
+  }
+  table.mp-tbl tbody tr{border-bottom:1px solid var(--line);transition:background .15s}
+  table.mp-tbl tbody tr:last-child{border-bottom:none}
+  table.mp-tbl tbody tr:hover{background:var(--paper-2)}
+  table.mp-tbl tbody td{padding:12px 14px;vertical-align:middle}
+  td.mp-name{font-weight:500}
+  td.mp-name a{transition:color .15s}
+  td.mp-name a:hover{color:var(--dim)}
+  td.mp-meta{font-size:11.5px;color:var(--dim);letter-spacing:0.04em}
+  td.mp-num{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+  td.mp-num.good{color:var(--ink);font-weight:600}
+  .mp-empty{padding:48px;text-align:center;color:var(--dim);border:1px solid var(--line)}
+  .mp-backfill-badge{
+    display:inline-block;margin-left:8px;padding:1px 6px;font-size:9.5px;
+    letter-spacing:0.1em;text-transform:uppercase;border:1px solid var(--line-2);
+    color:var(--dim);font-weight:500;vertical-align:middle;
+  }
+</style>
+{% endblock %}
+
+{% block body %}
+<main>
+  <section class="page-head">
+    <div class="crumbs reveal"><a href="/">Home</a> / Model performance</div>
+    <h1 class="reveal d2">Model <em>performance</em>.</h1>
+    <p class="lead reveal d3">
+      Rolling Brier and hit-rate across this season's locked-in forecasts.
+      Historical retro-replay rows are hidden by default &mdash; flip the toggle
+      to surface them.
+    </p>
+  </section>
+
+  <section class="perf-section">
+    <!-- ── Filter bar ─────────────────────────────────────────────── -->
+    <form method="get" action="/model-performance" class="mp-filters reveal">
+      <div class="grp">
+        <span class="lbl">Season</span>
+        <select name="season">
+          {%- for s in season_choices -%}
+          <option value="{{ s }}" {% if s == season %}selected{% endif %}>{{ s }}</option>
+          {%- endfor -%}
+        </select>
+      </div>
+
+      <div class="grp">
+        <span class="lbl">Discipline</span>
+        <div class="mp-pills">
+          {%- for p in disc_pills -%}
+          <a href="?season={{ season }}{% if p.key %}&amp;discipline={{ p.key }}{% endif %}{% if active_gender %}&amp;gender={{ active_gender }}{% endif %}{% if include_backfill %}&amp;include_backfill=1{% endif %}"
+             class="{% if p.active %}active{% endif %}">{{ p.label }}</a>
+          {%- endfor -%}
+        </div>
+      </div>
+
+      <div class="grp">
+        <span class="lbl">Gender</span>
+        <select name="gender">
+          <option value="" {% if not active_gender %}selected{% endif %}>All</option>
+          <option value="M" {% if active_gender == 'M' %}selected{% endif %}>Men</option>
+          <option value="F" {% if active_gender == 'F' %}selected{% endif %}>Women</option>
+        </select>
+      </div>
+
+      <label class="mp-check">
+        <input type="checkbox" name="include_backfill" value="1" {% if include_backfill %}checked{% endif %}/>
+        Include historical backfill
+      </label>
+
+      <button class="mp-submit" type="submit">Apply</button>
+    </form>
+
+    <!-- ── Aggregate cards ───────────────────────────────────────── -->
+    <div class="mp-cards reveal d2">
+      <div class="mp-card">
+        <div class="lbl">Events scored</div>
+        <div class="val">{{ n_events }}</div>
+        <div class="sub">Season {{ season }}{% if include_backfill %} &middot; incl. backfill{% endif %}</div>
+      </div>
+      {%- if n_events > 0 -%}
+      <div class="mp-card">
+        <div class="lbl">Mean podium Brier</div>
+        <div class="val">{{ '%.3f' % aggregates.brier_podium_mean }}</div>
+        <div class="sub">lower = better</div>
+      </div>
+      <div class="mp-card">
+        <div class="lbl">Mean win Brier</div>
+        <div class="val">{{ '%.3f' % aggregates.brier_win_mean }}</div>
+        <div class="sub">lower = better</div>
+      </div>
+      <div class="mp-card">
+        <div class="lbl">Top-3 hit rate</div>
+        <div class="val">{{ '%.0f' % (aggregates.top3_intersection_rate * 100) }}%</div>
+        <div class="sub">predicted &cap; actual / 3</div>
+      </div>
+      {%- endif -%}
+    </div>
+
+    <!-- ── Per-event table ───────────────────────────────────────── -->
+    <div class="mp-section-label reveal"><span class="dash"></span>Per-event scores</div>
+    {%- if n_events == 0 -%}
+    <div class="mp-empty reveal">
+      No scored events for the current filters yet. Daily snapshot + score steps
+      run after each scrape pass &mdash; this view fills in once finals land.
+    </div>
+    {%- else -%}
+    <div class="card reveal">
+      <table class="mp-tbl">
+        <thead><tr>
+          <th>Event</th>
+          <th>Discipline</th>
+          <th>Gender</th>
+          <th style="text-align:right">Podium Brier</th>
+          <th style="text-align:right">Win Brier</th>
+          <th style="text-align:right">Top-3</th>
+          <th style="text-align:right">Athletes</th>
+        </tr></thead>
+        <tbody>
+          {%- for ev in events -%}
+          <tr>
+            <td class="mp-name">
+              <a href="/events/{{ ev.event_id }}">{{ ev.name }}</a>
+              {%- if ev.is_backfill -%}
+              <span class="mp-backfill-badge">Backfill</span>
+              {%- endif -%}
+              <div class="mp-meta" style="margin-top:2px">{{ ev.date }}</div>
+            </td>
+            <td class="mp-meta">{{ ev.discipline }}</td>
+            <td class="mp-meta">{{ ev.gender_label }}</td>
+            <td class="mp-num">{{ '%.3f' % ev.brier_podium }}</td>
+            <td class="mp-num">{{ '%.3f' % ev.brier_win }}</td>
+            <td class="mp-num{% if ev.top3_intersection == 3 %} good{% endif %}">{{ ev.top3_intersection }}/3</td>
+            <td class="mp-num">{{ ev.n_athletes }}</td>
+          </tr>
+          {%- endfor -%}
+        </tbody>
+      </table>
+    </div>
+    {%- endif -%}
+  </section>
+</main>
+{% endblock %}

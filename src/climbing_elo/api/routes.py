@@ -39,6 +39,8 @@ from climbing_elo.models import (
     Athlete,
     Discipline,
     Event,
+    EventForecast,
+    EventForecastScore,
     EventTier,
     Gender,
     Rating,
@@ -1519,6 +1521,195 @@ async def v2_events(
 
 
 # ---------------------------------------------------------------------------
+# Forecast recap helpers (shared by /events/{id} and /predictions/{id})
+# ---------------------------------------------------------------------------
+
+
+def _build_forecast_recap(
+    session,
+    event: Event,
+    *,
+    is_backfill: bool = False,
+    top_n: int = 3,
+) -> list[dict]:
+    """Build the per-gender "Predicted vs Actual" recap panels for an event.
+
+    Returns one dict per gender that has a forecast row, ordered M then F.
+    Each dict has the shape consumed by the recap panel template:
+
+        {
+            "gender": "M",
+            "gender_label": "Men",
+            "predicted_top3": [{"athlete_id", "name", "prob_podium"}],
+            "actual_top3":    [{"athlete_id", "name", "rank"}],
+            "rows": [{"athlete_id", "name", "predicted_rank", "actual_rank",
+                      "marker"}],  # marker ∈ {"hit", "predicted_only",
+                                    #          "actual_only"}
+            "top3_intersection": int | None,   # from score row
+            "brier_podium": float | None,
+            "n_athletes": int | None,
+            "has_score": bool,
+            "is_backfill": bool,
+        }
+
+    Returns an empty list when no forecasts are stored for the event.
+    """
+    panels: list[dict] = []
+
+    for gender_enum in (Gender.M, Gender.F):
+        forecast_rows = list(
+            session.execute(
+                select(EventForecast, Athlete)
+                .join(Athlete, EventForecast.athlete_id == Athlete.id)
+                .where(
+                    EventForecast.event_id == event.id,
+                    EventForecast.gender == gender_enum,
+                    EventForecast.is_backfill == is_backfill,
+                )
+                .order_by(EventForecast.prob_podium.desc())
+            ).all()
+        )
+
+        if not forecast_rows:
+            continue
+
+        # Predicted top-N — sort by prob_podium DESC.
+        predicted_top = [
+            {
+                "athlete_id": athlete.id,
+                "name": athlete.name,
+                "prob_podium": fc.prob_podium,
+                "prob_win": fc.prob_win,
+            }
+            for fc, athlete in forecast_rows[:top_n]
+        ]
+
+        # Actual top-N — final round if present, else semifinal, else qual.
+        final_round = None
+        for round_type in (RoundType.FINAL, RoundType.SEMI, RoundType.QUALIFICATION):
+            cand = next(
+                (
+                    r
+                    for r in event.rounds
+                    if r.round_type == round_type and r.gender == gender_enum
+                ),
+                None,
+            )
+            if cand is not None:
+                final_round = cand
+                break
+
+        actual_top: list[dict] = []
+        if final_round is not None:
+            results = list(
+                session.execute(
+                    select(Result, Athlete)
+                    .join(Athlete, Result.athlete_id == Athlete.id)
+                    .where(
+                        Result.round_id == final_round.id,
+                        Result.dns.is_(False),
+                        Result.rank.is_not(None),
+                    )
+                    .order_by(Result.rank.asc())
+                    .limit(top_n)
+                ).all()
+            )
+            actual_top = [
+                {
+                    "athlete_id": athlete.id,
+                    "name": athlete.name,
+                    "rank": res.rank,
+                }
+                for res, athlete in results
+            ]
+
+        actual_ids = {row["athlete_id"] for row in actual_top}
+
+        # Build a unified row list — one entry per athlete in either top-K.
+        # Marker: hit if in both, predicted_only if just predicted, actual_only
+        # if just actual.
+        seen: set[int] = set()
+        rows_out: list[dict] = []
+        for row in predicted_top:
+            aid = row["athlete_id"]
+            seen.add(aid)
+            in_actual = aid in actual_ids
+            rows_out.append(
+                {
+                    "athlete_id": aid,
+                    "name": row["name"],
+                    "prob_podium": row["prob_podium"],
+                    "actual_rank": next(
+                        (a["rank"] for a in actual_top if a["athlete_id"] == aid),
+                        None,
+                    ),
+                    "marker": "hit" if in_actual else "predicted_only",
+                }
+            )
+        for row in actual_top:
+            aid = row["athlete_id"]
+            if aid in seen:
+                continue
+            rows_out.append(
+                {
+                    "athlete_id": aid,
+                    "name": row["name"],
+                    "prob_podium": None,
+                    "actual_rank": row["rank"],
+                    "marker": "actual_only",
+                }
+            )
+
+        # Score row (may not exist if scoring hasn't run yet).
+        score_row = session.execute(
+            select(EventForecastScore).where(
+                EventForecastScore.event_id == event.id,
+                EventForecastScore.gender == gender_enum,
+                EventForecastScore.is_backfill == is_backfill,
+            )
+        ).scalar_one_or_none()
+
+        panels.append(
+            {
+                "gender": gender_enum.value,
+                "gender_label": _GENDER_LABEL.get(gender_enum, gender_enum.value),
+                "predicted_top3": predicted_top,
+                "actual_top3": actual_top,
+                "rows": rows_out,
+                "has_score": score_row is not None,
+                "top3_intersection": (
+                    score_row.top3_intersection if score_row is not None else None
+                ),
+                "brier_podium": (
+                    score_row.brier_podium if score_row is not None else None
+                ),
+                "n_athletes": (
+                    score_row.n_athletes
+                    if score_row is not None
+                    else len(forecast_rows)
+                ),
+                "is_backfill": is_backfill,
+            }
+        )
+
+    return panels
+
+
+def _event_has_final_results(session, event: Event) -> bool:
+    """Return True when the event has at least one Result row in a FINAL round."""
+    final_round_ids = [r.id for r in event.rounds if r.round_type == RoundType.FINAL]
+    if not final_round_ids:
+        return False
+    count = session.execute(
+        select(func.count(Result.id)).where(
+            Result.round_id.in_(final_round_ids),
+            Result.dns.is_(False),
+        )
+    ).scalar_one()
+    return count > 0
+
+
+# ---------------------------------------------------------------------------
 # GET /events/{event_id}  — event detail (round-by-round results, pre/post μ)
 # ---------------------------------------------------------------------------
 
@@ -1584,6 +1775,7 @@ async def v2_event_detail(request: Request, event_id: int):
             )
 
         disc_label = _DISC_LABEL.get(event.discipline, event.discipline.value)
+        forecast_panels = _build_forecast_recap(session, event)
         ticker = _ticker_context(session)
 
     ctx = {
@@ -1596,6 +1788,7 @@ async def v2_event_detail(request: Request, event_id: int):
             "discipline_label": disc_label,
         },
         "rounds": rounds_data,
+        "forecast_panels": forecast_panels,
         **ticker,
         **_nav_context("events"),
     }
@@ -2304,7 +2497,308 @@ async def v2_predictions(request: Request):
     ctx = {
         "grouped": grouped,
         "today": str(today),
+        "mode": "hub",
         **ticker,
         **_nav_context("predictions"),
     }
     return t.TemplateResponse(request, "predictions.html", ctx)
+
+
+# ---------------------------------------------------------------------------
+# GET /predictions/{event_id}  — per-event recap (frozen forecast vs actual)
+# or forward-projection mode when the event is still upcoming.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/predictions/{event_id}", response_class=HTMLResponse)
+async def v2_predictions_event(request: Request, event_id: int):
+    """Per-event prediction view.
+
+    When the event has at least one FINAL-round result AND a stored
+    :class:`EventForecast` set, render in **recap mode** using the frozen
+    forecast rows + score row — no fresh Monte Carlo is run. Otherwise fall
+    back to **forward mode** (run a Monte Carlo over the current rating
+    distribution, same shape as the ``/projections`` page).
+    """
+    t = _templates(request)
+
+    with _session() as session:
+        event = session.get(Event, event_id)
+        if not event:
+            return HTMLResponse("Event not found", status_code=404)
+
+        finished = _event_has_final_results(session, event)
+        # Forecast panels: a list per gender with predicted top-3 + actual.
+        recap_panels = _build_forecast_recap(session, event)
+
+        mode = "recap" if (finished and recap_panels) else "forward"
+
+        forward_genders: list[dict] = []
+        if mode == "forward":
+            # Forward projection — mirror the predictions hub card logic for
+            # one event. Pull the top-N current-rating athletes per gender
+            # (using likely roster if no athletes are registered yet) and run
+            # compute_podium_probabilities.
+            for gender_enum in (Gender.M, Gender.F):
+                # Try to source athletes from the stored qualification round
+                # first — if the event already has registered athletes.
+                athlete_ids: list[int] = []
+                seen: set[int] = set()
+                for rnd in event.rounds:
+                    if rnd.gender != gender_enum:
+                        continue
+                    res_list = list(
+                        session.execute(
+                            select(Result).where(
+                                Result.round_id == rnd.id,
+                                Result.dns.is_(False),
+                            )
+                        ).scalars()
+                    )
+                    for res in res_list:
+                        if res.athlete_id not in seen:
+                            athlete_ids.append(res.athlete_id)
+                            seen.add(res.athlete_id)
+
+                if not athlete_ids:
+                    # Likely-roster fallback.
+                    roster_ids = likely_competitors(
+                        session, event.discipline, event.season, gender_enum
+                    )
+                    athlete_ids = list(roster_ids)[:32]
+
+                if not athlete_ids:
+                    continue
+
+                proj_inputs = _build_proj_inputs_batched(
+                    session, athlete_ids, event.discipline
+                )
+                if len(proj_inputs) < 2:
+                    continue
+
+                probs = compute_podium_probabilities(proj_inputs, n_simulations=5_000)
+                ranked = sorted(
+                    proj_inputs,
+                    key=lambda a: probs[a.athlete_id]["expected_rank"],
+                )
+                top_rows = [
+                    {
+                        "athlete_id": a.athlete_id,
+                        "name": a.name,
+                        "win": f"{probs[a.athlete_id]['win'] * 100:.1f}",
+                        "podium": f"{probs[a.athlete_id]['podium'] * 100:.1f}",
+                    }
+                    for a in ranked[:8]
+                ]
+                forward_genders.append(
+                    {
+                        "gender": gender_enum.value,
+                        "gender_label": _GENDER_LABEL.get(
+                            gender_enum, gender_enum.value
+                        ),
+                        "top_rows": top_rows,
+                        "total_athletes": len(proj_inputs),
+                    }
+                )
+
+        disc_label = _DISC_LABEL.get(event.discipline, event.discipline.value)
+        ticker = _ticker_context(session)
+
+    ctx = {
+        "mode": mode,
+        "event": {
+            "id": event.id,
+            "name": event.name,
+            "season": event.season,
+            "tier": event.tier.value.replace("_", " ").title(),
+            "date": str(event.start_date),
+            "discipline_label": disc_label,
+        },
+        "recap_panels": recap_panels,
+        "forward_genders": forward_genders,
+        **ticker,
+        **_nav_context("predictions"),
+    }
+    return t.TemplateResponse(request, "predictions.html", ctx)
+
+
+# ---------------------------------------------------------------------------
+# GET /model-performance  — rolling Brier / hit-rate dashboard.
+# ---------------------------------------------------------------------------
+
+
+# Aliases for the discipline pill filter (?discipline=lead|boulder|speed|all).
+_MODEL_PERF_DISC_ALIASES: dict[str, Discipline] = {
+    "lead": Discipline.LEAD,
+    "boulder": Discipline.BOULDER,
+    "speed": Discipline.SPEED,
+}
+
+
+def _aggregate_model_performance(
+    session,
+    *,
+    season: int,
+    discipline: Discipline | None,
+    gender: Gender | None,
+    include_backfill: bool,
+) -> dict:
+    """Aggregate :class:`EventForecastScore` rows for the model-performance page.
+
+    Mirrors the v1 ``/model-performance`` endpoint's query shape so the same
+    numbers surface in both places (single source of truth — they share this
+    helper). Returns a dict with ``aggregates`` (means + intersection rate),
+    ``events`` (per-event rows linkable to the event detail page), and ``n``.
+    """
+    stmt = (
+        select(EventForecastScore, Event)
+        .join(Event, EventForecastScore.event_id == Event.id)
+        .where(
+            EventForecastScore.is_backfill == include_backfill,
+            Event.season == season,
+        )
+    )
+    if discipline is not None:
+        stmt = stmt.where(Event.discipline == discipline)
+    else:
+        stmt = stmt.where(
+            Event.discipline.in_(
+                [Discipline.LEAD, Discipline.BOULDER, Discipline.SPEED]
+            )
+        )
+    if gender is not None:
+        stmt = stmt.where(EventForecastScore.gender == gender)
+
+    rows = list(session.execute(stmt.order_by(Event.start_date.desc())).all())
+    n = len(rows)
+
+    if n == 0:
+        return {"aggregates": {}, "events": [], "n": 0}
+
+    brier_podium = [s.brier_podium for s, _ in rows]
+    brier_win = [s.brier_win for s, _ in rows]
+    logloss_podium = [s.logloss_podium for s, _ in rows]
+    logloss_win = [s.logloss_win for s, _ in rows]
+    top3_total = sum(s.top3_intersection for s, _ in rows)
+
+    aggregates = {
+        "brier_podium_mean": sum(brier_podium) / n,
+        "brier_win_mean": sum(brier_win) / n,
+        "logloss_podium_mean": sum(logloss_podium) / n,
+        "logloss_win_mean": sum(logloss_win) / n,
+        "top3_intersection_rate": top3_total / (3 * n),
+    }
+
+    events = [
+        {
+            "event_id": ev.id,
+            "name": ev.name,
+            "date": str(ev.start_date),
+            "discipline": _DISC_LABEL.get(ev.discipline, ev.discipline.value),
+            "gender": score.gender.value,
+            "gender_label": _GENDER_LABEL.get(score.gender, score.gender.value),
+            "brier_podium": score.brier_podium,
+            "brier_win": score.brier_win,
+            "top3_intersection": score.top3_intersection,
+            "n_athletes": score.n_athletes,
+            "is_backfill": score.is_backfill,
+        }
+        for score, ev in rows
+    ]
+
+    return {"aggregates": aggregates, "events": events, "n": n}
+
+
+@router.get("/model-performance", response_class=HTMLResponse)
+async def v2_model_performance(
+    request: Request,
+    season: Optional[int] = Query(None, ge=2000, le=2100),
+    discipline: Optional[str] = Query(None),
+    gender: Optional[str] = Query(None),
+    include_backfill: bool = Query(False),
+):
+    """Rolling model-performance dashboard.
+
+    Defaults: ``season = current year``, ``include_backfill = False`` — per
+    the plan the public surface shows only this season's live forecasts.
+    Historical retro-replay rows are revealed only when ``include_backfill``
+    is explicitly set.
+    """
+    t = _templates(request)
+
+    today = date.today()
+    effective_season = season if season is not None else today.year
+
+    disc_enum: Discipline | None = None
+    disc_label_active = "All"
+    if discipline:
+        candidate = _MODEL_PERF_DISC_ALIASES.get(discipline.lower())
+        # Quietly fall back to "all" on unknown values rather than 422 — this
+        # is the public HTML route, not the API.
+        if candidate is not None:
+            disc_enum = candidate
+            disc_label_active = _DISC_LABEL.get(candidate, discipline.title())
+
+    gen_enum: Gender | None = None
+    gender_label_active = "All"
+    if gender:
+        if gender.upper() == "M":
+            gen_enum = Gender.M
+            gender_label_active = "Men"
+        elif gender.upper() == "F":
+            gen_enum = Gender.F
+            gender_label_active = "Women"
+
+    with _session() as session:
+        data = _aggregate_model_performance(
+            session,
+            season=effective_season,
+            discipline=disc_enum,
+            gender=gen_enum,
+            include_backfill=include_backfill,
+        )
+        ticker = _ticker_context(session)
+
+    # Season dropdown — last 3 calendar years incl. current. If a user picks a
+    # season outside that window via the query string, include it too so the
+    # current selection stays in the list.
+    season_choices: list[int] = [today.year, today.year - 1, today.year - 2]
+    if effective_season not in season_choices:
+        season_choices.append(effective_season)
+        season_choices.sort(reverse=True)
+
+    # Pill filter state for the discipline.
+    disc_pills = [
+        {"key": "", "label": "All", "active": disc_enum is None},
+        {
+            "key": "lead",
+            "label": "Lead",
+            "active": disc_enum == Discipline.LEAD,
+        },
+        {
+            "key": "boulder",
+            "label": "Boulder",
+            "active": disc_enum == Discipline.BOULDER,
+        },
+        {
+            "key": "speed",
+            "label": "Speed",
+            "active": disc_enum == Discipline.SPEED,
+        },
+    ]
+
+    ctx = {
+        "season": effective_season,
+        "season_choices": season_choices,
+        "discipline_label_active": disc_label_active,
+        "gender_label_active": gender_label_active,
+        "disc_pills": disc_pills,
+        "active_gender": gen_enum.value if gen_enum else "",
+        "include_backfill": include_backfill,
+        "aggregates": data["aggregates"],
+        "events": data["events"],
+        "n_events": data["n"],
+        **ticker,
+        **_nav_context("model_performance"),
+    }
+    return t.TemplateResponse(request, "model_performance.html", ctx)
