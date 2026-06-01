@@ -1,0 +1,72 @@
+{#-
+  Shared ranking-table macro used by /leaderboard and /athletes.
+  Closes the #106 / #110 root cause: prior duplicated <thead>/<tbody> markup
+  between leaderboard.html and athletes_index.html required every column
+  change (e.g. the "Age" column) to be applied twice.
+
+  Parameters:
+    rows                 — list of row dicts (rank, id, name, nationality, age,
+                           n_events, mu, sigma; delta_90d when show_delta_90d;
+                           activity_label when show_activity_badge).
+    show_delta_90d       — render the trailing "90d Δ" column.
+    show_activity_badge  — render the inline activity badge after the athlete
+                           name when view == 'all' and row.activity_label is set.
+    row_data_attrs       — emit data-name / data-nat / data-mu on each <tr>
+                           (used by athletes_index.html client-side filtering).
+    empty_text           — text rendered in the colspan'd empty-state row.
+    table_id             — HTML id attribute on the <table> element.
+    view                 — leaderboard view ('active'/'all'/'legacy'); only
+                           consulted when show_activity_badge is True.
+-#}
+{% macro ranking_table(rows, show_delta_90d=False, show_activity_badge=False, row_data_attrs=False, empty_text="No data available.", table_id="lb-table", view="active") -%}
+      <table class="lb" id="{{ table_id }}">
+        <thead><tr>
+          <th>#</th>
+          <th>Athlete</th>
+          <th>Age</th>
+          <th>Events</th>
+          <th class="text-right">R &plusmn; &sigma;</th>
+          {%- if show_delta_90d %}
+          <th class="text-right">90d &Delta;</th>
+          {%- endif %}
+        </tr></thead>
+        <tbody>
+          {%- for row in rows -%}
+          {%- if row_data_attrs -%}
+          <tr data-name="{{ row.name | lower }}" data-nat="{{ (row.nationality or '') | lower }}"
+              data-mu="{{ row.mu }}">
+          {%- else -%}
+          <tr>
+          {%- endif %}
+            <td class="rank mono{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
+            <td class="athlete">
+              <a href="/athletes/{{ row.id }}">{{ row.name }}</a>
+              <span class="nat">{{ row.nationality }}</span>
+              {%- if show_activity_badge %}
+              {%- if view == 'all' and row.activity_label -%}
+              <span class="activity-badge{% if row.activity_label == 'Active' %} is-active{% endif %}">{{ row.activity_label }}</span>
+              {%- endif -%}
+            </td>
+              {%- else %}
+            </td>
+              {%- endif %}
+            <td class="disc num" style="font-size:12.5px">{{ row.age or '—' }}</td>
+            <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
+            <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
+            {%- if show_delta_90d %}
+            <td class="change">
+              {%- set delta = row.delta_90d -%}
+              <span class="badge {% if delta > 1 %}up{% elif delta < -1 %}dn{% else %}flat{% endif %}">
+                <span class="arr">{% if delta > 1 %}&#9650;{% elif delta < -1 %}&#9660;{% else %}&ndash;{% endif %}</span>
+                {% if delta > 0 %}+{% endif %}{{ delta }}
+              </span>
+            </td>
+            {%- endif %}
+          </tr>
+          {%- endfor -%}
+          {%- if not rows -%}
+          <tr><td colspan="{% if show_delta_90d %}6{% else %}5{% endif %}" class="cell-empty">{{ empty_text }}</td></tr>
+          {%- endif -%}
+        </tbody>
+      </table>
+{%- endmacro %}
