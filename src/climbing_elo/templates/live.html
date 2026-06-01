@@ -586,7 +586,7 @@
       });
   }
 
-  // SSE connection (shared endpoint /live/{id}/stream — not v2-prefixed)
+  // SSE connection (shared endpoint /live/{id}/stream)
   function connect() {
     setStatus("connecting", "Connecting…");
     if (es) { es.close(); es = null; }
