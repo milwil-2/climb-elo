@@ -591,7 +591,12 @@ def live_html_db_path(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def live_html_factory(live_html_db_path):
-    """Create and seed a file-based SQLite DB for live HTML route tests."""
+    """Create and seed a file-based SQLite DB for live HTML route tests.
+
+    Event start_date is today and the seeded round is SEMI (not FINAL) so the
+    #134 live-view gate (``event_status() == LIVE``) holds — LIVE requires
+    today within the start-date window AND no non-DNS final result yet.
+    """
     eng = create_engine(f"sqlite:///{live_html_db_path}")
     Base.metadata.create_all(eng)
     factory = sessionmaker(bind=eng)
@@ -600,8 +605,8 @@ def live_html_factory(live_html_db_path):
     ev = Event(
         name="HTML Route Live Test Cup",
         tier=EventTier.WORLD_CUP,
-        season=2026,
-        start_date=date(2026, 7, 1),
+        season=date.today().year,
+        start_date=date.today(),
         discipline=Discipline.LEAD,
     )
     sess.add(ev)
@@ -636,7 +641,7 @@ def live_html_factory(live_html_db_path):
     sess.flush()
 
     rnd = Round(
-        event_id=ev.id, round_type=RoundType.FINAL, gender=Gender.M, athlete_count=2
+        event_id=ev.id, round_type=RoundType.SEMI, gender=Gender.M, athlete_count=2
     )
     sess.add(rnd)
     sess.flush()
@@ -775,12 +780,14 @@ def pre_event_html_factory(pre_event_db_path):
     factory = sessionmaker(bind=eng)
 
     sess = factory()
-    # Future event with no rounds/results yet
+    # Event with no rounds/results yet — must sit in the LIVE window so the
+    # #134 gate on /live/{id} doesn't soft-404 before the pre-event handler
+    # gets to render its likely-roster fallback.
     ev = Event(
         name="Pre Event World Cup",
         tier=EventTier.WORLD_CUP,
-        season=2026,
-        start_date=date(2026, 12, 1),
+        season=date.today().year,
+        start_date=date.today(),
         discipline=Discipline.LEAD,
     )
     sess.add(ev)
@@ -884,11 +891,14 @@ def proj_json_client(proj_json_db_path):
     factory = sessionmaker(bind=eng)
 
     sess = factory()
+    # start_date=today + SEMI (not FINAL) round keeps the event in the LIVE
+    # state (#134 gate). FINAL-round results would flip event_status() to
+    # FINISHED and soft-404 the /live/{id} route.
     ev = Event(
         name="Proj JSON Test Cup",
         tier=EventTier.WORLD_CUP,
-        season=2026,
-        start_date=date(2026, 8, 1),
+        season=date.today().year,
+        start_date=date.today(),
         discipline=Discipline.LEAD,
     )
     sess.add(ev)
@@ -923,7 +933,7 @@ def proj_json_client(proj_json_db_path):
     sess.flush()
 
     rnd = Round(
-        event_id=ev.id, round_type=RoundType.FINAL, gender=Gender.M, athlete_count=2
+        event_id=ev.id, round_type=RoundType.SEMI, gender=Gender.M, athlete_count=2
     )
     sess.add(rnd)
     sess.flush()
@@ -1159,11 +1169,13 @@ def livestream_client(livestream_db_path):
     sess = factory()
 
     def _seed_event(name: str, livestream_url):
+        # start_date=today + SEMI round (no FINAL results) keeps the event in
+        # the LIVE state so the #134 gate on /live/{id} doesn't soft-404.
         ev = Event(
             name=name,
             tier=EventTier.WORLD_CUP,
-            season=2026,
-            start_date=date(2026, 9, 1),
+            season=date.today().year,
+            start_date=date.today(),
             discipline=Discipline.LEAD,
             livestream_url=livestream_url,
         )
@@ -1185,7 +1197,7 @@ def livestream_client(livestream_db_path):
         sess.flush()
         rnd = Round(
             event_id=ev.id,
-            round_type=RoundType.FINAL,
+            round_type=RoundType.SEMI,
             gender=Gender.M,
             athlete_count=1,
         )
