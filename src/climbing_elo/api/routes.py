@@ -28,7 +28,12 @@ from climbing_elo.engine.activity import (
     RETIRED_THRESHOLD_YEARS,
 )
 from climbing_elo.engine.elo import expected_score as _expected_score
-from climbing_elo.engine.event_status import EventStatus, event_status
+from climbing_elo.engine.event_status import (
+    LIVE_WINDOW_DAYS,
+    EventStatus,
+    bulk_event_status,
+    event_status,
+)
 from climbing_elo.engine.likely_roster import likely_competitors
 from climbing_elo.engine.projections import (
     AthleteProjectionInput,
@@ -340,13 +345,37 @@ def _ticker_context(session) -> dict:
     """Build the context dict for the sticky ticker.
 
     Returns:
-        live_event: None (TODO: populate when DB has a live_event status field)
+        live_event: ``{"id": int, "name": str}`` for the most recently-started
+            event whose ``event_status()`` is LIVE, or None when nothing is
+            currently in progress.
         ticker_items: list of {kind, text, delta?, tag?} dicts
-
-    TODO: When the DB gains an Event.status field, replace the None here with
-    a query for Event objects where status == 'live'.
     """
-    live_event = None  # TODO: query for live events when Event.status field exists
+    # Candidate window: an event can only be LIVE if its start_date sits in
+    # [today - LIVE_WINDOW_DAYS, today]. That's typically 0-3 events on a
+    # World Cup weekend, so we let bulk_event_status() collapse FINISHED
+    # cases via a single EXISTS query (no N+1).
+    today = date.today()
+    live_event = None
+    try:
+        candidates = list(
+            session.execute(
+                select(Event)
+                .where(
+                    Event.start_date >= today - timedelta(days=LIVE_WINDOW_DAYS),
+                    Event.start_date <= today,
+                )
+                .order_by(Event.start_date.desc(), Event.id.desc())
+            ).scalars()
+        )
+        if candidates:
+            statuses = bulk_event_status(candidates, today=today, session=session)
+            for ev in candidates:
+                if statuses.get(ev.id) == EventStatus.LIVE:
+                    live_event = {"id": ev.id, "name": ev.name}
+                    break
+    except Exception:
+        # Ticker is decorative — never let a query failure 500 the page.
+        live_event = None
 
     ticker_items = []
 
