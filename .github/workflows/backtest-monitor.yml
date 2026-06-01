@@ -1,0 +1,353 @@
+name: Backtest Monitor (weekly)
+
+# Issue #120 — periodic backtest on live prod data.
+#
+# Why a separate workflow from `ci.yml`'s per-PR backtest:
+#   - CI runs on frozen fixtures and proves the *code* still beats baseline.
+#   - This cron runs against the live Supabase DB and proves the *deployed*
+#     model still predicts well as new events accumulate. A creeping drift
+#     (meta shift, new season the model handles poorly, subtle scraper
+#     regression — cf. #117) shows up here as a trend before the existing
+#     health guard would catch it.
+#
+# Trend-vs-gate strategy: **artifact-based trailing-mean** (option (a) from
+# the task brief). On each run we:
+#   1. Run `scripts/run_backtest.py` (via `scripts/backtest_monitor.py`) on a
+#      snapshot of prod and emit a small `backtest-metrics-YYYY-MM-DD.json`.
+#   2. Upload as a workflow artifact.
+#   3. Download the last N artifacts via `gh run download`, build a
+#      trailing-mean log-loss, and alert if today's log-loss exceeds it.
+#
+# We picked (a) over (b) ("absolute ≥15pp gate") because there is no
+# baseline variant registered in `BACKTEST_VARIANTS` today — the
+# `run_backtest.py` harness only emits the "current" variant's metrics. A
+# pure trend signal is the strongest thing we can compute without hardcoding
+# a magic threshold; the threshold (`+0.02 absolute` / `+15% relative`) is
+# wide enough to avoid week-over-week MC noise and tight enough to catch
+# real drift. Once a baseline engine lands (#38) the workflow can layer the
+# absolute gate on top.
+#
+# Required secret: DATABASE_URL — the Supabase **session pooler** URL
+# (port 5432). The transaction pooler (6543) is serverless-only and the
+# direct connection is IPv6-only (unreachable from GH runners). See
+# CLAUDE.md → "Connection strings".
+#
+# Discord webhook secret (optional): DISCORD_WEBHOOK_URL. Embeds mirror the
+# shape used by `health-check.yml`.
+
+on:
+  schedule:
+    # Sunday 05:00 UTC — runs after the daily 04:00 scrape, in a quiet slot.
+    # The backtest is heavy (snapshot + holdout fits across Lead+Boulder);
+    # weekly is plenty since the underlying data only changes daily and we
+    # care about *trend*, not point-in-time.
+    - cron: "0 5 * * 0"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "OOS mode: 'holdout' (fast, default) or 'walk_forward' (slow, manual only)."
+        type: choice
+        options:
+          - holdout
+          - walk_forward
+        default: holdout
+
+permissions:
+  contents: read
+
+jobs:
+  backtest-monitor:
+    name: Run backtest + check for drift
+    runs-on: ubuntu-latest
+    # Hard cap below the 60-min GH ceiling so we always fail cleanly rather
+    # than leave the workflow in an indeterminate state. Holdout-only runs
+    # well under this; walk-forward (manual dispatch) is what eats budget.
+    timeout-minutes: 50
+
+    # Need actions:read to list/download prior run artifacts for trend, and
+    # issues:write to file/comment on the persistent-regression issue.
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # `mode` workflow_dispatch input → env var. Falls back to 'holdout' on
+      # the scheduled run (no inputs).
+      MODE: ${{ inputs.mode || 'holdout' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Fail fast if DATABASE_URL is missing
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL secret is not set. Add it to repo secrets (session pooler, port 5432)."
+            exit 1
+          fi
+
+      # ----------------------------------------------------------------------
+      # Pull trailing log-loss values from the last 4 successful artifacts.
+      # If the artifact API call fails or returns empty, we run with an empty
+      # trailing list — the monitor treats that as "first run, no comparison"
+      # and exits 0.
+      # ----------------------------------------------------------------------
+      - name: Collect trailing log-loss from recent artifacts
+        id: trailing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p prior-artifacts
+          # Find the last few completed (success-only) runs of THIS workflow.
+          RUN_IDS=$(gh run list \
+            --workflow="backtest-monitor.yml" \
+            --status=success \
+            --limit=6 \
+            --json databaseId \
+            --jq '.[].databaseId' || true)
+          TRAILING=""
+          for RID in $RUN_IDS; do
+            # Skip the currently-running run (shouldn't appear in success filter, but defensive).
+            if [ "$RID" = "${{ github.run_id }}" ]; then
+              continue
+            fi
+            DEST="prior-artifacts/${RID}"
+            mkdir -p "$DEST"
+            if gh run download "$RID" --dir "$DEST" --name "backtest-metrics" 2>/dev/null; then
+              METRICS_FILE=$(find "$DEST" -name 'backtest-metrics-*.json' -print -quit || true)
+              if [ -n "$METRICS_FILE" ] && [ -f "$METRICS_FILE" ]; then
+                # Extract log_loss_podium; skip if null/missing.
+                LL=$(jq -r '.log_loss_podium // empty' "$METRICS_FILE")
+                if [ -n "$LL" ]; then
+                  TRAILING="$TRAILING $LL"
+                fi
+              fi
+            fi
+          done
+          # Cap at 4 most recent.
+          TRAILING_TRIM=$(echo $TRAILING | tr ' ' '\n' | head -n 4 | tr '\n' ' ')
+          echo "trailing=${TRAILING_TRIM}" >> "$GITHUB_OUTPUT"
+          echo "Trailing log-loss values: '${TRAILING_TRIM}'"
+
+      # ----------------------------------------------------------------------
+      # Run the backtest. Exit codes:
+      #   0 — clean (no regression)
+      #   1 — backtest failure (subprocess, snapshot, missing report)
+      #   2 — regression detected (still wrote metrics; alert below)
+      # We capture the exit code without failing the step so the artifact
+      # upload + alert steps still run when a regression is detected.
+      # ----------------------------------------------------------------------
+      - name: Run backtest monitor
+        id: backtest
+        run: |
+          set +e
+          DATE_STAMP=$(date -u '+%Y-%m-%d')
+          OUT="backtest-metrics-${DATE_STAMP}.json"
+          # shellcheck disable=SC2086
+          uv run python scripts/backtest_monitor.py \
+            --mode "$MODE" \
+            --out "$OUT" \
+            --trailing-log-loss ${{ steps.trailing.outputs.trailing }}
+          EXIT_CODE=$?
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+          echo "metrics_file=${OUT}" >> "$GITHUB_OUTPUT"
+          # Surface a friendly summary line.
+          if [ -f "$OUT" ]; then
+            echo "::group::Metrics summary"
+            jq '{n_rounds, log_loss_podium, hit_rate_top3, regression_detected, regression_reason}' "$OUT"
+            echo "::endgroup::"
+          fi
+          # Only HARD-fail on backtest errors (1). Regression (2) is reported
+          # via Discord/issue below; the job stays green so artifacts upload.
+          if [ "$EXIT_CODE" = "1" ]; then
+            echo "::error::backtest_monitor.py failed (exit 1)"
+            exit 1
+          fi
+          exit 0
+
+      # ----------------------------------------------------------------------
+      # Persist today's metrics. `actions/upload-artifact@v4` keeps these for
+      # the repo's default retention period (90 days). The trend step above
+      # consumes them on the next run.
+      # ----------------------------------------------------------------------
+      - name: Upload metrics artifact
+        if: always() && steps.backtest.outputs.metrics_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-metrics
+          path: ${{ steps.backtest.outputs.metrics_file }}
+          if-no-files-found: warn
+
+      # ----------------------------------------------------------------------
+      # Discord alert on regression. Mirrors the embed shape from
+      # health-check.yml: red colour, title, fields for timestamp + reason.
+      # No anti-flap counter — the underlying workflow only runs weekly, so
+      # rate-limiting by frequency isn't needed (same reasoning as the
+      # health-check IFSC branch).
+      # ----------------------------------------------------------------------
+      - name: Post Discord alert on regression
+        if: steps.backtest.outputs.exit_code == '2'
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          METRICS_FILE: ${{ steps.backtest.outputs.metrics_file }}
+        run: |
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+            echo "DISCORD_WEBHOOK_URL not set; skipping Discord alert"
+            exit 0
+          fi
+          # Restrict to Discord hosts as a basic SSRF guard (same as health-check.yml).
+          case "$DISCORD_WEBHOOK_URL" in
+            https://discord.com/*|https://discordapp.com/*|https://*.discord.com/*|https://*.discordapp.com/*)
+              ;;
+            *)
+              echo "Refusing to POST: DISCORD_WEBHOOK_URL is not a Discord host"
+              exit 0
+              ;;
+          esac
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TS=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          REASON=$(jq -r '.regression_reason // "unknown"' "$METRICS_FILE")
+          LL_TODAY=$(jq -r '.log_loss_podium // "n/a"' "$METRICS_FILE")
+          LL_MEAN=$(jq -r '.trailing_log_loss_mean // "n/a"' "$METRICS_FILE")
+          N_ROUNDS=$(jq -r '.n_rounds // "n/a"' "$METRICS_FILE")
+          PAYLOAD=$(jq -n \
+            --arg ts "$TS" \
+            --arg url "$RUN_URL" \
+            --arg reason "$REASON" \
+            --arg ll_today "$LL_TODAY" \
+            --arg ll_mean "$LL_MEAN" \
+            --arg n_rounds "$N_ROUNDS" \
+            '{embeds: [{
+              title: "Backtest monitor: regression detected",
+              description: ("Today's backtest log-loss exceeded the trailing-mean threshold. See the [GitHub Actions run](" + $url + ") for full metrics."),
+              color: 16711680,
+              fields: [
+                {name: "Timestamp (UTC)", value: $ts, inline: true},
+                {name: "Rounds scored", value: $n_rounds, inline: true},
+                {name: "Log-loss (podium) — today", value: $ll_today, inline: true},
+                {name: "Log-loss (podium) — trailing mean", value: $ll_mean, inline: true},
+                {name: "Reason", value: $reason, inline: false}
+              ],
+              footer: {text: "climbing-elo backtest monitor (#120)"}
+            }]}')
+          curl -sS -X POST -H "Content-Type: application/json" \
+            --max-time 10 \
+            --data "$PAYLOAD" \
+            "$DISCORD_WEBHOOK_URL" > /dev/null || echo "Discord alert POST failed (non-fatal)"
+
+      # ----------------------------------------------------------------------
+      # Persistent-regression issue. Mirrors the health-check.yml shape:
+      # count recent failed jobs (here: jobs that exited with regression on
+      # the last 3 runs) and file/comment-on an issue when ≥2 of them
+      # regressed. Label `backtest-monitor-alert` is distinct from the
+      # health-check alerts so they never collide.
+      # ----------------------------------------------------------------------
+      - name: Check for persistent regression (count recent regressions)
+        if: steps.backtest.outputs.exit_code == '2'
+        id: count-regressions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_IDS=$(gh run list \
+            --workflow="backtest-monitor.yml" \
+            --limit=3 \
+            --status=completed \
+            --json databaseId \
+            --jq '.[].databaseId')
+          # Today's run hasn't completed yet, so count today as 1.
+          REGRESSED=1
+          for RID in $RUN_IDS; do
+            if [ "$RID" = "${{ github.run_id }}" ]; then
+              continue
+            fi
+            # Download the prior run's metrics artifact (best-effort).
+            TMPDIR=$(mktemp -d)
+            if gh run download "$RID" --dir "$TMPDIR" --name "backtest-metrics" 2>/dev/null; then
+              METRICS_FILE=$(find "$TMPDIR" -name 'backtest-metrics-*.json' -print -quit || true)
+              if [ -n "$METRICS_FILE" ] && [ -f "$METRICS_FILE" ]; then
+                REG=$(jq -r '.regression_detected // false' "$METRICS_FILE")
+                if [ "$REG" = "true" ]; then
+                  REGRESSED=$((REGRESSED + 1))
+                fi
+              fi
+            fi
+            rm -rf "$TMPDIR"
+          done
+          echo "recent_regressions=${REGRESSED}" >> "$GITHUB_OUTPUT"
+
+      - name: Find existing backtest-monitor-alert issue
+        if: steps.backtest.outputs.exit_code == '2' && steps.count-regressions.outputs.recent_regressions >= 2
+        id: find-issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_NUMBER=$(gh issue list \
+            --label "backtest-monitor-alert" \
+            --state open \
+            --json number \
+            --jq '.[0].number // ""')
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Create new backtest-monitor-alert issue
+        if: |
+          steps.backtest.outputs.exit_code == '2' &&
+          steps.count-regressions.outputs.recent_regressions >= 2 &&
+          steps.find-issue.outputs.issue_number == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          METRICS_FILE: ${{ steps.backtest.outputs.metrics_file }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          REASON=$(jq -r '.regression_reason // "unknown"' "$METRICS_FILE")
+          LL_TODAY=$(jq -r '.log_loss_podium // "n/a"' "$METRICS_FILE")
+          LL_MEAN=$(jq -r '.trailing_log_loss_mean // "n/a"' "$METRICS_FILE")
+          gh issue create \
+            --title "Backtest monitor regression (persistent)" \
+            --body "## Backtest model quality is regressing
+
+          The periodic backtest monitor has flagged a regression on **2 or more recent runs**.
+
+          - **Workflow run:** ${RUN_URL}
+          - **Reason:** ${REASON}
+          - **Log-loss (podium), today:** ${LL_TODAY}
+          - **Log-loss (podium), trailing mean:** ${LL_MEAN}
+          - **Time (UTC):** $(date -u '+%Y-%m-%d %H:%M:%S')
+
+          ### Possible causes
+          - A recent engine change shipped without a re-backfill, so the deployed model is stale.
+          - A scraper/format change is silently degrading inputs (cf. #117).
+          - Seasonal drift — a new season is genuinely harder to predict.
+
+          ### Next steps
+          1. Open the workflow run above and compare today's metrics JSON to the recent artifacts.
+          2. Pull the latest \`backtest-metrics-*.json\` artifacts locally and inspect the per-split breakdown in \`report.json\`.
+          3. If an engine change is the cause, validate with the local re-backfill flow in CLAUDE.md.
+          " \
+            --label "backtest-monitor-alert" \
+            --label "bug"
+
+      - name: Comment on existing backtest-monitor-alert issue
+        if: |
+          steps.backtest.outputs.exit_code == '2' &&
+          steps.count-regressions.outputs.recent_regressions >= 2 &&
+          steps.find-issue.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          METRICS_FILE: ${{ steps.backtest.outputs.metrics_file }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          REASON=$(jq -r '.regression_reason // "unknown"' "$METRICS_FILE")
+          gh issue comment "${{ steps.find-issue.outputs.issue_number }}" \
+            --body "Still regressing as of $(date -u '+%Y-%m-%d %H:%M UTC'). Reason: ${REASON}. [Run details](${RUN_URL})"
