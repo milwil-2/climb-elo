@@ -32,10 +32,10 @@
       </ul>
     </nav>
     {% if live_event %}
-    <div class="nav-cta">
+    <a class="nav-cta" href="/live/{{ live_event.id }}">
       <span class="pulse"></span>
       <span>{{ live_event.name }} · Live</span>
-    </div>
+    </a>
     {% else %}
     <div class="nav-cta" style="visibility:hidden">
       <span class="pulse"></span>
@@ -50,7 +50,7 @@
   <div class="ticker-track">
     {%- set ns = namespace(items=[]) -%}
     {%- if live_event -%}
-      {%- set ns.items = ns.items + [{'kind':'live','name': live_event.name}] -%}
+      {%- set ns.items = ns.items + [{'kind':'live','name': live_event.name,'id': live_event.id}] -%}
     {%- endif -%}
     {%- for item in ticker_items -%}
       {%- set ns.items = ns.items + [item] -%}
@@ -58,7 +58,7 @@
     {%- for repeat in range(2) -%}
       {%- for item in ns.items -%}
         {%- if item.kind == 'live' -%}
-          <span class="ticker-item"><span class="live-dot"></span><span class="tag">Live</span><span class="nm">{{ item.name }}</span></span>
+          <a class="ticker-item" href="/live/{{ item.id }}"><span class="live-dot"></span><span class="tag">Live</span><span class="nm">{{ item.name }}</span></a>
         {%- elif item.kind == 'delta' -%}
           <span class="ticker-item"><span class="nm">{{ item.name }}</span><span class="delta{% if item.delta < 0 %} dn{% endif %}">{% if item.delta > 0 %}+{% endif %}{{ item.delta | int }}</span></span>
         {%- elif item.kind == 'upcoming' -%}
