@@ -115,9 +115,11 @@
       <span class="sep"></span>
       <span>{{ event.date }}</span>
     </div>
+    {%- if event.is_live -%}
     <div class="ev-actions reveal d3">
       <a href="/live/{{ event.id }}">Live view &rarr;</a>
     </div>
+    {%- endif -%}
   </section>
 
   <section class="ev-section">

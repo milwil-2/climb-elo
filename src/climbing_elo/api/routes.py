@@ -28,6 +28,7 @@ from climbing_elo.engine.activity import (
     RETIRED_THRESHOLD_YEARS,
 )
 from climbing_elo.engine.elo import expected_score as _expected_score
+from climbing_elo.engine.event_status import EventStatus, event_status
 from climbing_elo.engine.likely_roster import likely_competitors
 from climbing_elo.engine.projections import (
     AthleteProjectionInput,
@@ -1801,6 +1802,7 @@ async def v2_event_detail(request: Request, event_id: int):
         disc_label = _DISC_LABEL.get(event.discipline, event.discipline.value)
         forecast_panels = _build_forecast_recap(session, event)
         ticker = _ticker_context(session)
+        is_live = event_status(event, session=session) == EventStatus.LIVE
 
     ctx = {
         "event": {
@@ -1810,6 +1812,7 @@ async def v2_event_detail(request: Request, event_id: int):
             "tier": event.tier.value.replace("_", " ").title(),
             "date": str(event.start_date),
             "discipline_label": disc_label,
+            "is_live": is_live,
         },
         "rounds": rounds_data,
         "forecast_panels": forecast_panels,
@@ -1937,6 +1940,13 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
         event = session.get(Event, event_id)
         if not event:
             return HTMLResponse("Event not found", status_code=404)
+
+        if event_status(event, session=session) != EventStatus.LIVE:
+            return HTMLResponse(
+                f"This event isn't currently live. "
+                f'<a href="/events/{event_id}">View results &rarr;</a>',
+                status_code=404,
+            )
 
         try:
             gender_enum = Gender(gender.upper())
