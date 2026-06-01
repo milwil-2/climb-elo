@@ -85,7 +85,16 @@
   td.mp-meta{font-size:11.5px;color:var(--dim);letter-spacing:0.04em}
   td.mp-num{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2)}
   td.mp-num.good{color:var(--ink);font-weight:600}
-  .mp-empty{padding:48px;text-align:center;color:var(--dim);border:1px solid var(--line)}
+  .mp-empty{padding:40px 32px;color:var(--dim);border:1px solid var(--line);line-height:1.55}
+  .mp-empty .mp-empty-ttl{
+    font-size:13px;font-weight:600;color:var(--ink);letter-spacing:0.04em;
+    margin-bottom:10px;
+  }
+  .mp-empty p{font-size:13px;color:var(--ink-2);margin-bottom:10px;max-width:640px}
+  .mp-empty p:last-child{margin-bottom:0}
+  .mp-empty a{color:var(--ink);border-bottom:1px solid var(--line-2);padding-bottom:1px;transition:border-color .15s}
+  .mp-empty a:hover{border-bottom-color:var(--ink)}
+  .mp-empty .mp-empty-note{font-size:11.5px;color:var(--dim);margin-top:14px;letter-spacing:0.02em}
   .mp-backfill-badge{
     display:inline-block;margin-left:8px;padding:1px 6px;font-size:9.5px;
     letter-spacing:0.1em;text-transform:uppercase;border:1px solid var(--line-2);
@@ -175,8 +184,28 @@
     <div class="mp-section-label reveal"><span class="dash"></span>Per-event scores</div>
     {%- if n_events == 0 -%}
     <div class="mp-empty reveal">
-      No scored events for the current filters yet. Daily snapshot + score steps
-      run after each scrape pass &mdash; this view fills in once finals land.
+      <div class="mp-empty-ttl">No scored events for the current filters yet.</div>
+      <p>
+        Scores publish in the daily scrape pass at <strong>04:00 UTC</strong>, so an
+        event that finished <em>today</em> gets its row tomorrow morning. Anything
+        older than ~24h that's still missing usually fell through one of the snapshot
+        gaps tracked in <a href="https://github.com/milwil-2/climb-elo/issues/139" target="_blank" rel="noopener">#139</a>.
+      </p>
+      {%- if n_alt_lane > 0 -%}
+      <p>
+        {%- if include_backfill -%}
+        <a href="/model-performance{{ alt_lane_qs }}">View {{ n_alt_lane }} live forecast row{{ 's' if n_alt_lane != 1 else '' }} &rarr;</a>
+        (the historical retro-replay lane is empty for these filters but the live lane has data.)
+        {%- else -%}
+        <a href="/model-performance{{ alt_lane_qs }}">View {{ n_alt_lane }} historical retro-replay row{{ 's' if n_alt_lane != 1 else '' }} &rarr;</a>
+        (flips the &ldquo;Include historical backfill&rdquo; toggle on.)
+        {%- endif -%}
+      </p>
+      {%- endif -%}
+      <div class="mp-empty-note">
+        Filters: season {{ season }} &middot; {{ discipline_label_active }} &middot;
+        {{ gender_label_active }}{% if include_backfill %} &middot; backfill on{% endif %}.
+      </div>
     </div>
     {%- else -%}
     <div class="card reveal">

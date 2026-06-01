@@ -263,6 +263,114 @@ def test_model_performance_page_includes_seeded_event(
 
 
 # ---------------------------------------------------------------------------
+# /model-performance  empty-state UX (#139)
+# ---------------------------------------------------------------------------
+
+
+def test_model_performance_empty_state_when_no_data(client: TestClient) -> None:
+    """Bare empty state: no live, no backfill anywhere. Should still render
+    the headline + 04:00 UTC explainer + #139 link, but NO rescue-link."""
+    r = client.get("/model-performance")
+    assert r.status_code == 200, r.text
+    body = r.text
+    assert "No scored events for the current filters yet." in body
+    assert "04:00 UTC" in body
+    assert "#139" in body
+    # Rescue links are gated on n_alt_lane > 0; not present here.
+    assert "View 0" not in body
+    assert "View 1" not in body
+    assert "historical retro-replay row" not in body
+
+
+def test_model_performance_empty_state_offers_backfill_link(
+    client: TestClient, factory
+) -> None:
+    """Live lane empty but backfill lane has rows: empty state surfaces a
+    one-click 'View N historical retro-replay rows ->' rescue link with the
+    include_backfill toggle flipped on."""
+    today_year = date.today().year
+    with factory() as session:
+        event, athletes, _ = _seed_event_with_final(
+            session,
+            name="Bern Boulder 2024",
+            season=today_year,
+            start_date=date(today_year, 4, 1),
+            discipline=Discipline.BOULDER,
+        )
+        _seed_forecast_set(
+            session, event_id=event.id, athletes=athletes, is_backfill=True
+        )
+        session.commit()
+
+    r = client.get("/model-performance")
+    assert r.status_code == 200, r.text
+    body = r.text
+    # Empty state still rendered (live lane has 0 rows).
+    assert "No scored events for the current filters yet." in body
+    # Rescue link is present, points at a URL with the toggle flipped on.
+    assert "View 1 historical retro-replay row" in body
+    assert "include_backfill=1" in body
+
+
+def test_model_performance_empty_state_offers_live_link_when_backfill_active(
+    client: TestClient, factory
+) -> None:
+    """include_backfill=1 lane empty, live lane has rows: rescue link flips
+    the toggle back off and points at the live lane."""
+    today_year = date.today().year
+    with factory() as session:
+        event, athletes, _ = _seed_event_with_final(
+            session,
+            name="Innsbruck Lead Live",
+            season=today_year,
+            start_date=date(today_year, 5, 1),
+            discipline=Discipline.LEAD,
+        )
+        _seed_forecast_set(
+            session, event_id=event.id, athletes=athletes, is_backfill=False
+        )
+        session.commit()
+
+    r = client.get("/model-performance?include_backfill=1")
+    assert r.status_code == 200, r.text
+    body = r.text
+    assert "No scored events for the current filters yet." in body
+    assert "View 1 live forecast row" in body
+
+
+def test_model_performance_empty_state_preserves_filters(
+    client: TestClient, factory
+) -> None:
+    """Rescue link must keep season/discipline/gender filters intact when
+    flipping the include_backfill toggle."""
+    today_year = date.today().year
+    with factory() as session:
+        event, athletes, _ = _seed_event_with_final(
+            session,
+            name="Backfill Lead Women",
+            season=today_year,
+            start_date=date(today_year, 4, 15),
+            discipline=Discipline.LEAD,
+        )
+        _seed_forecast_set(
+            session,
+            event_id=event.id,
+            athletes=athletes,
+            gender=Gender.F,
+            is_backfill=True,
+        )
+        session.commit()
+
+    r = client.get("/model-performance?discipline=lead&gender=F")
+    body = r.text
+    assert "View 1 historical retro-replay row" in body
+    # Filters survive the flip.
+    assert "discipline=lead" in body
+    assert "gender=F" in body
+    assert "include_backfill=1" in body
+
+
+# ---------------------------------------------------------------------------
 # /events/{id}  recap panel
 # ---------------------------------------------------------------------------
 
