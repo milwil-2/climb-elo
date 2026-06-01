@@ -143,8 +143,8 @@
             <thead><tr>
               <th></th>
               <th>Athlete</th>
-              <th style="text-align:right">Podium %</th>
-              <th style="text-align:right">Actual</th>
+              <th class="text-right">Podium %</th>
+              <th class="text-right">Actual</th>
             </tr></thead>
             <tbody>
               {%- for row in p.rows -%}
@@ -186,7 +186,7 @@
     {%- endif -%}
 
     {%- if not rounds -%}
-    <div class="card" style="padding:48px;text-align:center;color:var(--dim)">
+    <div class="card cell-empty-lg">
       No rounds recorded for this event yet.
     </div>
     {%- endif -%}
@@ -204,9 +204,9 @@
             <th>#</th>
             <th>Athlete</th>
             <th>Score</th>
-            <th style="text-align:right">R before</th>
-            <th style="text-align:right">R after</th>
-            <th style="text-align:right">&Delta;</th>
+            <th class="text-right">R before</th>
+            <th class="text-right">R after</th>
+            <th class="text-right">&Delta;</th>
             <th></th>
           </tr></thead>
           <tbody>
