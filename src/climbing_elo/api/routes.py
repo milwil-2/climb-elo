@@ -2698,6 +2698,57 @@ _MODEL_PERF_DISC_ALIASES: dict[str, Discipline] = {
 }
 
 
+def _build_query_string(
+    *,
+    season: int,
+    discipline: str | None,
+    gender: str | None,
+    include_backfill: bool,
+) -> str:
+    """Render the /model-performance filter set as a query string (#139)."""
+    parts = [f"season={season}"]
+    if discipline:
+        parts.append(f"discipline={discipline}")
+    if gender:
+        parts.append(f"gender={gender}")
+    if include_backfill:
+        parts.append("include_backfill=1")
+    return "?" + "&".join(parts)
+
+
+def _count_alt_lane_scores(
+    session,
+    *,
+    season: int,
+    discipline: Discipline | None,
+    gender: Gender | None,
+    include_backfill: bool,
+) -> int:
+    """Count EventForecastScore rows in the opposite is_backfill lane (#139).
+
+    Used to power the empty-state branch on /model-performance: when the
+    live lane is empty for a freshly-finished season, surface a one-click
+    link to flip the toggle and reveal retro-replay rows (and vice versa).
+    """
+    if not _forecast_tables_present(session):
+        return 0
+    stmt = (
+        select(func.count(EventForecastScore.id))
+        .join(Event, EventForecastScore.event_id == Event.id)
+        .where(
+            EventForecastScore.is_backfill == (not include_backfill),
+            Event.season == season,
+        )
+    )
+    if discipline is not None:
+        stmt = stmt.where(Event.discipline == discipline)
+    else:
+        stmt = stmt.where(Event.discipline.in_([Discipline.LEAD, Discipline.BOULDER]))
+    if gender is not None:
+        stmt = stmt.where(EventForecastScore.gender == gender)
+    return session.scalar(stmt) or 0
+
+
 def _aggregate_model_performance(
     session,
     *,
@@ -2822,6 +2873,20 @@ async def v2_model_performance(
             gender=gen_enum,
             include_backfill=include_backfill,
         )
+        # Empty-state UX (#139): when the active lane is empty, surface how
+        # many rows would appear with the include_backfill toggle flipped so
+        # the empty state can offer a one-click rescue.
+        n_alt_lane = (
+            _count_alt_lane_scores(
+                session,
+                season=effective_season,
+                discipline=disc_enum,
+                gender=gen_enum,
+                include_backfill=include_backfill,
+            )
+            if data["n"] == 0
+            else 0
+        )
         ticker = _ticker_context(session)
 
     # Season dropdown — last 3 calendar years incl. current. If a user picks a
@@ -2862,6 +2927,14 @@ async def v2_model_performance(
         "aggregates": data["aggregates"],
         "events": data["events"],
         "n_events": data["n"],
+        "n_alt_lane": n_alt_lane,
+        # Preserve current filters on the "flip toggle" empty-state link.
+        "alt_lane_qs": _build_query_string(
+            season=effective_season,
+            discipline=discipline,
+            gender=gender,
+            include_backfill=not include_backfill,
+        ),
         **ticker,
         **_nav_context("model_performance"),
     }
