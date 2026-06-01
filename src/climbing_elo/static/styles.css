@@ -41,6 +41,10 @@ em { font-style: italic; color: var(--ink) }
 
 .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1, "lnum" 1 }
 
+.text-right { text-align: right; }
+.cell-empty { padding: 32px; text-align: center; color: var(--dim); }
+.cell-empty-lg { padding: 48px; text-align: center; color: var(--dim); }
+
 /* ── Nav ───────────────────────────────────────────────────────────── */
 .nav {
   position: sticky; top: 0; z-index: 50;

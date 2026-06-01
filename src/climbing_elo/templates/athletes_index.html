@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros/ranking_table.html" import ranking_table %}
 {% block title %}Athletes &mdash; Climbing ELO{% endblock %}
 
 {% block head %}
@@ -122,33 +123,7 @@
     </div>
 
     <div class="card reveal d2" id="ai-card">
-      <table class="lb" id="ai-table">
-        <thead><tr>
-          <th>#</th>
-          <th>Athlete</th>
-          <th>Age</th>
-          <th>Events</th>
-          <th style="text-align:right">R &plusmn; &sigma;</th>
-        </tr></thead>
-        <tbody>
-          {%- for row in rows -%}
-          <tr data-name="{{ row.name | lower }}" data-nat="{{ (row.nationality or '') | lower }}"
-              data-mu="{{ row.mu }}">
-            <td class="rank mono{% if row.rank <= 3 %} top{% endif %}">{{ '%02d' % row.rank }}</td>
-            <td class="athlete">
-              <a href="/athletes/{{ row.id }}">{{ row.name }}</a>
-              <span class="nat">{{ row.nationality }}</span>
-            </td>
-            <td class="disc num" style="font-size:12.5px">{{ row.age or '—' }}</td>
-            <td class="disc num" style="font-size:12px">{{ row.n_events }}</td>
-            <td class="rating num">{{ row.mu }}<span class="sigma">&plusmn; {{ row.sigma }}</span></td>
-          </tr>
-          {%- endfor -%}
-          {%- if not rows -%}
-          <tr><td colspan="5" style="padding:32px;text-align:center;color:var(--dim)">No athletes for this discipline and gender. Try the search box above.</td></tr>
-          {%- endif -%}
-        </tbody>
-      </table>
+      {{ ranking_table(rows, show_delta_90d=False, row_data_attrs=True, empty_text="No athletes for this discipline and gender. Try the search box above.", table_id="ai-table") }}
       <div class="summary-bar">
         <span>Showing<b id="showing-count">{{ rows | length }}</b><span style="margin-left:14px">active in {{ disc_label }} &middot; {{ gender_label }}</span></span>
         <span>Use search for the full <b>{{ total_count }}+</b> roster</span>
