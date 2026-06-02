@@ -442,6 +442,30 @@ def test_leaderboard_view_active_explicit_matches_default(view_client):
     assert _names(r_default.json()) == _names(r_active.json())
 
 
+def test_leaderboard_sigma_inflates_for_stale_athlete(view_client):
+    """#151 PR A: the wired-through ``sigma_now`` call surfaces an inflated σ
+    for Sabbatical Sam (~540 days inactive) while leaving Recent Racer
+    (within grace) at the stored 110.0.
+
+    This is the end-to-end assertion that the helper is plumbed correctly
+    through the v1 leaderboard response — not just unit-tested in isolation.
+    """
+    r = view_client.get("/api/v1/leaderboard?discipline=lead&gender=M&view=all")
+    assert r.status_code == 200
+    by_name = {item["name"]: item for item in r.json()["items"]}
+
+    # Recent Racer: 30d inactive == grace boundary → σ unchanged from stored 110.0
+    assert by_name["Recent Racer"]["sigma"] == pytest.approx(110.0, abs=0.01)
+
+    # Sabbatical Sam: 540d inactive → σ should be strictly inflated.
+    sam_sigma = by_name["Sabbatical Sam"]["sigma"]
+    assert sam_sigma > 110.0, (
+        f"expected Sabbatical Sam's σ to inflate beyond stored 110.0, got {sam_sigma}"
+    )
+    # Loose upper bound — the formula gives ~150 here, but tolerate day-skew.
+    assert sam_sigma < 200.0
+
+
 # ---------------------------------------------------------------------------
 # /api/v1/athletes/{athlete_id}
 # ---------------------------------------------------------------------------
