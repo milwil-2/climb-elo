@@ -26,6 +26,7 @@ from climbing_elo.database import get_session_factory
 from climbing_elo.engine.activity import (
     INACTIVE_THRESHOLD_MONTHS,
     RETIRED_THRESHOLD_YEARS,
+    sigma_now,
 )
 from climbing_elo.engine.elo import expected_score as _expected_score
 from climbing_elo.engine.event_status import (
@@ -166,7 +167,7 @@ def _build_proj_inputs_batched(
                 AthleteProjectionInput(
                     athlete_id=aid,
                     mu=rating.mu,
-                    sigma=rating.sigma,
+                    sigma=sigma_now(rating.sigma, rating.last_event_at),
                     name=ath.name,
                 )
             )
@@ -250,7 +251,7 @@ def _get_rankings_v2(
             if athlete.year_of_birth
             else None,
             "mu": round(rating.mu, 1),
-            "sigma": round(rating.sigma, 1),
+            "sigma": round(sigma_now(rating.sigma, rating.last_event_at), 1),
             "n_events": rating.n_events,
             "provisional": rating.provisional,
             "last_event_at": rating.last_event_at,
@@ -724,7 +725,7 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
             ).scalar_one()
             ratings_by_disc[key] = {
                 "mu": round(r.mu, 1),
-                "sigma": round(r.sigma, 1),
+                "sigma": round(sigma_now(r.sigma, r.last_event_at), 1),
                 "n_events": r.n_events,
                 "rank": int(rank_row) + 1,
                 "provisional": r.provisional,
@@ -1361,7 +1362,7 @@ async def v2_h2h_result(
                 "nationality": athlete_a.nationality or "—",
                 "gender": gender_a.value,
                 "mu": round(rating_a.mu, 1),
-                "sigma": round(rating_a.sigma, 1),
+                "sigma": round(sigma_now(rating_a.sigma, rating_a.last_event_at), 1),
                 "n_events": rating_a.n_events,
             },
             "athlete_b": {
@@ -1370,7 +1371,7 @@ async def v2_h2h_result(
                 "nationality": athlete_b.nationality or "—",
                 "gender": gender_b.value,
                 "mu": round(rating_b.mu, 1),
-                "sigma": round(rating_b.sigma, 1),
+                "sigma": round(sigma_now(rating_b.sigma, rating_b.last_event_at), 1),
                 "n_events": rating_b.n_events,
             },
             "win_a": round(win_a * 100, 1),
@@ -2074,7 +2075,7 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
 
                     mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
                 else:
-                    mu, sigma = rating.mu, rating.sigma
+                    mu, sigma = rating.mu, sigma_now(rating.sigma, rating.last_event_at)
                 athlete_obj = session.get(Athlete, aid)
                 inp = AthleteProjectionInput(
                     athlete_id=aid,
@@ -2276,7 +2277,7 @@ async def live_projections_json(event_id: int, gender: str = "M"):
 
                     mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
                 else:
-                    mu, sigma = rating.mu, rating.sigma
+                    mu, sigma = rating.mu, sigma_now(rating.sigma, rating.last_event_at)
                 athlete_obj = session.get(Athlete, aid)
                 inp = AthleteProjectionInput(
                     athlete_id=aid,

@@ -18,6 +18,7 @@ from climbing_elo.database import get_session_factory
 from climbing_elo.engine.activity import (
     INACTIVE_THRESHOLD_MONTHS,
     RETIRED_THRESHOLD_YEARS,
+    sigma_now,
 )
 from climbing_elo.engine.likely_roster import likely_competitors
 from climbing_elo.engine.projections import (
@@ -254,7 +255,7 @@ async def leaderboard(
                 nationality=athlete.nationality,
                 gender=athlete.gender.value,
                 mu=round(rating.mu, 2),
-                sigma=round(rating.sigma, 2),
+                sigma=round(sigma_now(rating.sigma, rating.last_event_at), 2),
                 n_events=rating.n_events,
                 provisional=rating.provisional,
                 last_event_at=rating.last_event_at,
@@ -416,7 +417,7 @@ async def athlete_detail(athlete_id: int) -> AthleteDetail:
             AthleteRating(
                 discipline=_discipline_label(r.discipline),
                 mu=round(r.mu, 2),
-                sigma=round(r.sigma, 2),
+                sigma=round(sigma_now(r.sigma, r.last_event_at), 2),
                 n_events=r.n_events,
                 provisional=r.provisional,
                 last_event_at=r.last_event_at,
@@ -741,16 +742,25 @@ async def combined_leaderboard(
                     nationality=athlete.nationality,
                     gender=athlete.gender.value,
                     mu=round(combined_rating.mu, 2),
-                    sigma=round(combined_rating.sigma, 2),
+                    sigma=round(
+                        sigma_now(combined_rating.sigma, combined_rating.last_event_at),
+                        2,
+                    ),
                     n_events=combined_rating.n_events,
                     provisional=combined_rating.provisional,
                     last_event_at=combined_rating.last_event_at,
                     mu_boulder=round(boulder_rating.mu, 2) if boulder_rating else 0.0,
                     mu_lead=round(lead_rating.mu, 2) if lead_rating else 0.0,
-                    sigma_boulder=round(boulder_rating.sigma, 2)
+                    sigma_boulder=round(
+                        sigma_now(boulder_rating.sigma, boulder_rating.last_event_at), 2
+                    )
                     if boulder_rating
                     else 0.0,
-                    sigma_lead=round(lead_rating.sigma, 2) if lead_rating else 0.0,
+                    sigma_lead=round(
+                        sigma_now(lead_rating.sigma, lead_rating.last_event_at), 2
+                    )
+                    if lead_rating
+                    else 0.0,
                 )
             )
 
@@ -822,13 +832,21 @@ async def athlete_combined(athlete_id: int) -> AthleteCombined:
         nationality=athlete.nationality,
         gender=athlete.gender.value,
         mu_combined=round(combined_rating.mu, 2),
-        sigma_combined=round(combined_rating.sigma, 2),
+        sigma_combined=round(
+            sigma_now(combined_rating.sigma, combined_rating.last_event_at), 2
+        ),
         n_events_combined=combined_rating.n_events,
         provisional_combined=combined_rating.provisional,
         mu_boulder=round(boulder_rating.mu, 2) if boulder_rating else 0.0,
         mu_lead=round(lead_rating.mu, 2) if lead_rating else 0.0,
-        sigma_boulder=round(boulder_rating.sigma, 2) if boulder_rating else 0.0,
-        sigma_lead=round(lead_rating.sigma, 2) if lead_rating else 0.0,
+        sigma_boulder=round(
+            sigma_now(boulder_rating.sigma, boulder_rating.last_event_at), 2
+        )
+        if boulder_rating
+        else 0.0,
+        sigma_lead=round(sigma_now(lead_rating.sigma, lead_rating.last_event_at), 2)
+        if lead_rating
+        else 0.0,
         last_event_at=combined_rating.last_event_at,
     )
 
@@ -898,7 +916,11 @@ async def projections(
                 )
             ).scalar_one_or_none()
             mu = rating.mu if rating else DEFAULT_MU
-            sigma = rating.sigma if rating else DEFAULT_SIGMA
+            sigma = (
+                sigma_now(rating.sigma, rating.last_event_at)
+                if rating
+                else DEFAULT_SIGMA
+            )
             proj_inputs.append(
                 AthleteProjectionInput(
                     athlete_id=aid,
@@ -1068,7 +1090,11 @@ async def predictions_upcoming(
                                 )
                             ).scalar_one_or_none()
                             mu = rating.mu if rating else DEFAULT_MU
-                            sigma = rating.sigma if rating else DEFAULT_SIGMA
+                            sigma = (
+                                sigma_now(rating.sigma, rating.last_event_at)
+                                if rating
+                                else DEFAULT_SIGMA
+                            )
                             proj_inputs.append(
                                 AthleteProjectionInput(
                                     athlete_id=aid,
@@ -1155,7 +1181,11 @@ async def predictions_upcoming(
                                 )
                             ).scalar_one_or_none()
                             mu = rating.mu if rating else DEFAULT_MU
-                            sigma = rating.sigma if rating else DEFAULT_SIGMA
+                            sigma = (
+                                sigma_now(rating.sigma, rating.last_event_at)
+                                if rating
+                                else DEFAULT_SIGMA
+                            )
                             proj_inputs_fb.append(
                                 AthleteProjectionInput(
                                     athlete_id=aid,
