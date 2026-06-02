@@ -1,24 +1,16 @@
-"""Tests for ``climbing_elo.engine.activity`` (Issue #91 — Gap 2 from #88).
+"""Tests for ``climbing_elo.engine.activity`` (Issues #91 + #151 PR A).
 
-The classifier is a pure function:
+Two pure functions:
 
-    is_likely_retired_simple(last_event_at, retired_at, today=None,
-                             threshold_years=3.0) -> bool
-
-These tests exercise every branch of the truth table:
-
-    | retired_at | last_event_at      | expected |
-    |------------|--------------------|----------|
-    | set        | any                | True     |
-    | None       | None               | False    |
-    | None       | recent (< thresh)  | False    |
-    | None       | old (>= thresh)    | True     |
-
-Plus a few edge cases around the threshold boundary and a custom override.
+* ``is_likely_retired_simple`` (#91) — boolean classifier driving the
+  ``active``/``all`` leaderboard view filter.
+* ``sigma_now`` (#151 PR A) — display-time σ inflation that widens the
+  confidence band for inactive athletes without writing to the DB.
 """
 
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 
 import pytest
@@ -27,6 +19,14 @@ from climbing_elo.engine.activity import (
     INACTIVE_THRESHOLD_MONTHS,
     RETIRED_THRESHOLD_YEARS,
     is_likely_retired_simple,
+    sigma_now,
+)
+from climbing_elo.engine.elo import (
+    GLICKO2_DAYS_PER_MONTH,
+    GLICKO2_INACTIVITY_GRACE_DAYS,
+    GLICKO2_SIGMA_INACTIVITY,
+    SIGMA_CEILING,
+    glicko2_inflate_phi,
 )
 
 
@@ -205,3 +205,98 @@ def test_default_today_uses_current_date(monkeypatch):
 def test_truth_table_parametrised(last_event, retired, today, expected):
     """Parametrised sweep over the full truth table."""
     assert is_likely_retired_simple(last_event, retired, today=today) is expected
+
+
+# ---------------------------------------------------------------------------
+# sigma_now (#151 PR A) — display-time σ inflation
+# ---------------------------------------------------------------------------
+
+
+def test_sigma_now_returns_stored_when_last_event_none():
+    """Never-competed athletes (no last_event_at) get no inflation."""
+    assert sigma_now(120.0, None, today=date(2026, 5, 26)) == 120.0
+
+
+def test_sigma_now_same_day_returns_stored():
+    """An event today shouldn't widen σ — the grace branch (and the
+    ``current_date <= last_event_at`` early-return in the engine) covers it."""
+    today = date(2026, 5, 26)
+    assert sigma_now(120.0, today, today=today) == 120.0
+
+
+def test_sigma_now_within_grace_returns_stored():
+    """Within ``GLICKO2_INACTIVITY_GRACE_DAYS`` (default 30): no inflation.
+
+    This is the invariant that lets the existing test fixtures
+    (last_event_at = today - 30d) keep their literal σ assertions after PR A.
+    """
+    today = date(2026, 5, 26)
+    last_event = today - timedelta(days=GLICKO2_INACTIVITY_GRACE_DAYS)
+    assert sigma_now(120.0, last_event, today=today) == pytest.approx(120.0)
+
+
+def test_sigma_now_one_day_past_grace_inflates():
+    """One day past the grace window → σ widens (strictly greater)."""
+    today = date(2026, 5, 26)
+    last_event = today - timedelta(days=GLICKO2_INACTIVITY_GRACE_DAYS + 1)
+    out = sigma_now(120.0, last_event, today=today)
+    assert out > 120.0
+
+
+def test_sigma_now_matches_wiener_formula():
+    """For a known gap, the inflated value matches σ² = σ₀² + σ_inactivity² · months exactly.
+
+    Picks a gap divisible by the day-per-month constant so months_inactive is
+    a clean integer.
+    """
+    today = date(2026, 5, 26)
+    months = 12.0
+    days = int(round(GLICKO2_DAYS_PER_MONTH * months))
+    last_event = today - timedelta(days=days)
+    stored = 100.0
+    out = sigma_now(stored, last_event, today=today)
+    # Engine uses days / GLICKO2_DAYS_PER_MONTH, so reproduce that exactly.
+    actual_months = days / GLICKO2_DAYS_PER_MONTH
+    expected = math.sqrt(stored**2 + GLICKO2_SIGMA_INACTIVITY**2 * actual_months)
+    assert out == pytest.approx(expected, abs=1e-6)
+
+
+def test_sigma_now_capped_at_ceiling():
+    """An athlete years inactive saturates at ``SIGMA_CEILING``."""
+    today = date(2026, 5, 26)
+    last_event = today - timedelta(days=int(10 * 365.25))
+    # Start near the ceiling already so the cap definitely binds.
+    out = sigma_now(300.0, last_event, today=today)
+    assert out == pytest.approx(SIGMA_CEILING)
+
+
+def test_sigma_now_monotone_in_gap():
+    """σ_now is non-decreasing in the gap (Wiener process is monotone)."""
+    today = date(2026, 5, 26)
+    sigmas = [
+        sigma_now(120.0, today - timedelta(days=d), today=today)
+        for d in (0, 30, 60, 180, 365, 730)
+    ]
+    for a, b in zip(sigmas, sigmas[1:], strict=False):
+        assert a <= b + 1e-9
+
+
+def test_sigma_now_delegates_to_engine():
+    """Sanity: the wrapper agrees with ``glicko2_inflate_phi`` exactly.
+
+    If this ever drifts, callers using either function would disagree on the
+    same input — the wrapper exists only to provide a clean read-site name +
+    default ``today``, not to alter the math.
+    """
+    today = date(2026, 5, 26)
+    last_event = today - timedelta(days=400)
+    assert sigma_now(150.0, last_event, today=today) == glicko2_inflate_phi(
+        150.0, last_event, today
+    )
+
+
+def test_sigma_now_defaults_today_to_date_today():
+    """Calling without ``today`` doesn't crash and uses ``date.today()``."""
+    # A clearly-ancient last event must produce a clearly-inflated σ.
+    out = sigma_now(120.0, date(2010, 1, 1))
+    assert out > 200.0  # ~16 years inactive → near or at the ceiling
