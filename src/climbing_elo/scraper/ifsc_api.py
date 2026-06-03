@@ -392,10 +392,12 @@ def scrape_season(
         ).scalar_one_or_none()
 
         if existing_event:
-            log.debug("Skipping existing event: %s (%s)", event_name, discipline)
-            continue
-
-        if _is_postgres(session):
+            # Reuse the row (often an empty placeholder created by
+            # scrape_upcoming_events). Idempotency for rounds/results is
+            # handled below via the unique constraints + per-row existence
+            # checks, so re-runs of a fully-ingested event are no-ops.
+            db_event = existing_event
+        elif _is_postgres(session):
             from sqlalchemy.dialects.postgresql import insert as pg_insert
 
             stmt = (
@@ -434,7 +436,15 @@ def scrape_season(
             session.add(db_event)
             session.flush()
 
-        rounds_seen: dict[str, Round] = {}
+        # Pre-seed with rounds already attached to this event so the
+        # (event_id, round_type, gender) unique constraint isn't violated
+        # when we encounter the same round again on a re-run.
+        rounds_seen: dict[str, Round] = {
+            f"{r.event_id}_{r.round_type.value}_{r.gender.value}": r
+            for r in session.execute(
+                select(Round).where(Round.event_id == db_event.id)
+            ).scalars()
+        }
 
         for dc in event_target_dcats:
             dcat_id = dc["id"]
