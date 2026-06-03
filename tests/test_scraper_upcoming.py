@@ -13,10 +13,18 @@ from unittest.mock import MagicMock, patch
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from climbing_elo.models import Base, Discipline, Event
+from climbing_elo.models import (
+    Base,
+    Discipline,
+    Event,
+    EventTier,
+    Result,
+    Round,
+)
 from climbing_elo.scraper.ifsc_api import (
     UPCOMING_STATUSES,
     _dcat_discipline_keyword,
+    scrape_season,
     scrape_upcoming_events,
 )
 
@@ -285,3 +293,180 @@ class TestScrapeUpcomingEventsIntegration:
         assert len(stored) == 2
         assert report2.events_stored == 0
         assert report2.events_skipped == 2
+
+
+# ---------------------------------------------------------------------------
+# Regression test: scrape_season must ingest results for events pre-created
+# as empty placeholders by scrape_upcoming_events (issue #155).
+# ---------------------------------------------------------------------------
+
+
+_FINISHED_LEAGUE = {
+    "d_cats": [
+        {"id": 1001, "discipline": "lead", "name": "LEAD Men"},
+        {"id": 1002, "discipline": "lead", "name": "LEAD Women"},
+    ],
+    "events": [
+        {
+            "event_id": 9001,
+            "event": "World Climbing Series Madrid 2026",
+            "local_start_date": "2026-05-28",
+            "d_cats": [
+                {"id": 1001, "status": "finished"},
+                {"id": 1002, "status": "finished"},
+            ],
+        },
+    ],
+}
+
+_FINISHED_RESULTS_MEN = {
+    "ranking": [
+        {
+            "athlete_id": 7001,
+            "firstname": "Alice",
+            "lastname": "Alpha",
+            "country": "USA",
+            "rounds": [
+                {"round_name": "Qualification", "rank": 1, "score": "TOP"},
+                {"round_name": "Final", "rank": 1, "score": "TOP"},
+            ],
+        },
+        {
+            "athlete_id": 7002,
+            "firstname": "Bob",
+            "lastname": "Beta",
+            "country": "FRA",
+            "rounds": [
+                {"round_name": "Qualification", "rank": 2, "score": "40+"},
+                {"round_name": "Final", "rank": 2, "score": "35+"},
+            ],
+        },
+    ]
+}
+
+_FINISHED_RESULTS_WOMEN = {
+    "ranking": [
+        {
+            "athlete_id": 7003,
+            "firstname": "Carol",
+            "lastname": "Gamma",
+            "country": "JPN",
+            "rounds": [
+                {"round_name": "Qualification", "rank": 1, "score": "TOP"},
+                {"round_name": "Final", "rank": 1, "score": "TOP"},
+            ],
+        },
+    ]
+}
+
+
+def _finished_api_get(client, path):
+    if "/season_leagues/" in path:
+        return _FINISHED_LEAGUE
+    if path.endswith("/result/1001"):
+        return _FINISHED_RESULTS_MEN
+    if path.endswith("/result/1002"):
+        return _FINISHED_RESULTS_WOMEN
+    return None
+
+
+class TestScrapeSeasonIngestsExistingEvent:
+    """scrape_season must NOT skip events that already exist as empty rows.
+
+    Regression for issue #155: scrape_upcoming_events pre-creates an empty
+    Event row when an upstream d_cat is in UPCOMING_STATUSES; once the d_cat
+    flips to "finished", scrape_season previously short-circuited and never
+    ingested rounds/results.
+    """
+
+    def test_empty_placeholder_gets_rounds_and_results(self):
+        from datetime import date as _date
+
+        session = _make_session()
+
+        # Pre-create an empty Event row, mimicking what scrape_upcoming_events
+        # would have stored when Madrid's d_cats were still "scheduled".
+        placeholder = Event(
+            name="World Climbing Series Madrid 2026",
+            tier=EventTier.WORLD_CUP,
+            country=None,
+            season=2026,
+            start_date=_date(2026, 5, 28),
+            discipline=Discipline.LEAD,
+        )
+        session.add(placeholder)
+        session.commit()
+        placeholder_id = placeholder.id
+
+        with patch(
+            "climbing_elo.scraper.ifsc_api._api_get", side_effect=_finished_api_get
+        ):
+            import httpx
+
+            client = MagicMock(spec=httpx.Client)
+            report = scrape_season(
+                client,
+                session,
+                season_info={"name": "2026"},
+                league_url="/api/v1/season_leagues/457",
+                league_name="World Cups and World Championships",
+                discipline="lead",
+            )
+
+        # No new Event row — the placeholder is reused.
+        events = session.execute(select(Event)).scalars().all()
+        assert len(events) == 1
+        assert events[0].id == placeholder_id
+
+        # Rounds and results materialized against the placeholder.
+        rounds = (
+            session.execute(select(Round).where(Round.event_id == placeholder_id))
+            .scalars()
+            .all()
+        )
+        assert len(rounds) == 4  # qual M/F + final M/F
+        results = (
+            session.execute(
+                select(Result).join(Round).where(Round.event_id == placeholder_id)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(results) == 6  # 2M qual + 2M final + 1F qual + 1F final
+        assert report.results_created == 6
+
+    def test_rerun_is_idempotent(self):
+        """A second scrape_season pass over an already-ingested event is a no-op."""
+        session = _make_session()
+
+        with patch(
+            "climbing_elo.scraper.ifsc_api._api_get", side_effect=_finished_api_get
+        ):
+            import httpx
+
+            client = MagicMock(spec=httpx.Client)
+            scrape_season(
+                client,
+                session,
+                season_info={"name": "2026"},
+                league_url="/api/v1/season_leagues/457",
+                league_name="World Cups and World Championships",
+                discipline="lead",
+            )
+            rounds_before = session.execute(select(Round)).scalars().all()
+            results_before = session.execute(select(Result)).scalars().all()
+
+            report2 = scrape_season(
+                client,
+                session,
+                season_info={"name": "2026"},
+                league_url="/api/v1/season_leagues/457",
+                league_name="World Cups and World Championships",
+                discipline="lead",
+            )
+
+        rounds_after = session.execute(select(Round)).scalars().all()
+        results_after = session.execute(select(Result)).scalars().all()
+        assert len(rounds_after) == len(rounds_before)
+        assert len(results_after) == len(results_before)
+        assert report2.results_created == 0
