@@ -20,10 +20,12 @@ from climbing_elo.models import (
     EventTier,
     Result,
     Round,
+    RoundType,
 )
 from climbing_elo.scraper.ifsc_api import (
     UPCOMING_STATUSES,
     _dcat_discipline_keyword,
+    _parse_round_type,
     scrape_season,
     scrape_upcoming_events,
 )
@@ -470,3 +472,361 @@ class TestScrapeSeasonIngestsExistingEvent:
         assert len(rounds_after) == len(rounds_before)
         assert len(results_after) == len(results_before)
         assert report2.results_created == 0
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _parse_round_type (issue #157)
+# ---------------------------------------------------------------------------
+
+
+class TestParseRoundType:
+    """The IFSC API emits exactly four round_name strings 2012–2026:
+    'Qualification', 'Semi-Final', 'Semi-final', 'Final'. The semi check
+    must run before the final check because both contain 'final'."""
+
+    def test_semi_final_capital_f(self):
+        assert _parse_round_type("Semi-Final") == RoundType.SEMI
+
+    def test_semi_final_lowercase_f(self):
+        assert _parse_round_type("Semi-final") == RoundType.SEMI
+
+    def test_semi_final_all_caps(self):
+        assert _parse_round_type("SEMI-FINAL") == RoundType.SEMI
+
+    def test_semi_final_with_space(self):
+        assert _parse_round_type("semi final") == RoundType.SEMI
+
+    def test_final(self):
+        assert _parse_round_type("Final") == RoundType.FINAL
+
+    def test_qualification(self):
+        assert _parse_round_type("Qualification") == RoundType.QUALIFICATION
+
+    def test_qualifications_plural(self):
+        assert _parse_round_type("Qualifications") == RoundType.QUALIFICATION
+
+    def test_unknown_name_warns_and_defaults_to_qualification(self):
+        with patch("climbing_elo.scraper.ifsc_api.log.warning") as mock_warn:
+            result = _parse_round_type("Bracket Round 1")
+        assert result == RoundType.QUALIFICATION
+        assert mock_warn.called
+        assert "Unrecognized round_name" in mock_warn.call_args[0][0]
+
+    def test_empty_string_does_not_crash(self):
+        with patch("climbing_elo.scraper.ifsc_api.log.warning"):
+            assert _parse_round_type("") == RoundType.QUALIFICATION
+
+    def test_none_does_not_crash(self):
+        with patch("climbing_elo.scraper.ifsc_api.log.warning"):
+            assert _parse_round_type(None) == RoundType.QUALIFICATION  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Integration: scrape_season must split semi + final into distinct Round
+# rows. Models the Inzai 2012 LEAD Women case where the real final (8
+# athletes) was being eaten by the per-(round_id, athlete_id) existence
+# check after both rounds collided on the same round_key (issue #157).
+# ---------------------------------------------------------------------------
+
+
+_INZAI_LEAGUE = {
+    "d_cats": [{"id": 5, "discipline": "lead", "name": "LEAD Women"}],
+    "events": [
+        {
+            "event_id": 745,
+            "event": "IFSC Climbing Worldcup (L) - Inzai (JPN) 2012",
+            "local_start_date": "2012-10-27",
+            "d_cats": [{"id": 5, "status": "finished"}],
+        },
+    ],
+}
+
+# Top-3 finalists each have 3 rounds; #4 has qual+semi only (didn't make
+# the final). The crucial property: rank IDs differ between semi and
+# final (real final has Markovic 1, Kim 2, Vidmar 3; semi had Kim 1,
+# Vidmar 1, with Markovic 7). Pre-fix, the semi row would survive labeled
+# FINAL and the actual final's per-athlete rows would be dropped by the
+# (round_id, athlete_id) existence check.
+_INZAI_RESULTS = {
+    "ranking": [
+        {
+            "athlete_id": 100,
+            "firstname": "Mina",
+            "lastname": "MARKOVIC",
+            "country": "SLO",
+            "rounds": [
+                {"round_name": "Qualification", "rank": 5, "score": "TOP"},
+                {"round_name": "Semi-Final", "rank": 7, "score": "30+"},
+                {"round_name": "Final", "rank": 1, "score": "TOP"},
+            ],
+        },
+        {
+            "athlete_id": 101,
+            "firstname": "Jain",
+            "lastname": "KIM",
+            "country": "KOR",
+            "rounds": [
+                {"round_name": "Qualification", "rank": 1, "score": "TOP"},
+                {"round_name": "Semi-Final", "rank": 1, "score": "TOP"},
+                {"round_name": "Final", "rank": 2, "score": "51+"},
+            ],
+        },
+        {
+            "athlete_id": 102,
+            "firstname": "Maja",
+            "lastname": "VIDMAR",
+            "country": "SLO",
+            "rounds": [
+                {"round_name": "Qualification", "rank": 1, "score": "TOP"},
+                {"round_name": "Semi-Final", "rank": 1, "score": "TOP"},
+                {"round_name": "Final", "rank": 3, "score": "49+"},
+            ],
+        },
+        {
+            "athlete_id": 103,
+            "firstname": "Did",
+            "lastname": "NOTMAKEFINAL",
+            "country": "FRA",
+            "rounds": [
+                {"round_name": "Qualification", "rank": 4, "score": "TOP"},
+                {"round_name": "Semi-Final", "rank": 9, "score": "20"},
+            ],
+        },
+    ]
+}
+
+
+def _inzai_api_get(client, path):
+    if "/season_leagues/" in path:
+        return _INZAI_LEAGUE
+    if path.endswith("/result/5"):
+        return _INZAI_RESULTS
+    return None
+
+
+class TestScrapeSeasonSplitsSemiFromFinal:
+    def test_semi_and_final_become_distinct_rounds(self):
+        """Issue #157: semi + final must materialize as two separate
+        Round rows with the correct round_type. The Inzai 2012 final
+        winner Markovic must be recorded as rank 1, not rank 7."""
+        session = _make_session()
+
+        with patch(
+            "climbing_elo.scraper.ifsc_api._api_get", side_effect=_inzai_api_get
+        ):
+            import httpx
+
+            client = MagicMock(spec=httpx.Client)
+            scrape_season(
+                client,
+                session,
+                season_info={"name": "2012"},
+                league_url="/api/v1/season_leagues/2",
+                league_name="IFSC World Cup",
+                discipline="lead",
+            )
+
+        rounds = session.execute(select(Round)).scalars().all()
+        round_types = {r.round_type for r in rounds}
+        assert round_types == {
+            RoundType.QUALIFICATION,
+            RoundType.SEMI,
+            RoundType.FINAL,
+        }, f"Expected QUAL+SEMI+FINAL rounds, got {round_types}"
+
+        final_round = next(r for r in rounds if r.round_type == RoundType.FINAL)
+        semi_round = next(r for r in rounds if r.round_type == RoundType.SEMI)
+
+        # Real final: 3 athletes (the finalists in our fixture).
+        assert final_round.athlete_count == 3
+        # Semi: 4 athletes (all who competed).
+        assert semi_round.athlete_count == 4
+
+        ranks_in_final = sorted(
+            r.rank
+            for r in session.execute(
+                select(Result).where(Result.round_id == final_round.id)
+            )
+            .scalars()
+            .all()
+        )
+        assert ranks_in_final == [1, 2, 3], (
+            f"Final ranks should be [1, 2, 3], got {ranks_in_final}"
+        )
+
+        # The athlete who came 7th in the semi (Markovic) must be the
+        # same athlete recorded 1st in the final. Pre-fix this would
+        # fail because the final row was silently the semi data.
+        semi_rank_7 = session.execute(
+            select(Result).where(Result.round_id == semi_round.id, Result.rank == 7)
+        ).scalar_one()
+        final_rank_1 = session.execute(
+            select(Result).where(Result.round_id == final_round.id, Result.rank == 1)
+        ).scalar_one()
+        assert semi_rank_7.athlete_id == final_rank_1.athlete_id, (
+            "Markovic (semi rank 7) must be the same athlete as final rank 1"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Ingest validator (issue #157): scrape_season must warn when a final
+# row exceeds the sane size threshold or has duplicate rank-1 finishers.
+# ---------------------------------------------------------------------------
+
+
+def _make_oversized_final_payload(n_finalists: int) -> dict:
+    """Mock an IFSC API response with a single final round containing
+    n_finalists athletes — emulates the bug shape we want to flag."""
+    return {
+        "ranking": [
+            {
+                "athlete_id": 200 + i,
+                "firstname": f"Athlete{i}",
+                "lastname": "TEST",
+                "country": "USA",
+                "rounds": [
+                    {"round_name": "Final", "rank": i + 1, "score": "TOP"},
+                ],
+            }
+            for i in range(n_finalists)
+        ]
+    }
+
+
+def _oversized_league(n_finalists: int):
+    return {
+        "d_cats": [{"id": 9, "discipline": "lead", "name": "LEAD Women"}],
+        "events": [
+            {
+                "event_id": 9999,
+                "event": "Mock Oversized Final Event",
+                "local_start_date": "2020-01-01",
+                "d_cats": [{"id": 9, "status": "finished"}],
+            },
+        ],
+    }
+
+
+class TestIngestValidator:
+    def test_oversized_final_is_flagged(self):
+        """A final with > 12 athletes triggers a warning + report.errors
+        entry. Threshold is the documented sane upper bound for real
+        finals (Olympics=8, World Cup=6–8, slack for ties)."""
+        session = _make_session()
+        payload = _make_oversized_final_payload(26)
+
+        def _api(client, path):
+            if "/season_leagues/" in path:
+                return _oversized_league(26)
+            if path.endswith("/result/9"):
+                return payload
+            return None
+
+        with patch("climbing_elo.scraper.ifsc_api._api_get", side_effect=_api):
+            import httpx
+
+            client = MagicMock(spec=httpx.Client)
+            report = scrape_season(
+                client,
+                session,
+                season_info={"name": "2020"},
+                league_url="/api/v1/season_leagues/2",
+                league_name="IFSC World Cup",
+                discipline="lead",
+            )
+
+        assert any("Suspicious final size" in e for e in report.errors), (
+            f"Expected a 'Suspicious final size' error, got: {report.errors}"
+        )
+        assert any("Mock Oversized Final Event" in e for e in report.errors)
+
+    def test_normal_final_size_does_not_flag(self):
+        """A normal 6-athlete final must not trigger the validator."""
+        session = _make_session()
+        payload = _make_oversized_final_payload(6)
+
+        def _api(client, path):
+            if "/season_leagues/" in path:
+                return _oversized_league(6)
+            if path.endswith("/result/9"):
+                return payload
+            return None
+
+        with patch("climbing_elo.scraper.ifsc_api._api_get", side_effect=_api):
+            import httpx
+
+            client = MagicMock(spec=httpx.Client)
+            report = scrape_season(
+                client,
+                session,
+                season_info={"name": "2020"},
+                league_url="/api/v1/season_leagues/2",
+                league_name="IFSC World Cup",
+                discipline="lead",
+            )
+
+        assert not any("Suspicious final size" in e for e in report.errors), (
+            f"Validator misfired on a 6-athlete final: {report.errors}"
+        )
+
+    def test_multiple_rank_one_in_final_is_flagged(self):
+        """A final with multiple rank-1 finishers is the semifinal-
+        countback signature and must trigger a warning."""
+        session = _make_session()
+        # 4 finalists, two tied at rank 1 (the bug shape).
+        payload = {
+            "ranking": [
+                {
+                    "athlete_id": 300,
+                    "firstname": "A",
+                    "lastname": "ONE",
+                    "country": "USA",
+                    "rounds": [{"round_name": "Final", "rank": 1, "score": "TOP"}],
+                },
+                {
+                    "athlete_id": 301,
+                    "firstname": "B",
+                    "lastname": "ONE",
+                    "country": "USA",
+                    "rounds": [{"round_name": "Final", "rank": 1, "score": "TOP"}],
+                },
+                {
+                    "athlete_id": 302,
+                    "firstname": "C",
+                    "lastname": "THREE",
+                    "country": "USA",
+                    "rounds": [{"round_name": "Final", "rank": 3, "score": "40+"}],
+                },
+                {
+                    "athlete_id": 303,
+                    "firstname": "D",
+                    "lastname": "FOUR",
+                    "country": "USA",
+                    "rounds": [{"round_name": "Final", "rank": 4, "score": "35"}],
+                },
+            ]
+        }
+
+        def _api(client, path):
+            if "/season_leagues/" in path:
+                return _oversized_league(4)
+            if path.endswith("/result/9"):
+                return payload
+            return None
+
+        with patch("climbing_elo.scraper.ifsc_api._api_get", side_effect=_api):
+            import httpx
+
+            client = MagicMock(spec=httpx.Client)
+            report = scrape_season(
+                client,
+                session,
+                season_info={"name": "2020"},
+                league_url="/api/v1/season_leagues/2",
+                league_name="IFSC World Cup",
+                discipline="lead",
+            )
+
+        assert any("multiple rank-1 finishers" in e for e in report.errors), (
+            f"Expected multi-rank-1 error, got: {report.errors}"
+        )

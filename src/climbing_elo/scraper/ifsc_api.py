@@ -103,6 +103,12 @@ HEADERS = {
 }
 REQUEST_DELAY = 0.5
 
+# Sane upper bound for a real final's field size. Olympics finals = 8,
+# World Cup finals = 6–8; the slack covers ties and continental events.
+# A final exceeding this is almost certainly a semifinal mislabeled as a
+# final (see #157).
+_FINAL_SIZE_WARN_THRESHOLD = 12
+
 
 @dataclass
 class ScrapeReport:
@@ -160,11 +166,19 @@ def _classify_tier(event_name: str, league_name: str) -> EventTier:
 
 
 def _parse_round_type(name: str) -> RoundType:
-    name = name.lower()
-    if "final" in name:
-        return RoundType.FINAL
-    if "semi" in name:
+    # Order matters: "Semi-Final" / "Semi-final" both contain "final", so
+    # the semi check must run first. The IFSC API uses exactly four
+    # round_name strings across 2012–2026: "Qualification", "Semi-Final",
+    # "Semi-final", "Final" — anything else is a vocabulary change worth
+    # surfacing in cron logs.
+    n = (name or "").lower()
+    if "semi" in n:
         return RoundType.SEMI
+    if "final" in n:
+        return RoundType.FINAL
+    if "qualif" in n:
+        return RoundType.QUALIFICATION
+    log.warning("Unrecognized round_name %r; defaulting to QUALIFICATION", name)
     return RoundType.QUALIFICATION
 
 
@@ -553,6 +567,35 @@ def scrape_season(
                 select(Result).where(Result.round_id == rnd.id)
             ).all()
             rnd.athlete_count = len(count)
+
+        # Sanity-check finals. Real lead/boulder finals are 6–8 athletes
+        # with a single rank-1 finisher; anything well outside that window
+        # is the hallmark of the historical semi-mislabeled-as-final bug
+        # (#157) recurring, e.g. via a future IFSC vocabulary change. Soft
+        # check — log + record in report.errors so the daily cron surfaces
+        # it without rolling back the transaction.
+        for rnd in rounds_seen.values():
+            if rnd.round_type != RoundType.FINAL:
+                continue
+            if rnd.athlete_count > _FINAL_SIZE_WARN_THRESHOLD:
+                msg = (
+                    f"Suspicious final size: {event_name} ({season_name}) "
+                    f"[{discipline} {rnd.gender.value}] has {rnd.athlete_count} "
+                    f"finalists (expected ≤ {_FINAL_SIZE_WARN_THRESHOLD})"
+                )
+                log.warning(msg)
+                report.errors.append(msg)
+            rank_one_count = session.execute(
+                select(Result).where(Result.round_id == rnd.id, Result.rank == 1)
+            ).all()
+            if len(rank_one_count) > 1:
+                msg = (
+                    f"Final has multiple rank-1 finishers: {event_name} "
+                    f"({season_name}) [{discipline} {rnd.gender.value}] — "
+                    f"{len(rank_one_count)} athletes tied at rank 1"
+                )
+                log.warning(msg)
+                report.errors.append(msg)
 
         session.commit()
         report.events_scraped += 1
