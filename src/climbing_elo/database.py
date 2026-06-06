@@ -71,7 +71,16 @@ def get_engine(db_path: Path | str | None = None) -> Engine:
     # Supabase transaction pooler (port 6543) needs NullPool so SQLAlchemy
     # doesn't fight pgBouncer's per-transaction connection recycling. The
     # session pooler (5432) and direct connections keep the default pool.
-    if _is_transaction_pooler(url):
+    #
+    # Escape hatch: set CLIMBING_ELO_DB_NULLPOOL=1 to force NullPool on
+    # the session pooler too. Useful for long-running bulk operations
+    # (catch-up re-imports, multi-hour backfills) where the session
+    # pooler appears to drop long-held connections — each statement
+    # gets a fresh connection, no lifetime concerns. Trades ~50ms extra
+    # latency per query for connection resilience. The daily cron does
+    # NOT set this; only invoke when you need it.
+    force_nullpool = os.environ.get("CLIMBING_ELO_DB_NULLPOOL") == "1"
+    if _is_transaction_pooler(url) or force_nullpool:
         return create_engine(
             url,
             echo=False,

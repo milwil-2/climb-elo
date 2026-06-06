@@ -59,5 +59,39 @@ def test_get_engine_uses_default_pool_for_session_pooler(
         "DATABASE_URL",
         "postgresql://u:p@aws-1-us-west-2.pooler.supabase.com:5432/postgres",
     )
+    monkeypatch.delenv("CLIMBING_ELO_DB_NULLPOOL", raising=False)
     engine = get_engine()
     assert not isinstance(engine.pool, NullPool)
+
+
+def test_get_engine_force_nullpool_via_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setting CLIMBING_ELO_DB_NULLPOOL=1 forces NullPool on session-pooler URLs.
+
+    Used for long-running bulk operations (catch-up re-imports) where the
+    session pooler appears to drop long-held connections.
+    """
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://u:p@aws-1-us-west-2.pooler.supabase.com:5432/postgres",
+    )
+    monkeypatch.setenv("CLIMBING_ELO_DB_NULLPOOL", "1")
+    engine = get_engine()
+    assert isinstance(engine.pool, NullPool)
+
+
+def test_get_engine_nullpool_env_var_only_when_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLIMBING_ELO_DB_NULLPOOL only triggers on the literal value "1"."""
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://u:p@aws-1-us-west-2.pooler.supabase.com:5432/postgres",
+    )
+    for falsy in ("0", "true", "yes", ""):
+        monkeypatch.setenv("CLIMBING_ELO_DB_NULLPOOL", falsy)
+        engine = get_engine()
+        assert not isinstance(engine.pool, NullPool), (
+            f"Expected default pool for CLIMBING_ELO_DB_NULLPOOL={falsy!r}"
+        )
