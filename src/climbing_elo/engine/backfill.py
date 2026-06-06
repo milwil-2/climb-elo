@@ -317,39 +317,74 @@ def run_backfill(
 
                 report.athletes_rated.add(upd.athlete_id)
 
+            # Commit per round so each round's history + Rating mu/sigma
+            # updates are durable before the next round. Supabase's session
+            # pooler enforces a connection lifetime that's well under the
+            # per-event transaction length on big multi-round events; per-
+            # round commits keep individual transactions short and make a
+            # mid-event crash lose at most one round of work instead of
+            # the whole event. Idempotency-on-resume is preserved via the
+            # already_rated SELECT above plus the (athlete_id, round_id,
+            # kind) unique constraint.
+            session.commit()
             report.rounds_processed += 1
             event_had_updates = True
 
-        if event_had_updates:
-            _apply_tpb_for_event(
-                session, event, rounds, discipline, ratings_cache, config
-            )
+        # End-of-event TPB + per-athlete bookkeeping. Always run — the
+        # block has its own per-row idempotency, so on resume after a
+        # crash between round commit and event-end commit, missing TPB
+        # rows and missing n_events bumps still apply correctly.
+        _apply_tpb_for_event(session, event, rounds, discipline, ratings_cache, config)
 
-            seen_athletes: set[int] = set()
-            for rnd in rounds:
-                for res in rnd.results:
-                    if res.dns or res.athlete_id in seen_athletes:
-                        continue
-                    seen_athletes.add(res.athlete_id)
+        seen_athletes: set[int] = set()
+        for rnd in rounds:
+            for res in rnd.results:
+                if res.dns or res.athlete_id in seen_athletes:
+                    continue
+                seen_athletes.add(res.athlete_id)
 
-            for aid in seen_athletes:
-                ar = ratings_cache.get(aid)
-                if ar:
-                    ar.n_events += 1
-                    ar.last_event_at = event.start_date
-                    ar.provisional = ar.n_events < config.provisional_threshold
+        bumped_any = False
+        for aid in seen_athletes:
+            ar = ratings_cache.get(aid)
+            if ar is None:
+                continue
+            db_rating = session.execute(
+                select(Rating).where(
+                    Rating.athlete_id == aid,
+                    Rating.discipline == discipline,
+                )
+            ).scalar_one_or_none()
+            if db_rating is None:
+                # Athlete has no Rating row yet — they only appear in
+                # rounds we haven't processed in this run (e.g., all
+                # already-rated; we skipped without creating). Skip the
+                # bump for them; their row will be created the next time
+                # an un-rated round actually processes them.
+                continue
+            # Idempotency gate: events are processed in date order, so
+            # last_event_at >= event.start_date means this event already
+            # bumped this athlete in a prior run; skip to avoid double-
+            # incrementing n_events.
+            if (
+                db_rating.last_event_at is not None
+                and db_rating.last_event_at >= event.start_date
+            ):
+                continue
+            ar.n_events += 1
+            ar.last_event_at = event.start_date
+            ar.provisional = ar.n_events < config.provisional_threshold
+            db_rating.n_events = ar.n_events
+            db_rating.last_event_at = ar.last_event_at
+            db_rating.provisional = ar.provisional
+            bumped_any = True
 
-                    db_rating = session.execute(
-                        select(Rating).where(
-                            Rating.athlete_id == aid,
-                            Rating.discipline == discipline,
-                        )
-                    ).scalar_one()
-                    db_rating.n_events = ar.n_events
-                    db_rating.last_event_at = ar.last_event_at
-                    db_rating.provisional = ar.provisional
+        # Commit the TPB + bump block. On a "nothing to do" event (all
+        # rounds and TPB already applied, no athletes to bump) this is
+        # an empty commit — cheap; needed so subsequent events start
+        # with a clean transaction.
+        session.commit()
 
-            session.commit()
+        if event_had_updates or bumped_any:
             report.events_processed += 1
             log.info(
                 "Processed event %s (%s) — %d rounds",

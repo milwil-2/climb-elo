@@ -226,6 +226,45 @@ class TestBackfillIdempotency:
             f"got {count_after_first}"
         )
 
+    def test_backfill_twice_n_events_not_double_incremented(self):
+        """The end-of-event Rating.n_events bump must be idempotent.
+
+        Regression for the per-round-commit refactor: previously the bump
+        was gated by 'any round had updates in this run', so a re-run that
+        skipped all rounds would also skip the bump. With per-round
+        commits the gate had to move into the bump itself (skip if
+        last_event_at >= event.start_date). This test would catch a
+        regression where n_events doubles on the second run.
+        """
+        from climbing_elo.models import Rating
+
+        session = _make_session()
+        athletes, event, rnd = _seed_event_and_data(session)
+
+        run_backfill(session, Discipline.LEAD)
+        n_events_after_first = sorted(
+            r.n_events
+            for r in session.execute(
+                select(Rating).where(Rating.discipline == Discipline.LEAD)
+            ).scalars()
+        )
+
+        run_backfill(session, Discipline.LEAD)
+        n_events_after_second = sorted(
+            r.n_events
+            for r in session.execute(
+                select(Rating).where(Rating.discipline == Discipline.LEAD)
+            ).scalars()
+        )
+
+        assert n_events_after_first == n_events_after_second, (
+            f"Rating.n_events double-incremented after re-run. "
+            f"After 1st: {n_events_after_first}; after 2nd: {n_events_after_second}"
+        )
+        assert all(n == 1 for n in n_events_after_first), (
+            f"Each athlete should have n_events=1 after one event; got {n_events_after_first}"
+        )
+
     def test_rating_history_unique_constraint_present(self):
         """The UNIQUE(athlete_id, round_id, kind) constraint exists on the rating_history table."""
         from sqlalchemy import inspect as sa_inspect
