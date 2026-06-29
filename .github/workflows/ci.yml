@@ -26,7 +26,7 @@ jobs:
       - name: Set Python version
         run: echo "UV_PYTHON=${{ matrix.python-version }}" >> $GITHUB_ENV
       - name: Cache uv deps
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/uv
           key: uv-${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
@@ -46,7 +46,7 @@ jobs:
         with:
           version: "latest"
       - name: Cache uv deps
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/uv
           key: uv-lint-${{ hashFiles('uv.lock') }}
