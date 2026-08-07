@@ -735,36 +735,29 @@ _OLD_BOULDER_RE = re.compile(
 )
 
 
-def _is_new_boulder_format(raw_score: str) -> bool:
-    """Return True if *raw_score* is a numeric/decimal value (new 2025+ format)."""
-    raw = raw_score.strip()
-    try:
-        float(raw)
-        return True
-    except ValueError:
-        return False
-
-
 def normalize_boulder_score(raw_score: str) -> float | None:
-    """Normalize a Boulder raw score to a comparable float.
+    """Normalize a Boulder raw score to the canonical ordinal scale.
 
-    Handles both formats:
+    The whole DB uses the ordinal scale ``tops * 1000 + zones * 100 -
+    top_att * 10 - zone_att`` (#117). Two feed formats can be recovered from
+    the raw string alone:
 
-    * **New format (2025+):** a decimal string like ``"34.5"`` — returned as-is.
-    * **Old format (pre-2025):** an ordinal string like ``"1T2z 3 4"``,
-      ``"2T2 3B4"``, or the lowercase pre-2018 feed ``"5t6 5b6"`` — parsed into
-      ``tops * 1000 + zones * 100 - top_att * 10 - zone_att``. In the lowercase
-      feed the attempt counts are omitted when a count is 0 (``"0t 4b10"``,
-      ``"0t 0b"``); those are read as 0 attempts rather than rejected (#115).
+    * Post-2018 ``"NTMz A B"`` — e.g. ``"1T2z 3 4"``.
+    * Pre-2018 lowercase ``"Nt[att] Mb[att]"`` — attempt counts optional
+      (``"0t 4b10"``, ``"0t 0b"`` etc., see #115).
 
-    Returns ``None`` if the score cannot be parsed.
+    The **2025+ decimal feed** (``"124.9"``) cannot be normalised from the raw
+    string alone — the ordinal value is reconstructed at scrape time from the
+    structured ``ascents`` payload (``scraper.ifsc_api._parse_boulder_score``).
+    Decimal-only raws therefore return ``None`` here: preserving the ``124.9``
+    value would silently mix a 0-125 scale into a 0-6000 corpus and inflate MOV
+    saturation (#117 / #84).
+
+    Returns ``None`` for DNF/DNS/empty/decimal-only inputs.
     """
     raw = (raw_score or "").strip()
     if not raw or raw.upper() in ("DNF", "DNS", "-"):
         return None
-
-    if _is_new_boulder_format(raw):
-        return float(raw)
 
     m = re.match(r"(\d+)[Tt](\d+)[Zz]\s+(\d+)\s+(\d+)", raw)
     if m:
