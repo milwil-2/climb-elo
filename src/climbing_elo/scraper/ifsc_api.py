@@ -236,8 +236,18 @@ def _parse_boulder_score(
         tops, top_att, zones, zone_att = (int(x) for x in m.groups())
         return (raw, float(tops * 1000 + zones * 100 - top_att * 10 - zone_att))
 
+    # Modern 2025+ decimal feed reaches here only if ``ascents`` was empty —
+    # a bare ``"124.9"`` cannot be back-converted to the canonical ordinal
+    # scale, and returning the decimal as-is would silently mix scales into
+    # the DB and downstream ratings/MOV (#117). Log loudly and drop.
     try:
-        return (raw, float(raw))
+        float(raw)
+        log.warning(
+            "Boulder score %r has no ascents payload; cannot recover ordinal, "
+            "storing NULL (see #117)",
+            raw,
+        )
+        return (raw, None)
     except ValueError:
         pass
 

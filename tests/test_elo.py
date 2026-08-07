@@ -20,7 +20,6 @@ from climbing_elo.engine.elo import (
     AthleteRating,
     AthleteResult,
     _gap_conditioning_factor,
-    _is_new_boulder_format,
     calculate_round_updates,
     compute_boulder_margin_multiplier,
     compute_margin_multiplier,
@@ -404,35 +403,20 @@ def test_boulder_vs_lead_margin_scale():
 
 
 # ---------------------------------------------------------------------------
-# Boulder format detection and normalization tests
+# Boulder normalization tests
 # ---------------------------------------------------------------------------
 
 
-def test_is_new_boulder_format_decimal():
-    """Decimal strings are recognised as the new 2025+ format."""
-    assert _is_new_boulder_format("34.5") is True
-    assert _is_new_boulder_format("25.0") is True
-    assert _is_new_boulder_format("10.1") is True
-    assert _is_new_boulder_format("0.0") is True
-
-
-def test_is_new_boulder_format_integer_string():
-    """Plain integer strings are also new-format (parseable as float)."""
-    assert _is_new_boulder_format("100") is True
-
-
-def test_is_new_boulder_format_old_format():
-    """Old ordinal strings are NOT the new format."""
-    assert _is_new_boulder_format("1T2z 3 4") is False
-    assert _is_new_boulder_format("2T2z 2 2") is False
-    assert _is_new_boulder_format("0T1z 0 5") is False
-
-
-def test_normalize_boulder_score_new_format():
-    """New-format decimal scores pass through as floats."""
-    assert normalize_boulder_score("34.5") == 34.5
-    assert normalize_boulder_score("25.0") == 25.0
-    assert normalize_boulder_score("10.1") == 10.1
+def test_normalize_boulder_score_decimal_returns_none():
+    """Decimal-only raws (2025+ feed) cannot be back-converted to the ordinal
+    scale — the ordinal value is derived from structured ``ascents`` at scrape
+    time. Returning the decimal as-is would silently mix scales (#117).
+    """
+    assert normalize_boulder_score("34.5") is None
+    assert normalize_boulder_score("25.0") is None
+    assert normalize_boulder_score("10.1") is None
+    assert normalize_boulder_score("124.9") is None
+    assert normalize_boulder_score("100") is None
 
 
 def test_normalize_boulder_score_old_format_ntz():
