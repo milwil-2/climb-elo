@@ -18,9 +18,11 @@ not fail the build (used for known, deliberately-deferred states).
    divergence is.
 
 2. **Stored-vs-recomputed mismatch (WARN)** — a non-null stored score that differs
-   from re-normalizing ``raw_score``. This is the #117 class (boulder 2025/2026
-   stored on the ordinal scale while ``raw_score`` is decimal). WARN until #117 is
-   resolved, then promote to FAIL.
+   from re-normalizing ``raw_score``. Post-#117 (decimal-only boulder raws now
+   normalize to ``None`` rather than silently returning the decimal), this check
+   is silent on 2025+ boulder because ``recomputed`` is ``None`` and the mismatch
+   arm requires both sides non-null. Any residual mismatch surfacing in Lead/Speed
+   would be a genuine drift signal — stays a WARN for now.
 
 3. **Rating health (FAIL)** — any rating at the σ-floor (≤ ``SIGMA_FLOOR``, the
    #95 collapse signal); Lead/Boulder μ-p95 outside the calibrated elite band
