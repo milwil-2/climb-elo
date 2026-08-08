@@ -231,9 +231,18 @@ def _parse_boulder_score(
         tops, zones, top_att, zone_att = (int(x) for x in m.groups())
         return (raw, float(tops * 1000 + zones * 100 - top_att * 10 - zone_att))
 
-    m = re.match(r"(\d+)[Tt](\d+)\s+(\d+)[Bb](\d+)", raw)
+    # Pre-2018 lowercase feed omits attempt counts when they are 0
+    # (``"0t 4b10"``, ``"0t 0b"``). ``\d*`` + ``or 0`` default mirrors the
+    # engine-side parity path in :func:`normalize_boulder_score` — #168
+    # (previously the two regexes diverged: engine relaxed, scraper strict,
+    # which meant ~2,610 pre-2018 rows landed with NULL score_normalized
+    # once #155 let the scraper reach placeholder events).
+    m = re.match(r"(\d+)[Tt](\d*)\s+(\d+)[Bb](\d*)", raw)
     if m:
-        tops, top_att, zones, zone_att = (int(x) for x in m.groups())
+        tops = int(m.group(1))
+        top_att = int(m.group(2) or 0)
+        zones = int(m.group(3))
+        zone_att = int(m.group(4) or 0)
         return (raw, float(tops * 1000 + zones * 100 - top_att * 10 - zone_att))
 
     # Modern 2025+ decimal feed reaches here only if ``ascents`` was empty —
