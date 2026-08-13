@@ -1091,7 +1091,11 @@ async def predictions_upcoming(
                             ).scalar_one_or_none()
                             mu = rating.mu if rating else DEFAULT_MU
                             sigma = (
-                                sigma_now(rating.sigma, rating.last_event_at)
+                                sigma_now(
+                                    rating.sigma,
+                                    rating.last_event_at,
+                                    today=ev.start_date,
+                                )
                                 if rating
                                 else DEFAULT_SIGMA
                             )
@@ -1182,7 +1186,11 @@ async def predictions_upcoming(
                             ).scalar_one_or_none()
                             mu = rating.mu if rating else DEFAULT_MU
                             sigma = (
-                                sigma_now(rating.sigma, rating.last_event_at)
+                                sigma_now(
+                                    rating.sigma,
+                                    rating.last_event_at,
+                                    today=ev.start_date,
+                                )
                                 if rating
                                 else DEFAULT_SIGMA
                             )
