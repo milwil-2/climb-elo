@@ -127,6 +127,7 @@ def _build_proj_inputs_batched(
     session,
     athlete_ids: list[int],
     disc_enum: Discipline,
+    projection_date: Optional[date] = None,
 ) -> list[AthleteProjectionInput]:
     """Build AthleteProjectionInput list with a single batched join query.
 
@@ -134,6 +135,13 @@ def _build_proj_inputs_batched(
     ``select(Rating)`` N+1 loop with one join query covering all athlete_ids
     at once.  Athletes missing a rating receive the ELO defaults so they still
     appear in projections.
+
+    ``projection_date`` (#170) is the target event's start date; each
+    athlete's stored σ is inflated forward via Glicko-2's Wiener step to
+    that date before it lands in the Monte Carlo draws.  Farther-future
+    events see wider σ → wider draws → flatter podium distributions,
+    correctly representing added uncertainty.  Defaults to ``None`` →
+    ``sigma_now`` falls back to today (pre-#170 behaviour).
     """
     from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
 
@@ -167,7 +175,9 @@ def _build_proj_inputs_batched(
                 AthleteProjectionInput(
                     athlete_id=aid,
                     mu=rating.mu,
-                    sigma=sigma_now(rating.sigma, rating.last_event_at),
+                    sigma=sigma_now(
+                        rating.sigma, rating.last_event_at, today=projection_date
+                    ),
                     name=ath.name,
                 )
             )
@@ -2058,7 +2068,10 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
         if pre_event and proj_athlete_ids:
             # Pre-event: use likely roster as "remaining" athletes (no ranks yet).
             for inp in _build_proj_inputs_batched(
-                session, proj_athlete_ids, event.discipline
+                session,
+                proj_athlete_ids,
+                event.discipline,
+                projection_date=event.start_date,
             ):
                 remaining.append(inp)
         else:
@@ -2075,7 +2088,12 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
 
                     mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
                 else:
-                    mu, sigma = rating.mu, sigma_now(rating.sigma, rating.last_event_at)
+                    mu, sigma = (
+                        rating.mu,
+                        sigma_now(
+                            rating.sigma, rating.last_event_at, today=event.start_date
+                        ),
+                    )
                 athlete_obj = session.get(Athlete, aid)
                 inp = AthleteProjectionInput(
                     athlete_id=aid,
@@ -2260,7 +2278,10 @@ async def live_projections_json(event_id: int, gender: str = "M"):
 
         if pre_event and proj_athlete_ids:
             for inp in _build_proj_inputs_batched(
-                session, proj_athlete_ids, event.discipline
+                session,
+                proj_athlete_ids,
+                event.discipline,
+                projection_date=event.start_date,
             ):
                 remaining.append(inp)
         else:
@@ -2277,7 +2298,12 @@ async def live_projections_json(event_id: int, gender: str = "M"):
 
                     mu, sigma = DEFAULT_MU, DEFAULT_SIGMA
                 else:
-                    mu, sigma = rating.mu, sigma_now(rating.sigma, rating.last_event_at)
+                    mu, sigma = (
+                        rating.mu,
+                        sigma_now(
+                            rating.sigma, rating.last_event_at, today=event.start_date
+                        ),
+                    )
                 athlete_obj = session.get(Athlete, aid)
                 inp = AthleteProjectionInput(
                     athlete_id=aid,
@@ -2401,7 +2427,12 @@ async def v2_predictions(request: Request):
 
                         # One batched join instead of N+1 per athlete.
                         proj_inputs: list[AthleteProjectionInput] = (
-                            _build_proj_inputs_batched(session, athlete_ids, disc_enum)
+                            _build_proj_inputs_batched(
+                                session,
+                                athlete_ids,
+                                disc_enum,
+                                projection_date=ev.start_date,
+                            )
                         )
 
                         if len(proj_inputs) > _V2_MAX_ATHLETES_PER_PROJECTION_CARD:
@@ -2477,6 +2508,7 @@ async def v2_predictions(request: Request):
                                 session,
                                 roster_ids[:_V2_MAX_ATHLETES_PER_PROJECTION_CARD],
                                 disc_enum,
+                                projection_date=ev.start_date,
                             )
                         )
 
@@ -2635,7 +2667,10 @@ async def v2_predictions_event(request: Request, event_id: int):
                     continue
 
                 proj_inputs = _build_proj_inputs_batched(
-                    session, athlete_ids, event.discipline
+                    session,
+                    athlete_ids,
+                    event.discipline,
+                    projection_date=event.start_date,
                 )
                 if len(proj_inputs) < 2:
                     continue
