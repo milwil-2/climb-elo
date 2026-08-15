@@ -40,7 +40,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from climbing_elo.database import get_session_factory, init_db
-from climbing_elo.engine.backfill import run_backfill
+from climbing_elo.engine.backfill import force_reset_for_discipline, run_backfill
 from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
 from climbing_elo.models import (
     Discipline,
@@ -507,6 +507,9 @@ class BacktestRunner:
         """
         if self._in_memory_session is not None:
             session = self._in_memory_session
+            # #192: the backfill is idempotent, so a pre-backfilled source
+            # would otherwise keep its end-state ratings — future leakage.
+            force_reset_for_discipline(session, discipline)
             run_backfill(session, discipline, end_date=split.train_end_date)
             session.commit()
             engine = _build_engine(self.engine_factory, session, split.train_end_date)
@@ -523,6 +526,10 @@ class BacktestRunner:
         shutil.copy(self._pristine_copy, self._working_copy)
         factory = get_session_factory(self._working_copy)
         with factory() as session:
+            # #192: see the in-memory branch — reset computed ratings so the
+            # training-end state is recomputed from raw results, not carried
+            # over from a pre-backfilled source DB.
+            force_reset_for_discipline(session, discipline)
             run_backfill(session, discipline, end_date=split.train_end_date)
             session.commit()
             engine = _build_engine(self.engine_factory, session, split.train_end_date)
