@@ -22,6 +22,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from climbing_elo.engine.backfill import run_backfill
 from climbing_elo.engine.evaluation import (
     BACKTEST_VARIANTS,
     BacktestDataset,
@@ -241,6 +242,53 @@ def test_smoke_runs_end_to_end_in_memory(db_session, small_lead_dataset):
         "by_tenure",
     ):
         assert key in strata, f"missing stratification {key!r}"
+
+
+def test_prebackfilled_source_does_not_leak_future_ratings(
+    db_session, small_lead_dataset
+):
+    """#192: when the source DB is already fully backfilled (the normal case
+    for prod snapshots), the harness must recompute ratings to the training
+    cutoff — the idempotent backfill alone would silently keep the end-state
+    ratings, handing the 'current' variant knowledge of the holdout events."""
+    # Simulate a prod snapshot: backfill EVERYTHING, holdout season included.
+    run_backfill(db_session, Discipline.LEAD)
+    db_session.commit()
+    end_state = {
+        r.athlete_id: (r.mu, r.n_events)
+        for r in db_session.execute(
+            select(Rating).where(Rating.discipline == Discipline.LEAD)
+        ).scalars()
+    }
+    assert all(n == 5 for _, n in end_state.values()), "expected 5 events end-state"
+
+    dataset = BacktestDataset(
+        disciplines=(Discipline.LEAD,),
+        n_simulations=200,
+        rng_seed=42,
+    )
+    with BacktestRunner(
+        dataset=dataset,
+        variant="current",
+        oos_mode=HoldoutMode(n_seasons=1),
+        in_memory_session=db_session,
+    ) as runner:
+        runner.run()
+
+    # In-memory mode leaves the session at the (single) split's training-end
+    # state: the three 2023 events only — never the pre-backfilled end state.
+    trained = {
+        r.athlete_id: (r.mu, r.n_events)
+        for r in db_session.execute(
+            select(Rating).where(Rating.discipline == Discipline.LEAD)
+        ).scalars()
+    }
+    assert all(n == 3 for _, n in trained.values()), (
+        f"training-end state must cover only 2023 events, got {trained}"
+    )
+    assert any(abs(trained[a][0] - end_state[a][0]) > 1e-6 for a in trained), (
+        "μ at training cutoff should differ from end-state μ"
+    )
 
 
 def test_markdown_renders_without_error(db_session, small_lead_dataset):
