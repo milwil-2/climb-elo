@@ -147,3 +147,7 @@ from climbing_elo.engine import baselines as _baselines  # noqa: F401, E402
 # G-Elo bucketed-MOV variant — Issue #84 (Szczecinski 2022 benchmark).
 # Same import-side-effect registration pattern as the baselines above.
 from climbing_elo.engine import gelo as _gelo  # noqa: F401, E402
+
+# g2pl challenger — canonical Glicko-2 over Plackett-Luce pairs
+# (docs/PLAN_CHALLENGER_G2PL.md, issues #174-#190). Registers "g2pl".
+from climbing_elo.engine import g2pl as _g2pl  # noqa: F401, E402
