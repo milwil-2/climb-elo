@@ -28,9 +28,9 @@ import argparse
 import logging
 import sys
 
-from sqlalchemy import select
+from sqlalchemy import bindparam, select, update
 
-from climbing_elo.database import SessionLocal, init_db
+from climbing_elo.database import init_db
 from climbing_elo.engine.elo import normalize_boulder_score
 from climbing_elo.models import Discipline, Event, Result, Round
 
@@ -49,13 +49,17 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    init_db()
+    # The Supabase session pooler idle-times out fast — don't hold a session
+    # open across the compute loop. Phase 1: fetch (id, raw) into a plain
+    # tuple list, close. Phase 2: normalize in memory. Phase 3: open a fresh
+    # short-lived session per batch and issue a bulk UPDATE via `executemany`.
+    Session = init_db()
 
-    session = SessionLocal()
-    try:
-        rows = (
+    # ─── Phase 1: fetch ────────────────────────────────────────────────────
+    with Session() as session:
+        candidates: list[tuple[int, str]] = list(
             session.execute(
-                select(Result)
+                select(Result.id, Result.raw_score)
                 .join(Round, Result.round_id == Round.id)
                 .join(Event, Round.event_id == Event.id)
                 .where(
@@ -67,60 +71,65 @@ def main() -> int:
                     Result.raw_score != "",
                 )
             )
-            .scalars()
-            .all()
         )
 
-        log.info(
-            "Found %d candidate boulder rows with NULL score_normalized", len(rows)
-        )
+    log.info(
+        "Found %d candidate boulder rows with NULL score_normalized",
+        len(candidates),
+    )
 
-        fixed = 0
-        unfixable: list[str] = []
-        pending = 0
+    # ─── Phase 2: normalize in memory (no DB) ─────────────────────────────
+    fixes: list[dict] = []
+    unfixable: list[str] = []
+    for row_id, raw in candidates:
+        recomputed = normalize_boulder_score(raw)
+        if recomputed is None:
+            unfixable.append(raw)
+        else:
+            fixes.append({"id": row_id, "value": recomputed})
 
-        for res in rows:
-            recomputed = normalize_boulder_score(res.raw_score)
-            if recomputed is None:
-                unfixable.append(res.raw_score)
-                continue
+    log.info("Fixable: %d · unfixable: %d", len(fixes), len(unfixable))
+    for i, f in enumerate(fixes[:10]):
+        raw = next(r for rid, r in candidates if rid == f["id"])
+        log.info("  sample fix result.id=%d raw=%r → %s", f["id"], raw, f["value"])
 
-            if args.dry_run:
-                fixed += 1
-                if fixed <= 10:
-                    log.info(
-                        "  dry-run would fix result.id=%d raw=%r → %s",
-                        res.id,
-                        res.raw_score,
-                        recomputed,
-                    )
-                continue
-
-            res.score_normalized = recomputed
-            fixed += 1
-            pending += 1
-            if pending >= BATCH_COMMIT:
-                session.commit()
-                log.info("  committed batch of %d (running total: %d)", pending, fixed)
-                pending = 0
-
-        if not args.dry_run and pending:
-            session.commit()
-            log.info("  committed final batch of %d", pending)
-
-        log.info("Fixed: %d", fixed)
-        log.info("Unfixable (raw stayed NULL): %d", len(unfixable))
-        if unfixable:
-            sample = ", ".join(repr(x) for x in unfixable[:10])
-            log.info("  unfixable sample: %s", sample)
-            log.info(
-                "  (these are genuine feed garbage the engine parser also "
-                "cannot recover; leave as NULL)"
-            )
-
+    if args.dry_run:
+        log.info("(dry-run — no writes)")
         return 0
-    finally:
-        session.close()
+
+    # ─── Phase 3: bulk UPDATE in short-lived sessions ─────────────────────
+    # Use the Core-level table directly (Result.__table__) rather than the ORM
+    # mapping — the ORM bulk-update path insists the parameter dict include
+    # the PK column literally, and clashes with our `.where()` clause. Core
+    # bypasses that machinery cleanly.
+    tbl = Result.__table__
+    stmt = (
+        update(tbl)
+        .where(tbl.c.id == bindparam("row_id"))
+        .values(score_normalized=bindparam("value"))
+    )
+    total = 0
+    for start in range(0, len(fixes), BATCH_COMMIT):
+        batch = [
+            {"row_id": f["id"], "value": f["value"]}
+            for f in fixes[start : start + BATCH_COMMIT]
+        ]
+        with Session() as session:
+            session.execute(stmt, batch)
+            session.commit()
+        total += len(batch)
+        log.info("  committed batch of %d (running total: %d)", len(batch), total)
+
+    log.info("Fixed: %d", total)
+    if unfixable:
+        sample = ", ".join(repr(x) for x in unfixable[:10])
+        log.info("Unfixable sample: %s", sample)
+        log.info(
+            "  (these are genuine feed garbage the engine parser also cannot "
+            "recover; leave as NULL)"
+        )
+
+    return 0
 
 
 if __name__ == "__main__":
