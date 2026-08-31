@@ -75,16 +75,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _snapshot_postgres_to_sqlite(sqlite_path: Path) -> None:
-    """Copy the ORM-managed tables from Postgres into a fresh SQLite file.
+    """Copy the backtest's input tables from Postgres into a fresh SQLite file.
 
-    The backtest only reads athletes/events/rounds/results — Rating /
-    RatingHistory / EventForecast* rows are recomputed inside the harness's
-    private working copy. We still copy *all* ORM tables so the SQLite file
-    is a faithful snapshot a maintainer can re-use locally if needed.
+    Only athletes/events/rounds/results are copied — the backtest replays
+    ratings from raw results, so Rating / RatingHistory / EventForecast* rows
+    are recomputed inside the harness's private working copy anyway. We used
+    to copy *all* ORM tables "for faithfulness", which pulled the ~70 MB
+    ``rating_history`` table from Supabase weekly just to discard it; the
+    input tables total ~8 MB. The skipped tables still exist (empty) in the
+    SQLite file because ``init_db`` creates the full schema, which is exactly
+    the reset state the harness starts each fold from (#193).
 
     Streams rows in chunks via SQLAlchemy Core so a single large table
-    (``rating_history`` — millions of rows in prod) doesn't blow the runner's
-    memory budget.
+    doesn't blow the runner's memory budget.
     """
     # Imports are local so the script can be imported (for unit tests) on
     # machines without DATABASE_URL set / without Postgres drivers configured.
@@ -98,10 +101,21 @@ def _snapshot_postgres_to_sqlite(sqlite_path: Path) -> None:
     init_db(sqlite_path)
     dst_engine = get_engine(sqlite_path)
 
+    # The backtest's inputs. Everything else (ratings, rating_history,
+    # event_forecast*) is computed state the harness rebuilds from these.
+    input_tables = {"athletes", "events", "rounds", "results"}
+
     chunk_size = 5_000
     with src_engine.connect() as src_conn, dst_engine.begin() as dst_conn:
         # Iterate tables in FK-safe order (parents first, children last).
         for table in Base.metadata.sorted_tables:
+            if table.name not in input_tables:
+                print(
+                    f"[backtest-monitor] snapshot: {table.name} skipped "
+                    "(computed state — rebuilt by the harness)",
+                    flush=True,
+                )
+                continue
             row_count = 0
             stmt = select(table)
             result = src_conn.execution_options(stream_results=True).execute(stmt)

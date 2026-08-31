@@ -15,6 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from sqlalchemy import func, inspect as sa_inspect, or_, select
+from sqlalchemy.orm import undefer
 
 from climbing_elo.cache import (
     html_page_cache,
@@ -353,6 +354,25 @@ def _get_90d_deltas(
 
 
 def _ticker_context(session) -> dict:
+    """Cached wrapper around :func:`_ticker_context_uncached`.
+
+    The ticker renders on every HTML route but its inputs only change when the
+    scraper/backfill writes (daily), so recomputing it per page view was the
+    single largest Supabase egress consumer (30 RatingHistory rows × every
+    render). A plain TTL entry in ``html_page_cache`` (10 min, flushed by
+    ``scripts/clear_cache.py`` after scrapes) bounds staleness to the same
+    window the edge cache already imposes on whole pages.
+    """
+    key = f"ticker:{ratings_fingerprint(session)}"
+    cached = html_page_cache.get(key)
+    if cached is not None:
+        return cached
+    ctx = _ticker_context_uncached(session)
+    html_page_cache.set(key, ctx)
+    return ctx
+
+
+def _ticker_context_uncached(session) -> dict:
     """Build the context dict for the sticky ticker.
 
     Returns:
@@ -461,6 +481,48 @@ def _ticker_context(session) -> dict:
 def _nav_context(active_page: str) -> dict:
     """Return navigation context (which page is active)."""
     return {"active_page": active_page}
+
+
+def _event_aggregates(
+    session, athlete_id: int, event_ids: list[int]
+) -> tuple[dict[int, int], dict[int, float]]:
+    """Batch the per-event best-place and net-μ-delta lookups for one athlete.
+
+    Returns ``(place_by_event, delta_by_event)``. Replaces the former
+    per-event query pair (``min(rank)`` + ``sum(μ_after − μ_before)``) that
+    made profile renders issue 2×N single-row queries.
+    """
+    if not event_ids:
+        return {}, {}
+    place_by_event = {
+        int(eid): rank
+        for eid, rank in session.execute(
+            select(Round.event_id, func.min(Result.rank))
+            .join(Result, Result.round_id == Round.id)
+            .where(
+                Round.event_id.in_(event_ids),
+                Result.athlete_id == athlete_id,
+                Result.dns.is_(False),
+                Result.rank.is_not(None),
+            )
+            .group_by(Round.event_id)
+        ).all()
+    }
+    delta_by_event = {
+        int(eid): float(total or 0.0)
+        for eid, total in session.execute(
+            select(
+                RatingHistory.event_id,
+                func.sum(RatingHistory.mu_after - RatingHistory.mu_before),
+            )
+            .where(
+                RatingHistory.athlete_id == athlete_id,
+                RatingHistory.event_id.in_(event_ids),
+            )
+            .group_by(RatingHistory.event_id)
+        ).all()
+    }
+    return place_by_event, delta_by_event
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +907,10 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
             session.execute(
                 select(RatingHistory, Event)
                 .join(Event, RatingHistory.event_id == Event.id)
+                # This section reads contributing_pairs (top-3 opponents), so
+                # opt back into the deferred column here to avoid per-row lazy
+                # loads.
+                .options(undefer(RatingHistory.contributing_pairs))
                 .where(RatingHistory.athlete_id == athlete_id)
                 .order_by(Event.start_date.desc())
                 .limit(40)
@@ -853,32 +919,20 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
         seen_ev: set[int] = set()
         recent_events = []
 
+        # Best place + net μ-delta per event, batched into two GROUP BY
+        # queries (the delta sums all of the athlete's rounds in the event so
+        # the listed number matches what "Recent ELO changes" implies).
+        recent_event_ids = list({ev.id for _rh, ev in recent_rh})
+        place_by_event, delta_by_event = _event_aggregates(
+            session, athlete_id, recent_event_ids
+        )
+
         for rh, ev in recent_rh:
             if ev.id in seen_ev:
                 continue
             seen_ev.add(ev.id)
-            place_row = session.execute(
-                select(func.min(Result.rank))
-                .join(Round, Result.round_id == Round.id)
-                .where(
-                    Round.event_id == ev.id,
-                    Result.athlete_id == athlete_id,
-                    Result.dns.is_(False),
-                    Result.rank.is_not(None),
-                )
-            ).scalar_one_or_none()
-
-            # Sum delta across all of this athlete's rounds in the event so
-            # the listed number matches what "Recent ELO changes" implies.
-            total_delta_row = session.execute(
-                select(
-                    func.sum(RatingHistory.mu_after - RatingHistory.mu_before)
-                ).where(
-                    RatingHistory.athlete_id == athlete_id,
-                    RatingHistory.event_id == ev.id,
-                )
-            ).scalar_one_or_none()
-            delta = round(float(total_delta_row or 0.0), 1)
+            place_row = place_by_event.get(ev.id)
+            delta = round(delta_by_event.get(ev.id, 0.0), 1)
 
             disc_display = _DISC_LABEL.get(ev.discipline, ev.discipline.value)
 
@@ -984,29 +1038,19 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
         history_by_season: dict[int, list[dict]] = {}
         seen_event_for_history: set[int] = set()
 
+        # Same batched aggregates as the recent-changes section above — one
+        # query pair for the athlete's whole event history instead of 2×N.
+        history_event_ids = list({ev.id for _rh, ev in all_events_rows})
+        hist_place_by_event, hist_delta_by_event = _event_aggregates(
+            session, athlete_id, history_event_ids
+        )
+
         for rh, ev in all_events_rows:
             if ev.id in seen_event_for_history:
                 continue
             seen_event_for_history.add(ev.id)
-            place_row = session.execute(
-                select(func.min(Result.rank))
-                .join(Round, Result.round_id == Round.id)
-                .where(
-                    Round.event_id == ev.id,
-                    Result.athlete_id == athlete_id,
-                    Result.dns.is_(False),
-                    Result.rank.is_not(None),
-                )
-            ).scalar_one_or_none()
-            total_delta_row = session.execute(
-                select(
-                    func.sum(RatingHistory.mu_after - RatingHistory.mu_before)
-                ).where(
-                    RatingHistory.athlete_id == athlete_id,
-                    RatingHistory.event_id == ev.id,
-                )
-            ).scalar_one_or_none()
-            ev_delta = round(float(total_delta_row or 0.0), 1)
+            place_row = hist_place_by_event.get(ev.id)
+            ev_delta = round(hist_delta_by_event.get(ev.id, 0.0), 1)
 
             history_by_season.setdefault(ev.season, []).append(
                 {
@@ -1881,6 +1925,9 @@ async def v2_breakdown(request: Request, athlete_id: int, event_id: int):
             session.execute(
                 select(RatingHistory, Round)
                 .join(Round, RatingHistory.round_id == Round.id)
+                # The breakdown page is the one consumer of the deferred
+                # contributing_pairs column — load it eagerly here.
+                .options(undefer(RatingHistory.contributing_pairs))
                 .where(
                     RatingHistory.athlete_id == athlete_id,
                     RatingHistory.event_id == event_id,
@@ -1931,7 +1978,9 @@ async def v2_breakdown(request: Request, athlete_id: int, event_id: int):
         # Issue #90: load any Tournament Participation Bonus row for this
         # athlete + event and surface it as a separate breakdown section.
         tpb_row = session.execute(
-            select(RatingHistory).where(
+            select(RatingHistory)
+            .options(undefer(RatingHistory.contributing_pairs))
+            .where(
                 RatingHistory.athlete_id == athlete_id,
                 RatingHistory.event_id == event_id,
                 RatingHistory.kind == "tpb",
