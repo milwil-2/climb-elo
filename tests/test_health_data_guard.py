@@ -114,3 +114,38 @@ def test_guard_flags_mu_p95_out_of_band(db_session):
     db_session.flush()
     failures, _ = run_checks(db_session)
     assert any("μ-p95" in f and "L" in f for f in failures), failures
+
+
+def test_guard_boulder_band_is_wider_than_lead(db_session):
+    """μ-p95 of 1880 passes Boulder's post-#117 band (1850, 2200) but would
+    fail Lead's (1900, 2200) - the bands are per-discipline."""
+    for i in range(5):
+        a = Athlete(name=f"B{i}", gender=Gender.M)
+        db_session.add(a)
+        db_session.flush()
+        db_session.add(
+            Rating(
+                athlete_id=a.id, discipline=Discipline.BOULDER, mu=1880.0, sigma=200.0
+            )
+        )
+        db_session.add(
+            Rating(athlete_id=a.id, discipline=Discipline.LEAD, mu=1880.0, sigma=200.0)
+        )
+    db_session.flush()
+    failures, _ = run_checks(db_session)
+    assert not any("μ-p95" in f and "B:" in f for f in failures), failures
+    assert any("μ-p95" in f and "L:" in f for f in failures), failures
+
+
+def test_guard_speed_p95_is_informational(db_session):
+    """Speed has no band — a low μ-p95 must not FAIL."""
+    for i in range(5):
+        a = Athlete(name=f"S{i}", gender=Gender.M)
+        db_session.add(a)
+        db_session.flush()
+        db_session.add(
+            Rating(athlete_id=a.id, discipline=Discipline.SPEED, mu=1500.0, sigma=200.0)
+        )
+    db_session.flush()
+    failures, _ = run_checks(db_session)
+    assert failures == []
