@@ -359,9 +359,11 @@ def _ticker_context(session) -> dict:
     The ticker renders on every HTML route but its inputs only change when the
     scraper/backfill writes (daily), so recomputing it per page view was the
     single largest Supabase egress consumer (30 RatingHistory rows × every
-    render). A plain TTL entry in ``html_page_cache`` (10 min, flushed by
-    ``scripts/clear_cache.py`` after scrapes) bounds staleness to the same
-    window the edge cache already imposes on whole pages.
+    render). Cached in ``html_page_cache`` keyed on the ratings fingerprint
+    (self-invalidating after any backfill, flushed by ``scripts/clear_cache.py``
+    after scrapes); the 10-min TTL bounds staleness of the event-driven parts
+    (live flag, upcoming list) to the same window the edge cache already
+    imposes on whole pages.
     """
     key = f"ticker:{ratings_fingerprint(session)}"
     cached = html_page_cache.get(key)
@@ -1038,7 +1040,7 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
         history_by_season: dict[int, list[dict]] = {}
         seen_event_for_history: set[int] = set()
 
-        # Same batched aggregates as the recent-changes section above — one
+        # Same batched aggregates as the recent-changes section above - one
         # query pair for the athlete's whole event history instead of 2×N.
         history_event_ids = list({ev.id for _rh, ev in all_events_rows})
         hist_place_by_event, hist_delta_by_event = _event_aggregates(
@@ -1926,7 +1928,7 @@ async def v2_breakdown(request: Request, athlete_id: int, event_id: int):
                 select(RatingHistory, Round)
                 .join(Round, RatingHistory.round_id == Round.id)
                 # The breakdown page is the one consumer of the deferred
-                # contributing_pairs column — load it eagerly here.
+                # contributing_pairs column - load it eagerly here.
                 .options(undefer(RatingHistory.contributing_pairs))
                 .where(
                     RatingHistory.athlete_id == athlete_id,

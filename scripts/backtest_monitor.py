@@ -77,7 +77,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def _snapshot_postgres_to_sqlite(sqlite_path: Path) -> None:
     """Copy the backtest's input tables from Postgres into a fresh SQLite file.
 
-    Only athletes/events/rounds/results are copied — the backtest replays
+    Only athletes/events/rounds/results are copied - the backtest replays
     ratings from raw results, so Rating / RatingHistory / EventForecast* rows
     are recomputed inside the harness's private working copy anyway. We used
     to copy *all* ORM tables "for faithfulness", which pulled the ~70 MB
@@ -112,7 +112,7 @@ def _snapshot_postgres_to_sqlite(sqlite_path: Path) -> None:
             if table.name not in input_tables:
                 print(
                     f"[backtest-monitor] snapshot: {table.name} skipped "
-                    "(computed state — rebuilt by the harness)",
+                    "(computed state - rebuilt by the harness)",
                     flush=True,
                 )
                 continue

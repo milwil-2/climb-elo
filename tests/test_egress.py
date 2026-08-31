@@ -2,11 +2,11 @@
 
 Covers the three query-shape guarantees the egress work relies on:
 
-1. ``RatingHistory.contributing_pairs`` is deferred — the ~1.1KB JSON blob
+1. ``RatingHistory.contributing_pairs`` is deferred - the ~1.1KB JSON blob
    (93% of the row's bytes) must not appear in a default ORM load.
 2. Sites that DO read the blob (breakdown, profile opponents preview) opt back
    in via ``undefer`` and still see the data.
-3. ``_ticker_context`` is cached — repeat page renders must not re-run the
+3. ``_ticker_context`` is cached - repeat page renders must not re-run the
    ticker queries while ratings are unchanged.
 """
 
@@ -79,7 +79,7 @@ def test_contributing_pairs_loads_via_undefer(db_session):
 
 
 def test_contributing_pairs_lazy_loads_when_accessed(db_session):
-    """Without undefer, access still works (lazy load) — nothing breaks."""
+    """Without undefer, access still works (lazy load) - nothing breaks."""
     ath, _ = _seed_history(db_session)
     row = db_session.execute(
         select(RatingHistory).where(RatingHistory.athlete_id == ath.id)

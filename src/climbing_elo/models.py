@@ -210,7 +210,7 @@ class RatingHistory(Base):
     # Deferred: this JSON blob averages ~1.1KB and is 93% of the row's bytes,
     # but only the /breakdown page and the athlete-profile opponents preview
     # read it. Deferring keeps it out of every other RatingHistory load (the
-    # ticker, history charts, event pages) — the dominant Supabase egress
+    # ticker, history charts, event pages) - the dominant Supabase egress
     # driver before 2026-08. Query sites that need it use undefer(); Core-level
     # selects (snapshots/exports) are unaffected by ORM deferral.
     contributing_pairs: Mapped[Optional[dict]] = mapped_column(

@@ -94,7 +94,7 @@ def run_checks(session, full_scan: bool = True) -> tuple[list[str], list[str]]:
     ``full_scan`` controls check 2 (stored-vs-recomputed mismatch), which must
     re-fetch every non-NULL stored score (~50k rows / ~6 MB from prod) because
     a normalizer code change can invalidate old rows retroactively. Check 1
-    (recoverable parse failures) only needs the NULL-score rows — a handful —
+    (recoverable parse failures) only needs the NULL-score rows - a handful -
     so it always runs. The daily scrape passes ``full_scan`` only on Mondays
     (or via ``--full``) to keep routine egress near zero.
     """
@@ -208,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
 
     full_scan = args.full or date.today().isoweekday() == 1
     if not full_scan:
-        print("  (mismatch scan skipped — weekly on Mondays; pass --full to force)")
+        print("  (mismatch scan skipped - weekly on Mondays; pass --full to force)")
 
     engine = get_engine(args.db) if args.db else get_engine()
     from sqlalchemy.orm import Session
