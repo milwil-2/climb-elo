@@ -34,8 +34,6 @@ export DATABASE_URL='postgresql://...'             # required for scripts + serv
 uv run uvicorn climbing_elo.api.app:app --reload   # http://localhost:8000
 ```
 
-[CLAUDE.md](./CLAUDE.md) is the full engineering reference (architecture, operations, connection strings, data pipeline).
-
 ## License
 
 Personal project; not currently licensed for redistribution.
