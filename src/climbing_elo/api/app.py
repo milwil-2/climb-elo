@@ -10,6 +10,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from climbing_elo.api.cache_headers import CacheControlMiddleware
 from climbing_elo.api.limiter import limiter
+from climbing_elo.api.security_headers import SecurityHeadersMiddleware
 from climbing_elo.api.routes import router as html_router
 from climbing_elo.api.v1_routes import router as v1_router
 from climbing_elo.api.sse import router as sse_router
@@ -64,6 +65,11 @@ def create_app() -> FastAPI:
     # edge serves repeat hits without re-invoking the function. Excludes /live
     # (real-time) and /static (own validators). See cache_headers.py.
     application.add_middleware(CacheControlMiddleware)
+
+    # Security response headers + CSP on HTML responses (Issue #208). Excludes
+    # the interactive API docs (/docs, /redoc, /openapi.json), which need their
+    # own CDN assets + inline scripts. See security_headers.py.
+    application.add_middleware(SecurityHeadersMiddleware)
 
     # Serve static files (styles.css, etc.) from src/climbing_elo/static/
     application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

@@ -1297,3 +1297,44 @@ def test_openapi_includes_combined_endpoints(ext_client):
     assert "/api/v1/athletes/{athlete_id}/combined" in paths
     assert "/api/v1/projections" in paths
     assert "/api/v1/predictions/upcoming" in paths
+
+
+# ---------------------------------------------------------------------------
+# Security headers + CSP (Issue #208)
+# ---------------------------------------------------------------------------
+
+
+def test_html_route_has_security_headers(client):
+    """HTML routes carry the CSP + hardening headers (Issue #208)."""
+    r = client.get("/leaderboard")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["x-frame-options"] == "SAMEORIGIN"
+    assert r.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+
+    csp = r.headers["content-security-policy"]
+    # Key directives must be present and allow exactly what the templates load.
+    assert "default-src 'self'" in csp
+    assert "frame-ancestors 'self'" in csp
+    assert "base-uri 'self'" in csp
+    assert "object-src 'none'" in csp
+    assert "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net" in csp
+    assert "img-src 'self' data: https://ifsc.results.info" in csp
+    assert "font-src 'self' https://fonts.gstatic.com" in csp
+    assert "frame-src https://www.youtube.com https://www.youtube-nocookie.com" in csp
+
+
+def test_docs_not_given_strict_csp(client):
+    """Swagger UI must load its own CDN assets - no strict CSP on /docs."""
+    r = client.get("/docs")
+    assert r.status_code == 200
+    assert "content-security-policy" not in r.headers
+
+
+def test_api_json_route_has_no_csp(client):
+    """CSP is HTML-only; JSON API payloads are untouched."""
+    r = client.get("/api/v1/disciplines")
+    assert r.status_code == 200
+    assert "content-security-policy" not in r.headers
