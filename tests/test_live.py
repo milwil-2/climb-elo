@@ -1133,6 +1133,43 @@ class TestParseYouTubeVideoId:
         # Bad chars
         assert parse_youtube_video_id("https://youtu.be/!@#$%^&*()_") is None
 
+    def test_backslash_url_rejected(self):
+        """Backslash netloc bypass (#204): browsers normalize ``\\`` to ``/``
+        and resolve the host as evil.com, so urlparse's youtube.com verdict is
+        an allowlist bypass. Any backslash must reject outright."""
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert (
+            parse_youtube_video_id("https://evil.com\\@youtube.com/watch?v=aaaaaaaaaaa")
+            is None
+        )
+
+    def test_userinfo_at_bypass_rejected(self):
+        """``https://youtube.com@evil.com/...`` - real host is evil.com."""
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert (
+            parse_youtube_video_id("https://youtube.com@evil.com/watch?v=dQw4w9WgXcQ")
+            is None
+        )
+
+    def test_http_scheme_rejected(self):
+        """Only https is accepted now (#204); plain http must reject."""
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert (
+            parse_youtube_video_id("http://www.youtube.com/watch?v=dQw4w9WgXcQ") is None
+        )
+
+    def test_clean_https_still_accepted(self):
+        """Regression guard: a clean https YouTube URL still returns the id."""
+        from climbing_elo.live.livestream import parse_youtube_video_id
+
+        assert (
+            parse_youtube_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+            == "dQw4w9WgXcQ"
+        )
+
     def test_embed_url_helper_returns_https_and_no_autoplay(self):
         from climbing_elo.live.livestream import youtube_embed_url
 
@@ -1212,6 +1249,9 @@ def livestream_client(livestream_db_path):
     )
     bad_id = _seed_event("Evil Stream Cup", "javascript:alert(1)")
     bad2_id = _seed_event("Wrong Host Stream Cup", "https://evil.com/embed/dQw4w9WgXcQ")
+    # Stored in a non-watch shape so the canonical watch-link rebuild (#204)
+    # is observable: the anchor must point at youtube.com/watch, not youtu.be.
+    short_id = _seed_event("Short Link Stream Cup", "https://youtu.be/dQw4w9WgXcQ")
     sess.commit()
     sess.close()
 
@@ -1233,6 +1273,7 @@ def livestream_client(livestream_db_path):
                 "yt": yt_id,
                 "bad": bad_id,
                 "bad_host": bad2_id,
+                "short": short_id,
             },
         )
     finally:
@@ -1278,3 +1319,14 @@ class TestLiveLivestreamEmbed:
         assert resp.status_code == 200
         assert "<iframe" not in resp.text.lower()
         assert "evil.com" not in resp.text
+
+    def test_watch_link_is_canonical(self, livestream_client):
+        """The "watch on YouTube" anchor is rebuilt canonically from the
+        validated video id (#204), regardless of the stored URL shape."""
+        client, ids = livestream_client
+        resp = client.get(f"/live/{ids['short']}")
+        assert resp.status_code == 200
+        # Canonical watch URL is emitted...
+        assert 'href="https://www.youtube.com/watch?v=dQw4w9WgXcQ"' in resp.text
+        # ...and the raw youtu.be short form is NOT passed through as the href.
+        assert 'href="https://youtu.be/' not in resp.text

@@ -41,7 +41,7 @@ from climbing_elo.engine.projections import (
     compute_partial_event_probabilities,
     compute_podium_probabilities,
 )
-from climbing_elo.live.livestream import youtube_embed_url
+from climbing_elo.live.livestream import parse_youtube_video_id, youtube_embed_url
 from climbing_elo.models import (
     Athlete,
     Discipline,
@@ -608,7 +608,12 @@ async def v2_leaderboard(
 
             ctx = {
                 "rows": rows,
-                "disc": disc.upper(),
+                # Store the normalized discipline key, not the raw query param
+                # (#205). The cache key is keyed on the normalized enum, so a
+                # junk ``?disc=`` value that falls back to a real discipline
+                # must not poison the entry with attacker-supplied text served
+                # to later visitors of the clean URL.
+                "disc": _DISC_ENUM_TO_KEY.get(disc_enum, disc_enum.value),
                 "disc_label": _DISC_LABEL.get(disc_enum, disc),
                 "gender": gender_enum.value,
                 "gender_label": _GENDER_LABEL.get(gender_enum, gender),
@@ -1255,7 +1260,7 @@ async def v2_h2h_result(
 
     disc_enum = _parse_discipline(discipline)
     if disc_enum is None:
-        return HTMLResponse(f"Invalid discipline: {discipline}.", status_code=400)
+        return HTMLResponse("Invalid discipline.", status_code=400)
 
     with _session() as session:
         athlete_a = session.get(Athlete, a_id)
@@ -2155,6 +2160,14 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
     # only youtube.com / youtu.be URLs survive validation; anything else
     # collapses to None and the template renders no iframe.
     embed_url = youtube_embed_url(raw_livestream_url)
+    # Build the "watch on YouTube" link canonically from the validated video
+    # id (#204) rather than passing the raw stored URL through - the raw value
+    # could carry an allowlist-bypassing host that the browser resolves off
+    # youtube.com when the anchor is clicked.
+    watch_video_id = parse_youtube_video_id(raw_livestream_url)
+    livestream_watch_url = (
+        f"https://www.youtube.com/watch?v={watch_video_id}" if watch_video_id else None
+    )
 
     ctx = {
         "event": {
@@ -2175,7 +2188,7 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
         "from_likely_roster": from_likely_roster,
         "stream_url": f"/live/{event_id}/stream",
         "livestream_embed_url": embed_url,
-        "livestream_watch_url": raw_livestream_url if embed_url else None,
+        "livestream_watch_url": livestream_watch_url,
         "initial_athletes": initial_athletes,
         **ticker,
         **_nav_context("live"),

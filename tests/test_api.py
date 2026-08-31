@@ -1297,3 +1297,32 @@ def test_openapi_includes_combined_endpoints(ext_client):
     assert "/api/v1/athletes/{athlete_id}/combined" in paths
     assert "/api/v1/projections" in paths
     assert "/api/v1/predictions/upcoming" in paths
+
+
+# ---------------------------------------------------------------------------
+# Web output safety (reflected XSS + shared-cache poisoning)
+# ---------------------------------------------------------------------------
+
+
+def test_head_to_head_invalid_discipline_no_reflected_payload(client):
+    """#198: the invalid-discipline 400 body must not reflect the raw param.
+
+    The head-to-head handler renders into a text/html body (autoescape does
+    not apply to a raw HTMLResponse string), so the discipline value must not
+    be interpolated at all.
+    """
+    payload = "<script>alert(document.domain)</script>"
+    r = client.get(f"/head-to-head/5/60?discipline={payload}")
+    assert r.status_code == 400
+    assert "<script>" not in r.text
+    assert "alert(document.domain)" not in r.text
+    assert payload not in r.text
+    assert "Invalid discipline." in r.text
+
+
+def test_leaderboard_junk_disc_not_reflected(client):
+    """#205: a junk ?disc value normalizes to a real discipline and must not
+    leak the attacker-supplied raw string into the cached/rendered context."""
+    r = client.get("/leaderboard?disc=PWNEDDISC")
+    assert r.status_code == 200
+    assert "PWNEDDISC" not in r.text
