@@ -82,6 +82,13 @@ _PREDICTIONS_DISCIPLINES = [
 #: Cap on upcoming events per discipline to bound Monte Carlo work.
 _MAX_UPCOMING_PER_DISCIPLINE = 50
 
+#: Overall cap on upcoming events processed per request, across all disciplines.
+#: Bounds the total Monte Carlo + DB work of a single unauthenticated request
+#: (the per-discipline cap alone lets 3 disciplines fan out to 150 events). Set
+#: to the current reachable ceiling (3 x _MAX_UPCOMING_PER_DISCIPLINE) so it is a
+#: no-op on today's output while capping any future discipline growth.
+_MAX_UPCOMING_EVENTS_TOTAL = 3 * _MAX_UPCOMING_PER_DISCIPLINE
+
 router = APIRouter(prefix="/api/v1", tags=["v1"])
 
 
@@ -718,21 +725,33 @@ async def combined_leaderboard(
             base_stmt.order_by(Rating.mu.desc()).limit(limit).offset(offset)
         ).all()
 
-        items: list[CombinedLeaderboardEntry] = []
-        for i, (combined_rating, athlete) in enumerate(rows):
-            # Fetch individual boulder and lead ratings for the breakdown
-            boulder_rating = session.execute(
+        # Batch-load the underlying boulder and lead ratings for every athlete on
+        # this page in two queries (one per discipline) instead of a per-athlete
+        # pair of round-trips (was N+1: ~201 queries/request against the pooler).
+        page_athlete_ids = [athlete.id for _, athlete in rows]
+        boulder_by_athlete: dict[int, Rating] = {}
+        lead_by_athlete: dict[int, Rating] = {}
+        if page_athlete_ids:
+            for r in session.execute(
                 select(Rating).where(
-                    Rating.athlete_id == athlete.id,
+                    Rating.athlete_id.in_(page_athlete_ids),
                     Rating.discipline == Discipline.BOULDER,
                 )
-            ).scalar_one_or_none()
-            lead_rating = session.execute(
+            ).scalars():
+                boulder_by_athlete[r.athlete_id] = r
+            for r in session.execute(
                 select(Rating).where(
-                    Rating.athlete_id == athlete.id,
+                    Rating.athlete_id.in_(page_athlete_ids),
                     Rating.discipline == Discipline.LEAD,
                 )
-            ).scalar_one_or_none()
+            ).scalars():
+                lead_by_athlete[r.athlete_id] = r
+
+        items: list[CombinedLeaderboardEntry] = []
+        for i, (combined_rating, athlete) in enumerate(rows):
+            # Individual boulder and lead ratings for the breakdown (batch dicts).
+            boulder_rating = boulder_by_athlete.get(athlete.id)
+            lead_rating = lead_by_athlete.get(athlete.id)
 
             items.append(
                 CombinedLeaderboardEntry(
@@ -1033,7 +1052,10 @@ async def predictions_upcoming(
     all_entries: list[UpcomingPredictionEntry] = []
 
     with _session() as session:
+        events_processed = 0
         for disc_key, disc_enum in disciplines_to_query:
+            if events_processed >= _MAX_UPCOMING_EVENTS_TOTAL:
+                break
             stmt = (
                 select(Event)
                 .where(
@@ -1047,6 +1069,8 @@ async def predictions_upcoming(
             upcoming_events = list(session.execute(stmt).scalars())
 
             for ev in upcoming_events:
+                if events_processed >= _MAX_UPCOMING_EVENTS_TOTAL:
+                    break
                 result_count = session.execute(
                     select(func.count(Result.id))
                     .join(Round, Result.round_id == Round.id)
@@ -1078,17 +1102,32 @@ async def predictions_upcoming(
                         if not athlete_ids_in_event:
                             continue
 
-                        proj_inputs: list[AthleteProjectionInput] = []
-                        for aid in athlete_ids_in_event:
-                            athlete = session.get(Athlete, aid)
-                            if not athlete:
-                                continue
-                            rating = session.execute(
+                        # Batch-load athletes + ratings in two queries instead of a
+                        # per-athlete session.get + Rating select (was N+1).
+                        athletes_by_id = {
+                            a.id: a
+                            for a in session.execute(
+                                select(Athlete).where(
+                                    Athlete.id.in_(athlete_ids_in_event)
+                                )
+                            ).scalars()
+                        }
+                        ratings_by_id = {
+                            r.athlete_id: r
+                            for r in session.execute(
                                 select(Rating).where(
-                                    Rating.athlete_id == aid,
+                                    Rating.athlete_id.in_(athlete_ids_in_event),
                                     Rating.discipline == disc_enum,
                                 )
-                            ).scalar_one_or_none()
+                            ).scalars()
+                        }
+
+                        proj_inputs: list[AthleteProjectionInput] = []
+                        for aid in athlete_ids_in_event:
+                            athlete = athletes_by_id.get(aid)
+                            if not athlete:
+                                continue
+                            rating = ratings_by_id.get(aid)
                             mu = rating.mu if rating else DEFAULT_MU
                             sigma = (
                                 sigma_now(
@@ -1173,17 +1212,33 @@ async def predictions_upcoming(
                         if not athlete_ids_roster:
                             continue
 
-                        proj_inputs_fb: list[AthleteProjectionInput] = []
-                        for aid in athlete_ids_roster[:_MAX_ATHLETES_PER_PROJECTION]:
-                            athlete = session.get(Athlete, aid)
-                            if not athlete:
-                                continue
-                            rating = session.execute(
+                        capped_roster_ids = athlete_ids_roster[
+                            :_MAX_ATHLETES_PER_PROJECTION
+                        ]
+                        # Batch-load athletes + ratings in two queries instead of a
+                        # per-athlete session.get + Rating select (was N+1).
+                        athletes_by_id_fb = {
+                            a.id: a
+                            for a in session.execute(
+                                select(Athlete).where(Athlete.id.in_(capped_roster_ids))
+                            ).scalars()
+                        }
+                        ratings_by_id_fb = {
+                            r.athlete_id: r
+                            for r in session.execute(
                                 select(Rating).where(
-                                    Rating.athlete_id == aid,
+                                    Rating.athlete_id.in_(capped_roster_ids),
                                     Rating.discipline == disc_enum,
                                 )
-                            ).scalar_one_or_none()
+                            ).scalars()
+                        }
+
+                        proj_inputs_fb: list[AthleteProjectionInput] = []
+                        for aid in capped_roster_ids:
+                            athlete = athletes_by_id_fb.get(aid)
+                            if not athlete:
+                                continue
+                            rating = ratings_by_id_fb.get(aid)
                             mu = rating.mu if rating else DEFAULT_MU
                             sigma = (
                                 sigma_now(
@@ -1262,6 +1317,7 @@ async def predictions_upcoming(
                         genders=gender_predictions,
                     )
                 )
+                events_processed += 1
 
     # Normalise the discipline label in the response
     discipline_label: Optional[str] = None

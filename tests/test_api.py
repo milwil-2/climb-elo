@@ -7,11 +7,14 @@ test sessionmaker so no production DB is touched.
 
 from __future__ import annotations
 
+import math
+from contextlib import contextmanager
 from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
 import climbing_elo.api.v1_routes as _v1
@@ -1297,6 +1300,228 @@ def test_openapi_includes_combined_endpoints(ext_client):
     assert "/api/v1/athletes/{athlete_id}/combined" in paths
     assert "/api/v1/projections" in paths
     assert "/api/v1/predictions/upcoming" in paths
+
+
+# ---------------------------------------------------------------------------
+# Batched data-access (N+1 removal) - #208
+#
+# These tests exercise the batch-loading path added to
+# `/api/v1/combined/leaderboard` and `/api/v1/predictions/upcoming`. They assert
+# (a) the response content is exactly what the per-athlete version returned
+# (same athletes, order, breakdown/probability fields) and (b) the number of
+# SELECTs issued does NOT scale linearly with the number of athletes, i.e. the
+# N+1 shape is gone.
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _count_select_queries():
+    """Count SELECT statements executed on any engine within the block."""
+    counter = {"selects": 0}
+
+    def _before(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            counter["selects"] += 1
+
+    event.listen(Engine, "before_cursor_execute", _before)
+    try:
+        yield counter
+    finally:
+        event.remove(Engine, "before_cursor_execute", _before)
+
+
+@contextmanager
+def _patched_v1(engine, factory):
+    """Point the v1 routes at a bespoke seeded engine/factory for one test."""
+    original_session = _v1._session
+    original_get_engine = _db.get_engine
+    _v1._session = lambda: factory()  # type: ignore[assignment]
+    _db.get_engine = lambda db_path=None: engine  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        _v1._session = original_session
+        _db.get_engine = original_get_engine
+
+
+def _seed_combined_db(db_file, n_athletes):
+    """Seed ``n_athletes`` male athletes each with boulder/lead/combined ratings."""
+    engine = create_engine(f"sqlite:///{db_file}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    session = factory()
+    today = date.today()
+    for i in range(n_athletes):
+        ath = Athlete(name=f"Athlete {i:02d}", gender=Gender.M, nationality="USA")
+        session.add(ath)
+        session.flush()
+        mu_lead = 1800.0 - i * 10
+        mu_boulder = 1700.0 - i * 10
+        session.add_all(
+            [
+                Rating(
+                    athlete_id=ath.id,
+                    discipline=Discipline.LEAD,
+                    mu=mu_lead,
+                    sigma=100.0,
+                    n_events=5,
+                    provisional=False,
+                    last_event_at=today,
+                ),
+                Rating(
+                    athlete_id=ath.id,
+                    discipline=Discipline.BOULDER,
+                    mu=mu_boulder,
+                    sigma=100.0,
+                    n_events=5,
+                    provisional=False,
+                    last_event_at=today,
+                ),
+                Rating(
+                    athlete_id=ath.id,
+                    discipline=Discipline.BOULDER_LEAD,
+                    mu=round(math.sqrt(mu_lead * mu_boulder), 2),
+                    sigma=100.0,
+                    n_events=5,
+                    provisional=False,
+                    last_event_at=today,
+                ),
+            ]
+        )
+    session.commit()
+    session.close()
+    return engine, factory
+
+
+def test_combined_leaderboard_batched_path(tmp_path):
+    n = 8
+    engine, factory = _seed_combined_db(tmp_path / "combined_batch.db", n)
+    with _patched_v1(engine, factory):
+        app = create_app()
+        tc = TestClient(app)
+        tc.get("/api/v1/combined/leaderboard?gender=M&limit=1")  # warm up lifespan
+        with _count_select_queries() as counter:
+            r = tc.get(f"/api/v1/combined/leaderboard?gender=M&limit={n}")
+
+    assert r.status_code == 200
+    body = r.json()
+    items = body["items"]
+    assert body["total"] == n
+    assert len(items) == n
+    # Ranked by descending combined mu, ranks sequential.
+    assert [it["rank"] for it in items] == list(range(1, n + 1))
+    mus = [it["mu"] for it in items]
+    assert mus == sorted(mus, reverse=True)
+    # Breakdown fields present and correct for the top (strongest) athlete.
+    top = items[0]
+    assert top["name"] == "Athlete 00"
+    assert top["mu_lead"] == 1800.0
+    assert top["mu_boulder"] == 1700.0
+    for entry in items:
+        for field in ("mu_boulder", "mu_lead", "sigma_boulder", "sigma_lead"):
+            assert field in entry
+    # Batched: SELECT count is a small constant (count + page + 2 rating batches),
+    # NOT 2 + 2*n as the old per-athlete version would issue (would be 18 for n=8).
+    assert counter["selects"] <= 8, counter["selects"]
+
+
+def _seed_upcoming_db(db_file, n_athletes):
+    """Seed one upcoming lead event with a registered men's final of n athletes."""
+    engine = create_engine(f"sqlite:///{db_file}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    session = factory()
+    today = date.today()
+
+    ev = Event(
+        name="Future Lead WC",
+        tier=EventTier.WORLD_CUP,
+        country="FRA",
+        season=today.year,
+        start_date=today + timedelta(days=30),
+        discipline=Discipline.LEAD,
+    )
+    session.add(ev)
+    session.flush()
+    rnd = Round(
+        event_id=ev.id,
+        round_type=RoundType.FINAL,
+        gender=Gender.M,
+        athlete_count=n_athletes,
+    )
+    session.add(rnd)
+    session.flush()
+
+    names = []
+    for i in range(n_athletes):
+        name = f"Climber {i:02d}"
+        names.append(name)
+        ath = Athlete(name=name, gender=Gender.M, nationality="USA")
+        session.add(ath)
+        session.flush()
+        session.add(
+            Result(
+                round_id=rnd.id,
+                athlete_id=ath.id,
+                rank=i + 1,
+                raw_score="TOP",
+                dns=False,
+            )
+        )
+        session.add(
+            Rating(
+                athlete_id=ath.id,
+                discipline=Discipline.LEAD,
+                mu=2000.0 - i * 100,
+                sigma=50.0,
+                n_events=5,
+                provisional=False,
+                last_event_at=today,
+            )
+        )
+    session.commit()
+    session.close()
+    return engine, factory, names
+
+
+def test_predictions_upcoming_batched_path(tmp_path):
+    n = 8
+    engine, factory, names = _seed_upcoming_db(tmp_path / "upcoming_batch.db", n)
+    season = date.today().year
+    with _patched_v1(engine, factory):
+        app = create_app()
+        tc = TestClient(app)
+        tc.get(f"/api/v1/predictions/upcoming?discipline=lead&season={season}")  # warm
+        with _count_select_queries() as counter:
+            r = tc.get(f"/api/v1/predictions/upcoming?discipline=lead&season={season}")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 1
+    entry = body["items"][0]
+    assert entry["event_name"] == "Future Lead WC"
+    assert entry["has_registered_athletes"] is True
+    assert entry["from_likely_roster"] is False
+
+    genders = entry["genders"]
+    assert len(genders) == 1
+    g = genders[0]
+    assert g["gender"] == "M"
+    assert g["total_athletes"] == n
+
+    top3 = g["top_3"]
+    assert len(top3) == 3
+    for a in top3:
+        for field in ("athlete_id", "name", "win", "podium", "expected_rank"):
+            assert field in a
+    # top_3 are the three strongest athletes by mu (well-separated), and the
+    # response is ordered by ascending expected_rank (best first).
+    assert {a["name"] for a in top3} == {"Climber 00", "Climber 01", "Climber 02"}
+    ranks = [a["expected_rank"] for a in top3]
+    assert ranks == sorted(ranks)
+    # Batched: SELECT count does not carry the per-athlete session.get + Rating
+    # select (old shape would add ~2*n = 16 more for n=8).
+    assert counter["selects"] <= 10, counter["selects"]
 
 
 # ---------------------------------------------------------------------------
