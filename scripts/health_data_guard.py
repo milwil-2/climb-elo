@@ -18,7 +18,10 @@ not fail the build (used for known, deliberately-deferred states).
    divergence is.
 
 2. **Stored-vs-recomputed mismatch (WARN)** — a non-null stored score that differs
-   from re-normalizing ``raw_score``. Post-#117 (decimal-only boulder raws now
+   from re-normalizing ``raw_score``. Runs **weekly** (Mondays, or ``--full``):
+   it must re-fetch every stored score because a normalizer change invalidates
+   old rows retroactively, and paying that ~6 MB pull daily was wasteful
+   (Supabase egress). Post-#117 (decimal-only boulder raws now
    normalize to ``None`` rather than silently returning the decimal), this check
    is silent on 2025+ boulder because ``recomputed`` is ``None`` and the mismatch
    arm requires both sides non-null. Any residual mismatch surfacing in Lead/Speed
@@ -40,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
 
 from sqlalchemy import func, select
 
@@ -84,29 +88,41 @@ def _recompute(discipline: Discipline, raw: str | None) -> float | None:
     return None
 
 
-def run_checks(session) -> tuple[list[str], list[str]]:
-    """Return (failures, warnings) as human-readable lines."""
+def run_checks(session, full_scan: bool = True) -> tuple[list[str], list[str]]:
+    """Return (failures, warnings) as human-readable lines.
+
+    ``full_scan`` controls check 2 (stored-vs-recomputed mismatch), which must
+    re-fetch every non-NULL stored score (~50k rows / ~6 MB from prod) because
+    a normalizer code change can invalidate old rows retroactively. Check 1
+    (recoverable parse failures) only needs the NULL-score rows - a handful -
+    so it always runs. The daily scrape passes ``full_scan`` only on Mondays
+    (or via ``--full``) to keep routine egress near zero.
+    """
     failures: list[str] = []
     warnings: list[str] = []
 
-    # --- Checks 1 & 2: walk results, recompute, classify -------------------
-    rows = session.execute(
+    # --- Checks 1 & 2: fetch candidates server-side, recompute, classify ---
+    # Check 1 candidates: non-DNS/DNF rows whose stored score is NULL.
+    base_query = (
         select(
             Result.score_normalized,
             Result.raw_score,
-            Result.dns,
-            Result.dnf,
             Event.discipline,
         )
         .join(Round, Result.round_id == Round.id)
         .join(Event, Round.event_id == Event.id)
-    ).all()
+        .where(Result.dns.is_(False), Result.dnf.is_(False))
+    )
+    rows = list(session.execute(base_query.where(Result.score_normalized.is_(None))))
+    # Check 2 candidates: every non-NULL stored score (weekly / --full only).
+    if full_scan:
+        rows += list(
+            session.execute(base_query.where(Result.score_normalized.is_not(None)))
+        )
 
     recoverable: dict[Discipline, list[str]] = {}
     mismatched: dict[Discipline, list[str]] = {}
-    for stored, raw, dns, dnf, disc in rows:
-        if dns or dnf:
-            continue
+    for stored, raw, disc in rows:
         recomputed = _recompute(disc, raw)
         if stored is None and recomputed is not None:
             recoverable.setdefault(disc, []).append(f"{raw!r}→{recomputed}")
@@ -182,13 +198,23 @@ def run_checks(session) -> tuple[list[str], list[str]]:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Data + rating health guard (#118).")
     p.add_argument("--db", default=None, help="SQLite path (else uses DATABASE_URL).")
+    p.add_argument(
+        "--full",
+        action="store_true",
+        help="Force the full stored-vs-recomputed mismatch scan (check 2). "
+        "Without it the scan runs only on Mondays; checks 1 and 3 always run.",
+    )
     args = p.parse_args(argv)
+
+    full_scan = args.full or date.today().isoweekday() == 1
+    if not full_scan:
+        print("  (mismatch scan skipped - weekly on Mondays; pass --full to force)")
 
     engine = get_engine(args.db) if args.db else get_engine()
     from sqlalchemy.orm import Session
 
     with Session(engine) as session:
-        failures, warnings = run_checks(session)
+        failures, warnings = run_checks(session, full_scan=full_scan)
 
     for w in warnings:
         print(f"WARN  {w}")

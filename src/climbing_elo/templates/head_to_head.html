@@ -445,7 +445,7 @@
       labels: labels,
       datasets: [
         {
-          label: '{{ h2h_result.athlete_a.name }}',
+          label: {{ h2h_result.athlete_a.name | tojson }},
           data: muA,
           borderColor: '#F5F5F5',
           borderWidth: 1.25,
@@ -455,7 +455,7 @@
           spanGaps: true,
         },
         {
-          label: '{{ h2h_result.athlete_b.name }}',
+          label: {{ h2h_result.athlete_b.name | tojson }},
           data: muB,
           borderColor: '#8A8A8A',
           borderWidth: 1.25,

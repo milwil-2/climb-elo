@@ -207,7 +207,15 @@ class RatingHistory(Base):
     mu_after: Mapped[float] = mapped_column(Float, nullable=False)
     sigma_before: Mapped[float] = mapped_column(Float, nullable=False)
     sigma_after: Mapped[float] = mapped_column(Float, nullable=False)
-    contributing_pairs: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Deferred: this JSON blob averages ~1.1KB and is 93% of the row's bytes,
+    # but only the /breakdown page and the athlete-profile opponents preview
+    # read it. Deferring keeps it out of every other RatingHistory load (the
+    # ticker, history charts, event pages) - the dominant Supabase egress
+    # driver before 2026-08. Query sites that need it use undefer(); Core-level
+    # selects (snapshots/exports) are unaffected by ORM deferral.
+    contributing_pairs: Mapped[Optional[dict]] = mapped_column(
+        JSON, nullable=True, deferred=True
+    )
     # Issue #90 — Tournament Participation Bonus (Gap 1 from #88).
     # Discriminator: 'pair' = standard pairwise round update (legacy
     # behaviour). 'tpb' = synthetic, event-level tier-weighted bonus whose
