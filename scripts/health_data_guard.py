@@ -25,10 +25,10 @@ not fail the build (used for known, deliberately-deferred states).
    would be a genuine drift signal — stays a WARN for now.
 
 3. **Rating health (FAIL)** — any rating at the σ-floor (≤ ``SIGMA_FLOOR``, the
-   #95 collapse signal); Lead/Boulder μ-p95 outside the calibrated elite band
-   ``MU_P95_BAND``; or any μ_max ≥ ``MU_MAX_CEILING``. Speed + Combined μ-p95 are
-   reported but not hard-failed (Speed is sparse; Combined is an aggregate that
-   sits slightly higher by design).
+   #95 collapse signal); Lead/Boulder μ-p95 outside its calibrated elite band
+   in ``MU_P95_BANDS``; or any μ_max ≥ ``MU_MAX_CEILING``. Speed + Combined
+   μ-p95 are reported but not hard-failed (Speed is sparse; Combined is an
+   aggregate that sits slightly higher by design).
 
 Usage::
 
@@ -50,9 +50,19 @@ from climbing_elo.scraper.ifsc_api import _parse_lead_score, _parse_speed_score
 
 # --- Calibrated thresholds (see Issue #118 calibration against prod) ----------
 SIGMA_FLOOR = 50.01  # ratings at/below this are σ-collapsed (#95)
-MU_P95_BAND = (1900.0, 2200.0)  # elite band for the *developed* disciplines
-BAND_DISCIPLINES = {Discipline.LEAD, Discipline.BOULDER}  # Speed sparse, BL aggregate
-MU_MAX_CEILING = 3000.0  # no single μ should exceed this
+# Per-discipline elite bands for the *developed* disciplines (Speed sparse,
+# BL aggregate — both informational only). Boulder was recalibrated after the
+# #117 ordinal-only normalization + re-backfill settled its μ-p95 at ~1887.5
+# (down from 1929 at the 2026-05-28 calibration); backtest quality was
+# unaffected, so the lower bound moved to 1850 rather than retuning the engine.
+MU_P95_BANDS = {
+    Discipline.LEAD: (1900.0, 2200.0),
+    Discipline.BOULDER: (1850.0, 2200.0),
+}
+# No single μ should exceed this. 3100 leaves headroom over the genuine
+# outlier (Garnbret, Lead μ≈2990 as of 2026-08) while still catching runaway
+# inflation of the #95 class.
+MU_MAX_CEILING = 3100.0
 MISMATCH_TOL = 1.0  # |stored − recomputed| above this counts as a mismatch
 SAMPLE = 5  # examples to print per finding
 
@@ -154,12 +164,13 @@ def run_checks(session) -> tuple[list[str], list[str]]:
             failures.append(
                 f"[rating-health] {tag}: μ_max={mu_max:.1f} ≥ {MU_MAX_CEILING}."
             )
-        if disc in BAND_DISCIPLINES and not (MU_P95_BAND[0] <= p95 <= MU_P95_BAND[1]):
+        band = MU_P95_BANDS.get(disc)
+        if band is not None and not (band[0] <= p95 <= band[1]):
             failures.append(
-                f"[rating-health] {tag}: μ-p95={p95:.1f} outside band {MU_P95_BAND}."
+                f"[rating-health] {tag}: μ-p95={p95:.1f} outside band {band}."
             )
         else:
-            note = "" if disc in BAND_DISCIPLINES else " (informational)"
+            note = "" if band is not None else " (informational)"
             print(
                 f"  rating health {tag}: μ-p95={p95:.1f} μ_max={mu_max:.1f} "
                 f"σ-floor={n_floor} n={n}{note}"
