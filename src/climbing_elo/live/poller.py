@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from climbing_elo.database import get_session_factory
 from climbing_elo.live.bus import event_bus
 from climbing_elo.models import Athlete, Event, Gender, Result, Round, RoundType
+from climbing_elo.scraper.http_utils import aread_capped_json
 
 log = logging.getLogger(__name__)
 
@@ -97,16 +98,18 @@ async def _fetch_results(
     """Async fetch of IFSC result payload; returns None on any error (don't leak to clients)."""
     url = f"{IFSC_BASE}/api/v1/events/{event_id}/result/{dcat_id}"
     try:
-        resp = await client.get(url, headers=IFSC_HEADERS, timeout=15)
-        if resp.status_code == 200:
-            return resp.json()
-        log.warning(
-            "IFSC API returned HTTP %d for event %d dcat %d",
-            resp.status_code,
-            event_id,
-            dcat_id,
-        )
-        return None
+        # Stream with a decoded-body cap (#203): this runs in the web event
+        # loop, so an un-capped decompression bomb would OOM the whole process.
+        async with client.stream("GET", url, headers=IFSC_HEADERS, timeout=15) as resp:
+            if resp.status_code == 200:
+                return await aread_capped_json(resp)
+            log.warning(
+                "IFSC API returned HTTP %d for event %d dcat %d",
+                resp.status_code,
+                event_id,
+                dcat_id,
+            )
+            return None
     except Exception as exc:
         log.error("IFSC fetch failed for event %d dcat %d: %s", event_id, dcat_id, exc)
         return None

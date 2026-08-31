@@ -25,11 +25,13 @@ Boulder score formats across years:
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select
@@ -45,6 +47,7 @@ from climbing_elo.models import (
     Round,
     RoundType,
 )
+from climbing_elo.scraper.http_utils import read_capped_json
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +99,10 @@ def _is_postgres(session: Session) -> bool:
 
 
 BASE_URL = "https://ifsc.results.info"
+#: Only this host may be fetched by :func:`_api_get`. Upstream JSON hands us
+#: league ``url`` values that we fetch verbatim (#200); restricting the host to
+#: BASE_URL's blocks server-side request forgery to arbitrary/internal targets.
+_ALLOWED_API_HOST = urlparse(BASE_URL).hostname
 HEADERS = {
     "User-Agent": "ClimbingELO/0.1 (research project)",
     "Referer": "https://ifsc.results.info/",
@@ -136,13 +143,29 @@ def health_check() -> bool:
 
 
 def _api_get(client: httpx.Client, path: str) -> dict | list | None:
-    url = f"{BASE_URL}{path}" if path.startswith("/") else path
+    # SSRF guard (#200): callers pass upstream-sourced league ``url`` values
+    # here. A relative path is resolved against BASE_URL; an absolute URL is
+    # only fetched when its host matches BASE_URL's. Anything else (off-host,
+    # non-http scheme, protocol-relative) is refused.
+    if path.startswith("/"):
+        url = f"{BASE_URL}{path}"
+    else:
+        parsed = urlparse(path)
+        if parsed.scheme not in ("http", "https") or (
+            (parsed.hostname or "").lower() != _ALLOWED_API_HOST
+        ):
+            log.error("Refusing to fetch off-host or non-absolute URL: %r", path)
+            return None
+        url = path
     try:
-        resp = client.get(url, headers=HEADERS, timeout=20)
-        if resp.status_code == 200:
-            return resp.json()
-        log.warning("HTTP %d for %s", resp.status_code, url)
-        return None
+        # Stream so the decoded-body cap can abort a decompression bomb before
+        # the whole payload is buffered (#203). follow_redirects stays at the
+        # httpx default (False) so a 3xx cannot bounce us off-host.
+        with client.stream("GET", url, headers=HEADERS, timeout=20) as resp:
+            if resp.status_code == 200:
+                return read_capped_json(resp)
+            log.warning("HTTP %d for %s", resp.status_code, url)
+            return None
     except Exception as e:
         log.error("Request failed for %s: %s", url, e)
         return None
@@ -183,6 +206,10 @@ def _parse_round_type(name: str) -> RoundType:
 
 
 def _parse_lead_score(score_str: str | None) -> tuple[str, float | None]:
+    # Rejects NaN/Inf, which ``float()`` accepts without error. A non-finite
+    # score flows through the MOV multiplier into ELO deltas and persists as a
+    # nan in Postgres double precision, corrupting ratings until a full
+    # re-backfill (#199); mirror the SPEED parser's finiteness guard.
     if not score_str:
         return ("", None)
     raw = score_str.strip()
@@ -190,13 +217,17 @@ def _parse_lead_score(score_str: str | None) -> tuple[str, float | None]:
         return (raw, 999.0)
     if raw.endswith("+"):
         try:
-            return (raw, float(raw[:-1]) + 0.5)
+            value = float(raw[:-1]) + 0.5
         except ValueError:
             return (raw, None)
-    try:
-        return (raw, float(raw))
-    except ValueError:
+    else:
+        try:
+            value = float(raw)
+        except ValueError:
+            return (raw, None)
+    if not math.isfinite(value):
         return (raw, None)
+    return (raw, value)
 
 
 def _parse_boulder_score(
@@ -222,7 +253,14 @@ def _parse_boulder_score(
                 int(a.get("zone_tries") or 0) for a in ascents if a.get("zone")
             )
             normalized = tops * 1000 + zones * 100 - top_attempts * 10 - zone_attempts
-            return (raw, float(normalized))
+            value = float(normalized)
+            # Defensive: int arithmetic is always finite, but guard anyway so a
+            # non-finite value can never reach the DB / MOV math (#199). The
+            # 2025+ decimal pass-through below already returns None (never a
+            # bare float), so no NaN/Inf can escape from that branch either.
+            if not math.isfinite(value):
+                return (raw, None)
+            return (raw, value)
         except (TypeError, ValueError):
             log.debug("Malformed ascent data, falling back to score string parse")
 
@@ -292,14 +330,21 @@ def _parse_speed_score(score_str: str | None) -> tuple[str, float | None, bool, 
 
 def _get_or_create_athlete(
     session: Session,
-    athlete_id: int,
+    athlete_id: int | None,
     firstname: str,
     lastname: str,
     country: str,
     gender: Gender,
     cache: dict[int, Athlete],
 ) -> Athlete:
-    if athlete_id in cache:
+    # A missing/non-int upstream ``athlete_id`` must never be used as a cache
+    # key (#201): keying every ``None`` to the first such athlete collapsed a
+    # whole season onto one row (the rest were swallowed by the existing-result
+    # dedup). Fall back to name-based identity when the id is unusable. ``bool``
+    # is an ``int`` subclass, so exclude it explicitly.
+    valid_id = isinstance(athlete_id, int) and not isinstance(athlete_id, bool)
+
+    if valid_id and athlete_id in cache:
         return cache[athlete_id]
 
     existing = session.execute(
@@ -309,7 +354,8 @@ def _get_or_create_athlete(
     ).scalar_one_or_none()
 
     if existing:
-        cache[athlete_id] = existing
+        if valid_id:
+            cache[athlete_id] = existing
         return existing
 
     athlete = Athlete(
@@ -319,7 +365,8 @@ def _get_or_create_athlete(
     )
     session.add(athlete)
     session.flush()
-    cache[athlete_id] = athlete
+    if valid_id:
+        cache[athlete_id] = athlete
     return athlete
 
 
@@ -882,6 +929,32 @@ def scrape_upcoming_events(
 #:
 #: IFSC has no ``weight_kg`` field — the column exists for future expansion but
 #: is left ``None`` here.
+#: Hosts allowed to appear in a stored ``photo_url`` (#202). Mirrors the
+#: allowlist approach used for livestream URLs in :mod:`climbing_elo.live.livestream`.
+_PHOTO_URL_ALLOWED_HOSTS = frozenset({"ifsc.results.info"})
+#: Reject absurdly long URLs before they reach the DB / the ``<img src>`` tag.
+_MAX_PHOTO_URL_LEN = 512
+
+
+def _is_valid_photo_url(url: str) -> bool:
+    """Return True only for an https URL on the IFSC host within the length cap.
+
+    ``photo_url`` is hot-linked straight into ``<img src="...">`` on the athlete
+    profile page, so an attacker-controlled value (the IFSC payload is upstream
+    JSON) could point at an arbitrary host or a ``javascript:``/``data:`` URI.
+    Validate scheme + host + length at store time so only trusted values persist.
+    """
+    if not url or len(url) > _MAX_PHOTO_URL_LEN:
+        return False
+    try:
+        parsed = urlparse(url)
+    except (ValueError, AttributeError):
+        return False
+    if parsed.scheme != "https":
+        return False
+    return (parsed.hostname or "").lower() in _PHOTO_URL_ALLOWED_HOSTS
+
+
 def scrape_athlete_profile(
     ifsc_athlete_id: int,
     client: httpx.Client | None = None,
@@ -926,8 +999,10 @@ def scrape_athlete_profile(
     out: dict = {}
 
     photo_url = data.get("photo_url")
-    if isinstance(photo_url, str) and photo_url.strip():
+    if isinstance(photo_url, str) and _is_valid_photo_url(photo_url.strip()):
         out["photo_url"] = photo_url.strip()
+    elif isinstance(photo_url, str) and photo_url.strip():
+        log.warning("Rejecting non-allowlisted photo_url %r (#202)", photo_url.strip())
 
     height = data.get("height")
     if isinstance(height, (int, float)) and height > 0:

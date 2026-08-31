@@ -71,6 +71,8 @@ from typing import Iterable, Literal
 
 import httpx
 
+from climbing_elo.scraper.http_utils import ResponseTooLargeError, read_capped_text
+
 log = logging.getLogger(__name__)
 
 
@@ -315,14 +317,18 @@ def fetch_ifsc_official_ranking(
         client = httpx.Client(timeout=20.0, follow_redirects=True)
         close_after = True
     try:
-        resp = client.get(
+        # Stream with a decoded-body cap (#203) to bound memory on a
+        # decompression bomb / runaway page.
+        with client.stream(
+            "GET",
             full_url,
             headers={"User-Agent": "ClimbingELO/0.1 (research)"},
-        )
-        if resp.status_code != 200:
-            log.warning("Wikipedia returned %d for %s", resp.status_code, full_url)
-            return []
-        parsed = _parse_wikipedia_standings(resp.text, gender)
+        ) as resp:
+            if resp.status_code != 200:
+                log.warning("Wikipedia returned %d for %s", resp.status_code, full_url)
+                return []
+            text = read_capped_text(resp)
+        parsed = _parse_wikipedia_standings(text, gender)
         if not parsed:
             log.warning(
                 "fetch succeeded but parser found 0 rows for %s — "
@@ -330,7 +336,7 @@ def fetch_ifsc_official_ranking(
                 full_url,
             )
         return parsed
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, ResponseTooLargeError) as exc:
         log.error("Failed to fetch %s: %s", full_url, exc)
         return []
     finally:
@@ -480,15 +486,19 @@ def fetch_ascentstats_ranking(
         client = httpx.Client(timeout=20.0, follow_redirects=True)
         close_after = True
     try:
-        resp = client.get(
+        # Stream with a decoded-body cap (#203) to bound memory on a
+        # decompression bomb / runaway page.
+        with client.stream(
+            "GET",
             url,
             headers={"User-Agent": "ClimbingELO/0.1 (research)"},
-        )
-        if resp.status_code != 200:
-            log.warning("AscentStats returned %d for %s", resp.status_code, url)
-            return []
-        return _parse_ascentstats_table(resp.text)
-    except httpx.HTTPError as exc:
+        ) as resp:
+            if resp.status_code != 200:
+                log.warning("AscentStats returned %d for %s", resp.status_code, url)
+                return []
+            text = read_capped_text(resp)
+        return _parse_ascentstats_table(text)
+    except (httpx.HTTPError, ResponseTooLargeError) as exc:
         log.error("Failed to fetch %s: %s", url, exc)
         return []
     finally:

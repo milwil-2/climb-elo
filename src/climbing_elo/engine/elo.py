@@ -715,6 +715,14 @@ def compute_margin_multiplier(
     """
     if score_a is None or score_b is None:
         return 1.0
+    # Defence-in-depth (#199): a non-finite score/gap must never propagate into
+    # K. Even though the scrapers now reject NaN/Inf at ingest, fall back to a
+    # neutral multiplier here so no corrupt value can ever reach a rating delta.
+    # compute_boulder_margin_multiplier delegates here, so this covers it too.
+    if not (
+        math.isfinite(score_a) and math.isfinite(score_b) and math.isfinite(rating_gap)
+    ):
+        return 1.0
     if config.gelo_buckets is not None:
         from climbing_elo.engine.gelo import compute_gelo_margin_multiplier
 
@@ -829,6 +837,14 @@ def compute_speed_margin_multiplier(
     bucketed MOV (see :mod:`climbing_elo.engine.gelo`).
     """
     if winner_time is None or loser_time is None:
+        return 1.0
+    # Defence-in-depth (#199): reject non-finite inputs (Speed does not delegate
+    # to compute_margin_multiplier) so no corrupt value reaches a rating delta.
+    if not (
+        math.isfinite(winner_time)
+        and math.isfinite(loser_time)
+        and math.isfinite(rating_gap)
+    ):
         return 1.0
     if config.gelo_buckets is not None:
         from climbing_elo.engine.gelo import compute_gelo_margin_multiplier

@@ -24,6 +24,25 @@ from climbing_elo.models import (  # noqa: E402
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_app_caches():
+    """Isolate the module-level TTL caches between tests.
+
+    The app caches (ticker/page contexts, predictions, rosters) are process
+    globals; without clearing them, a value cached under one test's fixture DB
+    can leak into another test's rendered pages.
+    """
+    from climbing_elo.cache import (
+        html_page_cache,
+        likely_roster_cache,
+        predictions_cache,
+    )
+
+    for cache in (html_page_cache, likely_roster_cache, predictions_cache):
+        cache.clear()
+    yield
+
+
 @pytest.fixture
 def db_session():
     engine = create_engine("sqlite:///:memory:")

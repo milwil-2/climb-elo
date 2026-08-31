@@ -49,10 +49,17 @@ def parse_youtube_video_id(url: Optional[str]) -> Optional[str]:
     - ``https://www.youtube.com/embed/VIDEO_ID``
     - ``https://youtu.be/VIDEO_ID``
 
-    Returns ``None`` for any other host, any non-HTTPS/HTTP scheme,
+    Returns ``None`` for any other host, any non-HTTPS scheme,
     or any malformed video id.
     """
     if not url or not isinstance(url, str):
+        return None
+
+    # Reject backslashes outright (#204). Browsers normalize ``\`` to ``/``
+    # when resolving a URL, so ``https://evil.com\@youtube.com/...`` loads
+    # evil.com, but ``urlparse`` does not treat ``\`` as a separator and
+    # would report the host as youtube.com - an allowlist bypass.
+    if "\\" in url:
         return None
 
     try:
@@ -60,8 +67,8 @@ def parse_youtube_video_id(url: Optional[str]) -> Optional[str]:
     except (ValueError, AttributeError):
         return None
 
-    # Only allow http(s); blocks javascript:, data:, file:, etc.
-    if parsed.scheme not in {"http", "https"}:
+    # Only allow https; blocks javascript:, data:, file:, and plain http.
+    if parsed.scheme != "https":
         return None
 
     host = (parsed.hostname or "").lower()

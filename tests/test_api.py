@@ -1303,7 +1303,7 @@ def test_openapi_includes_combined_endpoints(ext_client):
 
 
 # ---------------------------------------------------------------------------
-# Batched data-access (N+1 removal) — #208
+# Batched data-access (N+1 removal) - #208
 #
 # These tests exercise the batch-loading path added to
 # `/api/v1/combined/leaderboard` and `/api/v1/predictions/upcoming`. They assert
@@ -1522,3 +1522,73 @@ def test_predictions_upcoming_batched_path(tmp_path):
     # Batched: SELECT count does not carry the per-athlete session.get + Rating
     # select (old shape would add ~2*n = 16 more for n=8).
     assert counter["selects"] <= 10, counter["selects"]
+
+
+# ---------------------------------------------------------------------------
+# Security headers + CSP (Issue #207)
+# ---------------------------------------------------------------------------
+
+
+def test_html_route_has_security_headers(client):
+    """HTML routes carry the CSP + hardening headers (Issue #207)."""
+    r = client.get("/leaderboard")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["x-frame-options"] == "SAMEORIGIN"
+    assert r.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+
+    csp = r.headers["content-security-policy"]
+    # Key directives must be present and allow exactly what the templates load.
+    assert "default-src 'self'" in csp
+    assert "frame-ancestors 'self'" in csp
+    assert "base-uri 'self'" in csp
+    assert "object-src 'none'" in csp
+    assert "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net" in csp
+    assert "img-src 'self' data: https://ifsc.results.info" in csp
+    assert "font-src 'self' https://fonts.gstatic.com" in csp
+    assert "frame-src https://www.youtube.com https://www.youtube-nocookie.com" in csp
+
+
+def test_docs_not_given_strict_csp(client):
+    """Swagger UI must load its own CDN assets - no strict CSP on /docs."""
+    r = client.get("/docs")
+    assert r.status_code == 200
+    assert "content-security-policy" not in r.headers
+
+
+def test_api_json_route_has_no_csp(client):
+    """CSP is HTML-only; JSON API payloads are untouched."""
+    r = client.get("/api/v1/disciplines")
+    assert r.status_code == 200
+    assert "content-security-policy" not in r.headers
+
+
+# ---------------------------------------------------------------------------
+# Web output safety (reflected XSS + shared-cache poisoning)
+# ---------------------------------------------------------------------------
+
+
+def test_head_to_head_invalid_discipline_no_reflected_payload(client):
+    """#198: the invalid-discipline 400 body must not reflect the raw param.
+
+    The head-to-head handler renders into a text/html body (autoescape does
+    not apply to a raw HTMLResponse string), so the discipline value must not
+    be interpolated at all.
+    """
+    payload = "<script>alert(document.domain)</script>"
+    r = client.get(f"/head-to-head/5/60?discipline={payload}")
+    assert r.status_code == 400
+    assert "<script>" not in r.text
+    assert "alert(document.domain)" not in r.text
+    assert payload not in r.text
+    assert "Invalid discipline." in r.text
+
+
+def test_leaderboard_junk_disc_not_reflected(client):
+    """#205: a junk ?disc value normalizes to a real discipline and must not
+    leak the attacker-supplied raw string into the cached/rendered context."""
+    r = client.get("/leaderboard?disc=PWNEDDISC")
+    assert r.status_code == 200
+    assert "PWNEDDISC" not in r.text

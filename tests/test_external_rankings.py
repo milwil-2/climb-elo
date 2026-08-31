@@ -223,13 +223,25 @@ class _FakeClient:
         self._text = response_text
         self._status = status
 
-    def get(self, url, headers=None):  # noqa: D401 - mirror the httpx surface
-        class _Resp:
-            def __init__(self, text: str, status: int):
-                self.status_code = status
-                self.text = text
+    def stream(self, method, url, headers=None):  # noqa: D401 - mirror httpx
+        text = self._text
+        status = self._status
 
-        return _Resp(self._text, self._status)
+        class _Resp:
+            def __init__(self):
+                self.status_code = status
+                self.encoding = "utf-8"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def iter_bytes(self):
+                yield text.encode("utf-8")
+
+        return _Resp()
 
     def close(self) -> None:
         pass
