@@ -366,6 +366,57 @@ class TestLivePoller:
             session.close()
 
 
+class _FakeAsyncStream:
+    """Minimal stand-in for the object returned by ``AsyncClient.stream(...)``."""
+
+    def __init__(self, status_code=200, chunks=(b"{}",), encoding="utf-8"):
+        self.status_code = status_code
+        self._chunks = list(chunks)
+        self.encoding = encoding
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def aiter_bytes(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class TestFetchResultsSizeCap:
+    """#203 — _fetch_results streams with a decoded-body cap (event-loop OOM guard)."""
+
+    @pytest.mark.asyncio
+    async def test_normal_body_parsed(self):
+        from climbing_elo.live.poller import _fetch_results
+
+        client = MagicMock()
+        client.stream = MagicMock(
+            return_value=_FakeAsyncStream(chunks=[b'{"ranking": []}'])
+        )
+        out = await _fetch_results(client, event_id=1, dcat_id=2)
+        assert out == {"ranking": []}
+
+    @pytest.mark.asyncio
+    async def test_over_cap_body_returns_none(self, monkeypatch):
+        from climbing_elo.scraper import http_utils
+
+        async def tiny_cap(resp):
+            return await http_utils.aread_capped_json(resp, max_bytes=8)
+
+        monkeypatch.setattr("climbing_elo.live.poller.aread_capped_json", tiny_cap)
+        from climbing_elo.live.poller import _fetch_results
+
+        client = MagicMock()
+        client.stream = MagicMock(
+            return_value=_FakeAsyncStream(chunks=[b"x" * 20, b"y" * 20])
+        )
+        # _fetch_results swallows the ResponseTooLargeError and returns None.
+        assert await _fetch_results(client, event_id=1, dcat_id=2) is None
+
+
 # ---------------------------------------------------------------------------
 # File-lock (mutex) tests
 # ---------------------------------------------------------------------------

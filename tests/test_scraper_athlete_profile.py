@@ -43,14 +43,14 @@ class TestScrapeAthleteProfile:
             "birthday": "2006-11-14",
             "height": 168,
             "arm_span": 181,
-            "photo_url": "https://example.com/sorato.jpg",
+            "photo_url": "https://ifsc.results.info/media/sorato.jpg",
             "country": "JPN",
         }
         client = MagicMock()
         with patch("climbing_elo.scraper.ifsc_api._api_get", return_value=payload):
             out = scrape_athlete_profile(13040, client=client)
         assert out == {
-            "photo_url": "https://example.com/sorato.jpg",
+            "photo_url": "https://ifsc.results.info/media/sorato.jpg",
             "height_cm": 168,
             "wingspan_cm": 181,
             "year_of_birth": 2006,
