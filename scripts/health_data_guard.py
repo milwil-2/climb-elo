@@ -51,7 +51,7 @@ from climbing_elo.scraper.ifsc_api import _parse_lead_score, _parse_speed_score
 # --- Calibrated thresholds (see Issue #118 calibration against prod) ----------
 SIGMA_FLOOR = 50.01  # ratings at/below this are σ-collapsed (#95)
 # Per-discipline elite bands for the *developed* disciplines (Speed sparse,
-# BL aggregate — both informational only). Boulder was recalibrated after the
+# BL aggregate - both informational only). Boulder was recalibrated after the
 # #117 ordinal-only normalization + re-backfill settled its μ-p95 at ~1887.5
 # (down from 1929 at the 2026-05-28 calibration); backtest quality was
 # unaffected, so the lower bound moved to 1850 rather than retuning the engine.

@@ -118,7 +118,7 @@ def test_guard_flags_mu_p95_out_of_band(db_session):
 
 def test_guard_boulder_band_is_wider_than_lead(db_session):
     """μ-p95 of 1880 passes Boulder's post-#117 band (1850, 2200) but would
-    fail Lead's (1900, 2200) — the bands are per-discipline."""
+    fail Lead's (1900, 2200) - the bands are per-discipline."""
     for i in range(5):
         a = Athlete(name=f"B{i}", gender=Gender.M)
         db_session.add(a)
