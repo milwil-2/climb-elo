@@ -287,6 +287,20 @@ jobs:
           done
           echo "recent_regressions=${REGRESSED}" >> "$GITHUB_OUTPUT"
 
+      # `gh issue create --label X` hard-fails if the label doesn't exist in
+      # the repo (same silent-crash class as the Dependabot-labels gotcha in
+      # CLAUDE.md; this exact failure ate the 2026-08-23 and 08-30 alerts).
+      # Recreate it idempotently before any step that uses it.
+      - name: Ensure backtest-monitor-alert label exists
+        if: steps.backtest.outputs.exit_code == '2' && steps.count-regressions.outputs.recent_regressions >= 2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "backtest-monitor-alert" \
+            --description "Weekly backtest monitor detected a persistent model-quality regression" \
+            --color "B60205" \
+            --force
+
       - name: Find existing backtest-monitor-alert issue
         if: steps.backtest.outputs.exit_code == '2' && steps.count-regressions.outputs.recent_regressions >= 2
         id: find-issue
