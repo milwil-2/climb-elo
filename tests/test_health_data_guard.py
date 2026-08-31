@@ -89,6 +89,25 @@ def test_guard_skips_dns_dnf(db_session):
     assert failures == []
 
 
+def test_guard_mismatch_warn_requires_full_scan(db_session):
+    """Check 2 (stored≠recomputed WARN) only runs on the weekly full scan."""
+    rnd, ath = _boulder_round(db_session)
+    # "0t 4b10" recomputes to 390; store 999 → mismatch.
+    _add_result(db_session, rnd, ath, "0t 4b10", 999.0)
+    _, warnings_full = run_checks(db_session, full_scan=True)
+    assert any("scale-drift" in w for w in warnings_full), warnings_full
+    _, warnings_daily = run_checks(db_session, full_scan=False)
+    assert warnings_daily == []
+
+
+def test_guard_recoverable_check_runs_without_full_scan(db_session):
+    """Check 1 (NULL-but-parseable FAIL) runs daily regardless of full_scan."""
+    rnd, ath = _boulder_round(db_session)
+    _add_result(db_session, rnd, ath, "0t 4b10", None)
+    failures, _ = run_checks(db_session, full_scan=False)
+    assert any("parse-failure" in f for f in failures), failures
+
+
 def test_guard_flags_sigma_floor(db_session):
     """#95 class: a rating at the σ-floor → FAIL."""
     ath = Athlete(name="X", gender=Gender.M)
