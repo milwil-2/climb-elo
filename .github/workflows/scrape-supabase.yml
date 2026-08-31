@@ -29,7 +29,7 @@ on:
         type: boolean
         default: false
       # NOTE: there is intentionally NO force_reset input here. A full
-      # wipe+recompute exceeds this job's 60-min timeout (the Lead rebuild
+      # wipe+recompute exceeds this job's 120-min timeout (the Lead rebuild
       # alone runs >60 min), which leaves prod HALF-REBUILT and broken —
       # this actually happened on 2026-05-28 (run 26550405752 was cancelled
       # mid-Lead-rebuild, stranding 778 athletes at default ratings). The
@@ -43,7 +43,11 @@ permissions:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 120 min: routine daily runs vary 22-60+ min against the session pooler;
+    # the old 60-min cap was hit ~weekly (e.g. runs on 2026-08-23..26 + 08-29
+    # were all cancelled at 1h00m mid-backfill). Full force-reset rebuilds
+    # still exceed this and stay LOCAL-ONLY (see the note above).
+    timeout-minutes: 120
 
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -113,7 +117,7 @@ jobs:
       # operation.
       #
       # To ACTIVATE an engine change (K-regrid, σ-formula bump, etc.) the whole
-      # history must be wiped + recomputed, but that exceeds this job's 60-min
+      # history must be wiped + recomputed, but that exceeds this job's 120-min
       # timeout and is therefore a LOCAL-ONLY operation — do NOT add a
       # --force-reset path here. Run it from a laptop instead:
       #   export DATABASE_URL='<session pooler, port 5432>'
