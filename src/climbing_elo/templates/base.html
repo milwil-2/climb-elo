@@ -28,7 +28,6 @@
         <li><a href="/projections"{% if active_page == 'projections' %} style="color:var(--ink)"{% endif %}>Projections</a></li>
         <li><a href="/head-to-head"{% if active_page == 'h2h' %} style="color:var(--ink)"{% endif %}>Head-to-head</a></li>
         <li><a href="/model-performance"{% if active_page == 'model_performance' %} style="color:var(--ink)"{% endif %}>Performance</a></li>
-        <li><a href="/api"{% if active_page == 'api' %} style="color:var(--ink)"{% endif %}>API</a></li>
       </ul>
     </nav>
     {% if live_event %}
@@ -92,15 +91,6 @@
         <li><a href="/athletes">Athletes</a></li>
         <li><a href="/projections">Projections</a></li>
         <li><a href="/head-to-head">Head-to-head</a></li>
-      </ul>
-    </div>
-    <div>
-      <h5>API</h5>
-      <ul>
-        <li><a href="/api">/api/v1/leaderboard</a></li>
-        <li><a href="/api">/api/v1/projections</a></li>
-        <li><a href="/api">/live/{event_id}/stream</a></li>
-        <li><a href="/docs">OpenAPI schema</a></li>
       </ul>
     </div>
     <div>

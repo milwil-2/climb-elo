@@ -65,7 +65,7 @@
       <div class="hero-meta reveal d4">
         <span>Athletes <b>{{ stats.total_athletes }}</b></span>
         <span>Events scored <b>{{ stats.total_events }}</b></span>
-        <span>Backtest log-loss <b>0.61</b></span>
+        <span>Backtest log-loss <b>0.40</b></span>
       </div>
     </div>
   </div>
@@ -196,8 +196,7 @@
         <h2 class="h2">What the app is doing <em>right now</em>.</h2>
       </div>
       <p class="blurb reveal d2">
-        Live read-out from the pipeline. The scraper pings every 30 minutes;
-        backfill runs nightly; everything below is real, never hand-edited.
+        Live read-out from the pipeline. The scraper pings every 30 minutes.
       </p>
     </div>
 
@@ -212,25 +211,17 @@
         <div class="v">{{ stats.total_events }}</div>
         <div class="s">World Cup, World Championship, Olympics. 2012 &ndash; present.</div>
       </div>
+      {# Backtest monitor holdout run, 2026-08-31. Refresh via
+         scripts/backtest_monitor.py (run_backtest.py --oos holdout). #}
       <div class="stat-row">
         <div class="l">Backtest log-loss</div>
-        <div class="v">0.61</div>
-        <div class="s">+18pp better than the official ranking on holdout seasons.</div>
+        <div class="v">0.40</div>
+        <div class="s">Holdout podium log-loss across Lead and Boulder.</div>
       </div>
       <div class="stat-row">
         <div class="l">Rating updates</div>
         <div class="v">{{ "{:,}".format(stats.total_ratings) }}</div>
         <div class="s">One row per athlete per round. Fully reproducible from raw results.</div>
-      </div>
-      <div class="stat-row">
-        <div class="l">API endpoints</div>
-        <div class="v">10</div>
-        <div class="s">All read-only. No auth. CORS open. OpenAPI schema at /openapi.json.</div>
-      </div>
-      <div class="stat-row">
-        <div class="l">Monte Carlo</div>
-        <div class="v">10k<small>sims</small></div>
-        <div class="s">N(R, &sigma;&middot;1.2) per athlete per simulation. Cached 1h.</div>
       </div>
     </div>
   </section>
