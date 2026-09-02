@@ -498,7 +498,7 @@ svg.spark { width: 100%; height: 160px; display: block }
 footer { background: var(--paper); border-top: 1px solid var(--line); padding: 56px 32px 36px }
 .foot-inner {
   max-width: var(--page-w); margin: 0 auto;
-  display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 40px; align-items: flex-start;
+  display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 40px; align-items: flex-start;
 }
 @media (max-width: 760px) { .foot-inner { grid-template-columns: 1fr 1fr; gap: 28px } }
 .foot-inner h5 {
