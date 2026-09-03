@@ -219,10 +219,11 @@ class TestBackfillIdempotency:
             f"uq_rating_history_athlete_round_kind not found in: {constraint_names}"
         )
 
-        # Per athlete: 1 pair row (final round) + 1 tpb row (event-level
-        # bonus, also keyed to the final round). 3 athletes × 2 rows = 6.
-        assert count_after_first == 6, (
-            f"Expected 6 RatingHistory rows (3 pair + 3 tpb) after first backfill, "
+        # Per athlete: 1 pair row for the final round. TPB was removed in
+        # #175, so there is no longer a second event-level row per athlete.
+        # 3 athletes × 1 row = 3.
+        assert count_after_first == 3, (
+            f"Expected 3 RatingHistory rows (3 pair) after first backfill, "
             f"got {count_after_first}"
         )
 

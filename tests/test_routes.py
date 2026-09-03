@@ -294,8 +294,11 @@ def profile_factory(profile_db_path):
                 ],
             )
         )
-    # Issue #90 / #36 regression: a TPB row for `full` on the lead WC event.
-    # kind='tpb' stores contributing_pairs as a DICT (not a list of pair-dicts),
+    # Issue #36 regression: a LEGACY TPB row for `full` on the lead WC event.
+    # TPB was removed in #175, but kind='tpb' rows written before that survive
+    # in prod until the next force-reset rebuild, so the read path must keep
+    # tolerating them. They store contributing_pairs as a DICT (not a list of
+    # pair-dicts),
     # and it's added last so it has the highest id for its event. The athlete
     # profile's "recent ELO changes" opponents logic must NOT pick this row
     # (iterating a dict yields string keys → p.get() crash). See
@@ -392,11 +395,13 @@ def test_profile_route_full_athlete_renders_200(profile_client, profile_factory)
 
 def test_profile_route_with_tpb_row_renders_200(profile_client, profile_factory):
     """Regression (#36): an athlete whose latest rating_history row for an
-    event is a TPB row (kind='tpb', dict contributing_pairs) must still render
-    200. Before the fix the opponents logic in v2_athlete_profile picked the
-    highest-id row regardless of kind and iterated the dict's string keys,
-    raising 'str' object has no attribute 'get'. The profile fixture seeds
-    such a TPB row for 'Sora Climber' on the Briancon World Cup event."""
+    event is a legacy TPB row (kind='tpb', dict contributing_pairs) must still
+    render 200. Before the fix the opponents logic in v2_athlete_profile picked
+    the highest-id row regardless of kind and iterated the dict's string keys,
+    raising 'str' object has no attribute 'get'. TPB itself was removed in
+    #175, but such rows persist in prod until the next force-reset rebuild, so
+    this guard must stay. The profile fixture seeds one for 'Sora Climber' on
+    the Briancon World Cup event."""
     aid = _athlete_id_by_name(profile_factory, "Sora Climber")
     r = profile_client.get(f"/athletes/{aid}")
     assert r.status_code == 200, r.text[:500]

@@ -15,7 +15,6 @@ from climbing_elo.engine.elo import (
     AthleteResult,
     EloConfig,
     calculate_round_updates,
-    compute_tournament_participation_bonus,
 )
 from climbing_elo.models import (
     Discipline,
@@ -23,7 +22,6 @@ from climbing_elo.models import (
     Rating,
     RatingHistory,
     Result,
-    Round,
     RoundType,
 )
 
@@ -194,9 +192,10 @@ def run_backfill(
             # Idempotency guard: skip rounds that have already been rated.
             # On Postgres the ON CONFLICT DO NOTHING handles duplicates; on
             # SQLite (tests) we detect them here to avoid IntegrityError.
-            # We only check ``kind='pair'`` rows — TPB rows (one per FINAL
-            # round) are layered on after all rounds are processed; they
-            # must not block a partially-rated event from being completed.
+            # We only check ``kind='pair'`` rows. TPB was removed in #175,
+            # but pre-existing ``kind='tpb'`` rows survive in prod until the
+            # next force-reset rebuild, and they must not be mistaken for a
+            # rated round.
             already_rated = session.execute(
                 select(RatingHistory)
                 .where(
@@ -330,12 +329,10 @@ def run_backfill(
             report.rounds_processed += 1
             event_had_updates = True
 
-        # End-of-event TPB + per-athlete bookkeeping. Always run — the
-        # block has its own per-row idempotency, so on resume after a
-        # crash between round commit and event-end commit, missing TPB
-        # rows and missing n_events bumps still apply correctly.
-        _apply_tpb_for_event(session, event, rounds, discipline, ratings_cache, config)
-
+        # End-of-event per-athlete bookkeeping. Always run — the block has
+        # its own per-row idempotency, so on resume after a crash between
+        # round commit and event-end commit, missing n_events bumps still
+        # apply correctly.
         seen_athletes: set[int] = set()
         for rnd in rounds:
             for res in rnd.results:
@@ -378,10 +375,10 @@ def run_backfill(
             db_rating.provisional = ar.provisional
             bumped_any = True
 
-        # Commit the TPB + bump block. On a "nothing to do" event (all
-        # rounds and TPB already applied, no athletes to bump) this is
-        # an empty commit — cheap; needed so subsequent events start
-        # with a clean transaction.
+        # Commit the bump block. On a "nothing to do" event (all rounds
+        # already rated, no athletes to bump) this is an empty commit —
+        # cheap; needed so subsequent events start with a clean
+        # transaction.
         session.commit()
 
         if event_had_updates or bumped_any:
@@ -394,117 +391,3 @@ def run_backfill(
             )
 
     return report
-
-
-def _apply_tpb_for_event(
-    session: Session,
-    event: Event,
-    rounds: list[Round],
-    discipline: Discipline,
-    ratings_cache: dict[int, AthleteRating],
-    config: EloConfig,
-) -> None:
-    """Apply the Tournament Participation Bonus to one event (Issue #90).
-
-    Iterates over EVERY final round in the event (typically one per gender —
-    IFSC events have separate M and F finals). For each final round, pulls
-    its results, computes a zero-sum tier-weighted bonus, writes synthetic
-    ``RatingHistory(kind='tpb')`` rows pointed at that final round, and bumps
-    each athlete's μ. No-op if the event has no final rounds; the per-round
-    idempotency guard means re-runs over a partially-populated DB only insert
-    the missing rows (Issue #130).
-    """
-    for final_round in (r for r in rounds if r.round_type == RoundType.FINAL):
-        already_applied = session.execute(
-            select(RatingHistory)
-            .where(
-                RatingHistory.round_id == final_round.id,
-                RatingHistory.kind == "tpb",
-            )
-            .limit(1)
-        ).scalar_one_or_none()
-        if already_applied is not None:
-            continue
-
-        final_results = list(
-            session.execute(
-                select(Result).where(Result.round_id == final_round.id)
-            ).scalars()
-        )
-        if not final_results:
-            continue
-
-        athlete_results = [
-            AthleteResult(
-                athlete_id=res.athlete_id,
-                rank=res.rank or 999,
-                score_normalized=res.score_normalized,
-                dnf=res.dnf,
-                dns=res.dns,
-            )
-            for res in final_results
-        ]
-
-        contributions = compute_tournament_participation_bonus(
-            athlete_results, event.tier, config
-        )
-        if not contributions:
-            continue
-
-        for contrib in contributions:
-            ar = ratings_cache.get(contrib.athlete_id)
-            if ar is None:
-                continue
-            mu_before = ar.mu
-            mu_after = mu_before + contrib.delta
-            ar.mu = mu_after
-
-            db_rating = session.execute(
-                select(Rating).where(
-                    Rating.athlete_id == contrib.athlete_id,
-                    Rating.discipline == discipline,
-                )
-            ).scalar_one()
-            db_rating.mu = mu_after
-
-            tpb_payload = {
-                "rank": contrib.rank,
-                "gross_bonus": contrib.gross_bonus,
-                "debit": contrib.debit,
-                "tier": event.tier.value,
-            }
-            if _is_postgres(session):
-                from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-                stmt = (
-                    pg_insert(RatingHistory)
-                    .values(
-                        athlete_id=contrib.athlete_id,
-                        event_id=event.id,
-                        round_id=final_round.id,
-                        mu_before=mu_before,
-                        mu_after=mu_after,
-                        sigma_before=ar.sigma,
-                        sigma_after=ar.sigma,
-                        contributing_pairs=tpb_payload,
-                        kind="tpb",
-                    )
-                    .on_conflict_do_nothing(
-                        index_elements=["athlete_id", "round_id", "kind"]
-                    )
-                )
-                session.execute(stmt)
-            else:
-                session.add(
-                    RatingHistory(
-                        athlete_id=contrib.athlete_id,
-                        event_id=event.id,
-                        round_id=final_round.id,
-                        mu_before=mu_before,
-                        mu_after=mu_after,
-                        sigma_before=ar.sigma,
-                        sigma_after=ar.sigma,
-                        contributing_pairs=tpb_payload,
-                        kind="tpb",
-                    )
-                )
