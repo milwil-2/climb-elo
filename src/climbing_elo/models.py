@@ -216,12 +216,15 @@ class RatingHistory(Base):
     contributing_pairs: Mapped[Optional[dict]] = mapped_column(
         JSON, nullable=True, deferred=True
     )
-    # Issue #90 — Tournament Participation Bonus (Gap 1 from #88).
-    # Discriminator: 'pair' = standard pairwise round update (legacy
-    # behaviour). 'tpb' = synthetic, event-level tier-weighted bonus whose
-    # round_id points at the event's FINAL round. The unique constraint
-    # includes ``kind`` so a pair row and a tpb row can coexist for the same
-    # (athlete, final round) without colliding.
+    # Discriminator: 'pair' = standard pairwise round update, the only kind
+    # written since TPB was removed in #175.
+    #
+    # 'tpb' rows (Issue #90) were a synthetic, event-level tier-weighted bonus
+    # keyed to the event's FINAL round. They are no longer produced, but rows
+    # written before #175 persist in prod until the next force-reset rebuild,
+    # so the value stays permitted by the check constraint and read paths
+    # still filter on kind='pair'. Drop 'tpb' from the constraint only after a
+    # rebuild has purged those rows.
     kind: Mapped[str] = mapped_column(String, nullable=False, default="pair")
 
     athlete: Mapped[Athlete] = relationship(back_populates="rating_history")

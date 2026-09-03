@@ -107,28 +107,6 @@ GLICKO2_VOLATILITY_MAX_ITER = 100  # Illinois iteration hard cap (safety)
 # *average* close to these numbers but vary by opponent-φ. A proper regrid
 # sweep is filed as a #51 follow-up issue (#80).
 #
-# Default Tournament Participation Bonus table (Issue #90 — Gap 1 from #88).
-#
-# Per-tier ordered list of μ-credit values for the top-K finishers (rank 1
-# first). Top-K finishers receive the per-rank bonus; the *total* bonus is
-# then debited uniformly across ALL participants (top-K included) so the
-# event-level sum is zero. See ``compute_tournament_participation_bonus``.
-#
-# Starting values per the #90 issue body. Olympics decay linearly to 0 at
-# rank 8; lower tiers compress the curve and stop earlier.
-_DEFAULT_TPB_TABLE: dict[EventTier, list[float]] = {
-    EventTier.OLYMPICS: [30.0, 22.5, 15.0, 11.25, 7.5, 5.0, 2.5, 0.0],
-    EventTier.WORLD_CHAMPIONSHIP: [20.0, 15.0, 10.0, 7.5, 5.0, 3.33, 1.67, 0.0],
-    EventTier.WORLD_CUP: [12.0, 9.0, 6.0, 4.0, 2.0, 0.0],
-    EventTier.CONTINENTAL: [5.0, 3.33, 1.67, 0.0],
-}
-
-
-def _default_tpb_table() -> dict[EventTier, list[float]]:
-    """Deep copy of the default TPB table for :class:`EloConfig`."""
-    return copy.deepcopy(_DEFAULT_TPB_TABLE)
-
-
 # K values updated 2026-05-27 per the regrid sweep in docs/K_REGRID_REPORT.md.
 # WC / WCh / Continental cells with data in the source DB were re-tuned via
 # coordinate descent to keep μ-p95 in the elite band [1900, 2200]; Olympics
@@ -313,12 +291,6 @@ class EloConfig:
         default_factory=_default_k_factors
     )
 
-    # Tournament Participation Bonus (Issue #90 — Gap 1 from #88)
-    # Per-tier ordered list of μ-credit values for top-K finishers (rank 1
-    # first). See ``compute_tournament_participation_bonus`` for the
-    # zero-sum debit math.
-    tpb_table: dict[EventTier, list[float]] = field(default_factory=_default_tpb_table)
-
     # G-Elo bucketed MOV (Issue #84 — Szczecinski 2022 benchmark variant).
     # When ``None`` (the default), the engine uses the production continuous
     # MOV formula ``min(1 + gap/max_gap, margin_cap)``. When set to a mapping
@@ -391,7 +363,7 @@ def engine_version_tag(config: EloConfig | None = None) -> str:
     -----
     Deterministic and side-effect-free. Used by the forecast snapshot job to
     stamp ``EventForecast.engine_version`` and ``EventForecastScore.engine_version``
-    so changes to K factors, σ_inactivity, MOV, TPB are all reflected. Frozen
+    so changes to K factors, σ_inactivity and MOV are all reflected. Frozen
     rows are never re-snapshotted across version bumps; the new version applies
     only to events that don't yet have a row for that version.
     """
@@ -426,7 +398,6 @@ SIGMA_CEILING = DEFAULT_CONFIG.sigma_ceiling
 MOV_RATING_SCALE = DEFAULT_CONFIG.mov_rating_scale
 MOV_SOFTENING = DEFAULT_CONFIG.mov_softening
 K_FACTOR_TABLE = DEFAULT_CONFIG.k_factor_table
-TPB_TABLE = DEFAULT_CONFIG.tpb_table
 
 PHI_FLOOR = SIGMA_FLOOR / GLICKO2_SCALE
 PHI_CEILING = SIGMA_CEILING / GLICKO2_SCALE
@@ -516,17 +487,6 @@ class AthleteRating:
     # fresh backfill re-seeds at GLICKO2_DEFAULT_VOLATILITY. Evolved per round
     # by the full Illinois volatility iteration.
     volatility: float = GLICKO2_DEFAULT_VOLATILITY
-
-
-@dataclass
-class TPBContribution:
-    """Per-athlete μ delta from the Tournament Participation Bonus (Issue #90)."""
-
-    athlete_id: int
-    rank: int
-    gross_bonus: float  # tier-table credit for top-K, 0.0 for the rest
-    debit: float  # share of total bonus pulled back, applied to every athlete
-    delta: float  # gross_bonus - debit; sums to zero across the event
 
 
 # ---------------------------------------------------------------------------
@@ -1181,78 +1141,3 @@ def calculate_round_updates(
         )
 
     return updates
-
-
-# ---------------------------------------------------------------------------
-# Tournament Participation Bonus (Issue #90 — Gap 1 from #88)
-# ---------------------------------------------------------------------------
-#
-# A tier-weighted, zero-sum μ credit applied *per event* on top of the
-# pairwise round updates. The pairwise math is unchanged — TPB is layered on
-# afterward by the backfill, written as a separate ``RatingHistory`` row with
-# ``kind='tpb'`` whose ``round_id`` points at the event's FINAL round.
-#
-# Why a separate layer (not folded into K)?
-#   1. Keeps the pairwise zero-sum invariant clean — pair tests still pass.
-#   2. Lets the breakdown page render TPB as its own line: easier to explain
-#      and easier to ablate.
-#   3. Backtests can A/B turn TPB on/off without re-running the pair update.
-#
-# Zero-sum mechanism
-#   gross_bonus[r] = tpb_table[tier][r-1]   (0.0 if r > len(table))
-#   total_bonus    = Σ gross_bonus
-#   debit          = total_bonus / N         (N = number of participants)
-#   delta          = gross_bonus - debit     (sums to zero across the field)
-#
-# DNS athletes are excluded from the field count entirely. They neither
-# receive the bonus nor share in the debit.
-
-
-def compute_tournament_participation_bonus(
-    results: list[AthleteResult],
-    event_tier: EventTier,
-    config: EloConfig = DEFAULT_CONFIG,
-) -> list[TPBContribution]:
-    """Per-athlete μ deltas for the tier-weighted Tournament Participation Bonus.
-
-    Top-K finishers (per ``config.tpb_table[event_tier]``) receive a gross μ
-    credit; the total credit is then debited uniformly across every
-    participant so the sum of deltas is exactly zero.
-
-    Args:
-        results: Per-athlete final standings for the event (use the rank from
-            the FINAL round). DNS athletes are silently excluded.
-        event_tier: One of :class:`EventTier`. Determines the tier curve.
-        config: Engine config providing ``tpb_table``.
-
-    Returns:
-        One :class:`TPBContribution` per non-DNS athlete, ordered by rank.
-        Returns an empty list if fewer than 2 athletes finished — there's no
-        "field" for a 1-athlete event, so the bonus is meaningless.
-    """
-    active = [r for r in results if not r.dns]
-    if len(active) < 2:
-        return []
-
-    table = config.tpb_table.get(event_tier, [])
-    n_field = len(active)
-
-    gross: dict[int, float] = {}
-    for res in active:
-        idx = res.rank - 1
-        gross[res.athlete_id] = table[idx] if 0 <= idx < len(table) else 0.0
-
-    total_bonus = sum(gross.values())
-    debit = total_bonus / n_field if n_field > 0 else 0.0
-
-    contributions = [
-        TPBContribution(
-            athlete_id=res.athlete_id,
-            rank=res.rank,
-            gross_bonus=gross[res.athlete_id],
-            debit=debit,
-            delta=gross[res.athlete_id] - debit,
-        )
-        for res in active
-    ]
-    return sorted(contributions, key=lambda c: c.rank)
