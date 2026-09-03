@@ -69,6 +69,9 @@ data/backtests/
 # Agent-generated design handoff bundles (large, local references only)
 agent-resources/
 
+# Lavish review artifacts (agent-generated plan/comparison pages, local-only)
+.lavish/
+
 # Private knowledge — local-only, kept out of the public repo. The public
 # surface is production code (src/, api/, vercel.json) plus the pipeline
 # workflows and scripts they call. These files reveal internal architecture,
