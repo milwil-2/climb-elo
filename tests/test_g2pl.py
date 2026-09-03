@@ -3,8 +3,8 @@
 Each numbered test maps to the "Invariant tests (ship with the
 implementation)" list in ``docs/PLAN_CHALLENGER_G2PL.md``:
 
-1. field-size independence (winner Δμ at n=10 vs n=80 within 10%;
-   xfail for the incumbent, which fails it by design — #174),
+1. field-size independence (winner Δμ at n=10 vs n=80 within 10%; the
+   incumbent engine holds this too since #174 restored its base-K divisor),
 2. higher rank ⇒ Δμ monotone within a round (equal φ),
 3. σ′ ∈ [floor, ceiling] after every update; φ shrinks on evidence,
 4. beating a high-φ opponent moves you less than beating a low-φ one,
