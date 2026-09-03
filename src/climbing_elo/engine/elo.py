@@ -196,10 +196,21 @@ class EloConfig:
           ranking yields (n−1) pairwise "games" per athlete, but a single
           multi-athlete ranking is **not** (n−1) independent Glicko-2 games —
           left undamped it collapses σ straight to the floor after one event
-          (mirroring the μ over-counting that ``pair_k = base_k/(n−1)`` already
-          fixes). ``1.0`` (default) = full normalization (one round ≈ one game
+          (mirroring the μ-side ``k_field_normalization_exponent`` damping
+          below). ``1.0`` (default) = full normalization (one round ≈ one game
           of evidence); ``0.0`` = the old over-counting behaviour (escape hatch
           for ablation / regression tests).
+
+    μ field-size normalization (Issue #174)
+        * ``k_field_normalization_exponent`` — divides the round's base K by
+          ``max(n−1, 1) ** exponent`` before the pairwise μ accumulation, where
+          ``n`` is the round's field size. Each athlete gets (n−1) pairwise
+          contributions from the Plackett-Luce decomposition, so without this
+          the per-round μ movement grows linearly with the entry-list size.
+          ``1.0`` (default) = full normalization (total μ movement per round is
+          roughly field-size invariant); ``0.0`` = the un-normalized behaviour
+          that shipped between #51 and #174 (ablation / regression escape
+          hatch).
 
     MOV gap-conditioning (Issue #53, 538-style)
         * ``mov_rating_scale`` — Δμ at which the damping factor becomes
@@ -257,6 +268,14 @@ class EloConfig:
     # Glicko-2 game of evidence rather than (n-1). 1.0 = full normalization,
     # 0.0 = legacy over-counting (collapses σ to the floor after one event).
     sigma_field_normalization_exponent: float = 1.0
+
+    # μ field-size normalization (Issue #174). Divide the round's base K by
+    # max(n-1, 1) ** exponent so the (n-1) pairwise contributions the
+    # Plackett-Luce decomposition hands each athlete sum to a field-size
+    # invariant μ movement. 1.0 = full normalization (restores the pre-#51
+    # `pair_k = base_k / (n - 1)`), 0.0 = the un-normalized #51..#174
+    # behaviour where per-round Δμ scales linearly with the entry list.
+    k_field_normalization_exponent: float = 1.0
 
     # MOV gap-conditioning (Issue #53). Values locked 2026-05-28 by the #85
     # grid sweep: (rating_scale, softening, margin_cap) = (200, 2.2, 1.7) was
@@ -847,6 +866,9 @@ def calculate_round_updates(
           and margin multiplier per discipline.
        b. K_eff = K_base(tier,round) · g(φ_j_internal) · margin_mult
           (decision 2: MOV stays separate from s_j, folds into K).
+          K_base is first divided by ``max(n−1, 1)`` raised to
+          ``config.k_field_normalization_exponent`` (Issue #174), so per-round
+          μ movement does not scale with the entry-list size.
        c. delta_pair = K_eff · (1.0 − E)
           μ_i += +delta_pair ; μ_j += -delta_pair  (zero-sum on μ).
        d. Accumulate Glicko-2 variance contribution for *both* sides into the
@@ -902,7 +924,21 @@ def calculate_round_updates(
     if len(active) < 2:
         return []
 
+    n_field = len(active)
     base_k = get_k_factor(event_tier, round_type, config)
+
+    # μ field-size normalization (Issue #174). The Plackett-Luce decomposition
+    # gives every athlete (n−1) pairwise contributions per round, so a flat
+    # per-pair K makes the per-round μ movement grow linearly with the entry
+    # list — a 90-athlete qualification moves ratings ~10x more than a
+    # 10-athlete one for the same relative performance. Divide the base K by
+    # max(n−1, 1) ** exponent so one round contributes a field-size invariant
+    # amount of μ. exponent=1.0 (default) restores the pre-#51
+    # ``pair_k = base_k / (n - 1)``; exponent=0.0 reproduces the un-normalized
+    # #51..#174 behaviour (ablation knob). Mirrors the σ-side normalization
+    # applied to ``v_inv`` / ``delta_terms`` below.
+    if n_field > 1 and config.k_field_normalization_exponent:
+        base_k /= float(n_field - 1) ** config.k_field_normalization_exponent
 
     # 1) Inflate φ for inactivity, store the inflated display-scale RDs.
     sigma_inflated: dict[int, float] = {}
@@ -1045,11 +1081,11 @@ def calculate_round_updates(
         # left undamped it collapses σ to the floor after one event. Divide the
         # accumulated evidence by max(n−1, 1) ** exponent so one round
         # contributes ≈ one game (exponent=1.0, the default). This mirrors the
-        # μ-side ``pair_k = base_k/(n−1)`` normalization. exponent=0.0 restores
-        # the legacy over-counting behaviour (escape hatch / ablation knob).
+        # μ-side ``k_field_normalization_exponent`` normalization applied to
+        # ``base_k`` above (Issue #174). exponent=0.0 restores the legacy
+        # over-counting behaviour (escape hatch / ablation knob).
         v_inv = v_inv_sum.get(aid, 0.0)
         delta_terms = delta_terms_sum.get(aid, 0.0)
-        n_field = len(active)
         if n_field > 1 and config.sigma_field_normalization_exponent:
             norm = float(n_field - 1) ** config.sigma_field_normalization_exponent
             v_inv /= norm
