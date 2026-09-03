@@ -299,8 +299,9 @@ def _get_90d_deltas(
 
     # Rank each athlete's history rows by recency (most-recent event first),
     # partitioned per athlete. ``RatingHistory.id`` is a deterministic
-    # tiebreaker for rows sharing a start_date (multiple rounds / a tpb row in
-    # one event); the original per-row query left ties unordered, so this is a
+    # tiebreaker for rows sharing a start_date (several rounds, or a legacy
+    # tpb row, in one event); the original per-row query left ties unordered,
+    # so this is a
     # strict superset of its behaviour and matches on all non-tied data.
     rn = (
         func.row_number()
@@ -945,10 +946,11 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
 
             # Top-3 opponents = pull pairs from the *last* (i.e. final) round's
             # contributing_pairs, sorted by abs(delta), then resolve names.
-            # Only consider kind='pair' rows: TPB rows (#90) store
-            # contributing_pairs as a dict ({"rank":…,"gross_bonus":…}), not a
-            # list of pair-dicts, so iterating one would yield string keys and
-            # crash p.get(). The isinstance guard is belt-and-suspenders.
+            # Only consider kind='pair' rows. TPB was removed in #175, but
+            # legacy kind='tpb' rows persist until the next force-reset
+            # rebuild and store contributing_pairs as a dict, not a list of
+            # pair-dicts, so iterating one would crash p.get(). The isinstance
+            # guard is belt-and-suspenders.
             last_round_rh = max(
                 (
                     h
@@ -1982,30 +1984,6 @@ async def v2_breakdown(request: Request, athlete_id: int, event_id: int):
                 }
             )
 
-        # Issue #90: load any Tournament Participation Bonus row for this
-        # athlete + event and surface it as a separate breakdown section.
-        tpb_row = session.execute(
-            select(RatingHistory)
-            .options(undefer(RatingHistory.contributing_pairs))
-            .where(
-                RatingHistory.athlete_id == athlete_id,
-                RatingHistory.event_id == event_id,
-                RatingHistory.kind == "tpb",
-            )
-        ).scalar_one_or_none()
-        tpb_section = None
-        if tpb_row is not None:
-            payload = tpb_row.contributing_pairs or {}
-            tpb_section = {
-                "mu_before": round(tpb_row.mu_before, 1),
-                "mu_after": round(tpb_row.mu_after, 1),
-                "delta": round(tpb_row.mu_after - tpb_row.mu_before, 1),
-                "rank": payload.get("rank"),
-                "gross_bonus": round(payload.get("gross_bonus", 0.0), 2),
-                "debit": round(payload.get("debit", 0.0), 2),
-                "tier": payload.get("tier", "").replace("_", " ").title(),
-            }
-
         ticker = _ticker_context(session)
 
     ctx = {
@@ -2016,7 +1994,6 @@ async def v2_breakdown(request: Request, athlete_id: int, event_id: int):
             "season": event.season,
         },
         "rounds": rounds_breakdown,
-        "tpb": tpb_section,
         **ticker,
         **_nav_context("events"),
     }

@@ -173,8 +173,8 @@ class G2PLConfig:
         ``glicko2_sigma_inactivity``, ``sigma_floor`` / ``sigma_ceiling`` and
         the MOV shape parameters (``margin_cap``, ``mov_rating_scale``,
         ``mov_softening``, ``boulder_margin_max_gap``). Its ``k_factor_table``
-        and ``tpb_table`` are deliberately **not** consulted: ``g2pl`` replaces
-        K with :attr:`importance_weights` and ships without TPB.
+        is deliberately **not** consulted: ``g2pl`` replaces K with
+        :attr:`importance_weights`.
     importance_weights:
         ``w(tier, round_type)`` — the single step-size table. Defaults to
         :data:`DEFAULT_IMPORTANCE_WEIGHTS`.
@@ -320,7 +320,6 @@ def calculate_g2pl_round_updates(
     * No ``k_pair = min(k_eff_i, k_eff_j)`` — there is no per-pair K.
     * MOV is either absent (``mov_mode="off"``) or folded into the *outcome*
       (``"margin"``), never into the step size.
-    * No TPB layer.
     * Not zero-sum on μ — see :func:`mu_drift`.
 
     Args:
