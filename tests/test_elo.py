@@ -19,6 +19,8 @@ from climbing_elo.engine.elo import (
     SIGMA_FLOOR,
     AthleteRating,
     AthleteResult,
+    DEFAULT_CONFIG,
+    EloConfig,
     _gap_conditioning_factor,
     calculate_round_updates,
     compute_boulder_margin_multiplier,
@@ -1295,3 +1297,96 @@ def test_full_volatility_round_emits_evolving_volatility():
     )
     for u in updates:
         assert u.volatility_after > 0.0 and math.isfinite(u.volatility_after)
+
+
+# ---------------------------------------------------------------------------
+# μ field-size normalization (Issue #174)
+# ---------------------------------------------------------------------------
+
+
+def _field_size_round(n: int, exponent: float | None = None):
+    """One BOULDER World Cup qualification of *n* athletes, monotone scores.
+
+    Every athlete starts from the same μ with σ=100, and finishing scores
+    decrease monotonically with rank, so the only thing varying between calls
+    is the size of the entry list.
+    """
+    results = [
+        AthleteResult(athlete_id=i, rank=i + 1, score_normalized=float(n - i))
+        for i in range(n)
+    ]
+    ratings = {
+        i: AthleteRating(
+            athlete_id=i,
+            mu=1500.0,
+            sigma=100.0,
+            n_events=10,
+            provisional=False,
+        )
+        for i in range(n)
+    }
+    kwargs = {}
+    if exponent is not None:
+        kwargs["config"] = EloConfig(k_field_normalization_exponent=exponent)
+    updates = calculate_round_updates(
+        results,
+        ratings,
+        EventTier.WORLD_CUP,
+        RoundType.QUALIFICATION,
+        date(2024, 6, 1),
+        discipline=Discipline.BOULDER,
+        **kwargs,
+    )
+    by_id = {u.athlete_id: u for u in updates}
+    winner = by_id[0]
+    total = sum(u.mu_after - u.mu_before for u in updates)
+    return winner.mu_after - winner.mu_before, total
+
+
+def test_winner_delta_is_field_size_invariant():
+    """Invariant #1: winner Δμ at n=10 and n=80 must agree within 10%.
+
+    Issue #174 — the Plackett-Luce decomposition hands each athlete (n−1)
+    pairwise contributions, so without the base-K field normalization the same
+    relative performance earns ~10x more μ in a big qualification than in a
+    small one.
+    """
+    small, _ = _field_size_round(10)
+    large, _ = _field_size_round(80)
+
+    assert small > 0.0 and large > 0.0
+    assert abs(large - small) / small < 0.10, (
+        f"winner Δμ should be field-size invariant; n=10 → {small:.2f}, "
+        f"n=80 → {large:.2f}"
+    )
+
+
+def test_field_size_normalization_monotone_across_field_sizes():
+    """Δμ stays in a narrow band across the real range of qual field sizes."""
+    deltas = [_field_size_round(n)[0] for n in (10, 20, 40, 80, 160)]
+    assert min(deltas) > 0.0
+    assert max(deltas) / min(deltas) < 1.15, deltas
+
+
+def test_field_size_normalization_zero_sum_preserved():
+    """Normalizing K rescales the round; it must not break μ zero-sum."""
+    for n in (10, 80):
+        _, total = _field_size_round(n)
+        assert abs(total) < 1e-6, f"n={n}: μ updates should sum to zero, got {total}"
+
+
+def test_k_field_normalization_exponent_zero_restores_legacy_scaling():
+    """exponent=0.0 is the ablation escape hatch: Δμ scales with (n−1) again."""
+    small, _ = _field_size_round(10, exponent=0.0)
+    large, _ = _field_size_round(80, exponent=0.0)
+    # (n−1) grows 9 → 79, so the un-normalized winner delta grows ~8.8x.
+    assert large / small > 5.0, (
+        f"exponent=0.0 should reproduce the un-normalized #51..#174 behaviour; "
+        f"n=10 → {small:.2f}, n=80 → {large:.2f}"
+    )
+
+
+def test_k_field_normalization_default_matches_explicit_one():
+    """The default config is full normalization (exponent 1.0)."""
+    assert DEFAULT_CONFIG.k_field_normalization_exponent == 1.0
+    assert _field_size_round(24)[0] == _field_size_round(24, exponent=1.0)[0]

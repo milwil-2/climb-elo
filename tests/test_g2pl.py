@@ -160,12 +160,15 @@ def test_field_size_ablation_exponent_zero_reintroduces_bias():
     assert ratio > 1.1, f"expected field-size bias at exponent=0, got {ratio:.3f}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="#174: incumbent μ deltas scale with entry-list size by design "
-    "(flat K·(1−E) accumulation, no field normalization since #51).",
-)
 def test_field_size_independence_incumbent():
+    """The incumbent engine satisfies invariant #1 as of #174.
+
+    It used to be an expected failure: between #51 and #174 the μ side was a
+    flat K·(1−E) accumulation with no field normalization, so deltas scaled
+    linearly with the entry list. #174 restored the base-K divisor
+    (``EloConfig.k_field_normalization_exponent``), so the incumbent now holds
+    the same invariant the g2pl challenger does.
+    """
     small_results, small_ratings = _field(10)
     big_results, big_ratings = _field(80)
     d_small = _winner_delta(

@@ -125,13 +125,14 @@ def test_cold_start_athlete_climbs_quickly_under_glicko2():
     newcomer_mu = ratings[NEWCOMER_ID].mu
     top_veteran_mu = max(ratings[aid].mu for aid in veteran_ids)
     newcomer_climb = newcomer_mu - DEFAULT_MU
-    # Structural cold-start invariant under Glicko-2 (independent of K):
-    # high-σ athletes move proportionally more per round than established
-    # ones. After 5 wins a fresh newcomer (σ=350) should climb significantly
-    # — at least ~150μ — from default. The exact magnitude depends on K
-    # (re-tuned 2026-05-27 per #80, see docs/K_REGRID_REPORT.md); this
-    # threshold tracks the structural property, not the K-specific level.
-    assert newcomer_climb >= 150.0, (
+    # Cold-start direction check. After 5 wins a fresh newcomer (σ=350) should
+    # climb materially from default. The absolute magnitude is K-scale
+    # dependent — it moves with the K table (re-tuned 2026-05-27 per #80, see
+    # docs/K_REGRID_REPORT.md) and shrank ~7x when #174 restored the μ
+    # field-size normalization (base K / (n−1), n=8 here). The K table has not
+    # yet been re-derived for the normalized engine (that is #189), so this
+    # threshold tracks direction and materiality, not a K-specific level.
+    assert newcomer_climb >= 25.0, (
         f"After 5 wins, newcomer climbed only {newcomer_climb:.1f}μ from "
         f"default — Glicko-2 cold-start isn't lifting fresh athletes "
         f"enough (current μ={newcomer_mu:.1f}, top veteran={top_veteran_mu:.1f})."
@@ -193,10 +194,14 @@ def test_cold_start_loser_drops_quickly_under_glicko2():
             ratings[upd.athlete_id].last_event_at = event_date
         event_date += timedelta(days=30)
 
-    # Newcomer should be well below μ=1500 after consistent losses.
-    assert ratings[NEWCOMER_ID].mu < DEFAULT_MU - 30, (
+    # Newcomer should be clearly below μ=1500 after consistent losses. The
+    # absolute drop is K-scale dependent and shrank ~7x when #174 restored the
+    # μ field-size normalization (base K / (n−1), n=8 here) — see the note on
+    # the climbing test above; #189 re-derives the K table for the normalized
+    # engine.
+    assert ratings[NEWCOMER_ID].mu < DEFAULT_MU - 10, (
         f"After 5 last-place finishes, newcomer μ={ratings[NEWCOMER_ID].mu:.1f} "
-        f"should drop well below default 1500."
+        f"should drop clearly below default 1500."
     )
 
 
