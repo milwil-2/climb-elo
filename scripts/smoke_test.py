@@ -292,7 +292,7 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
     assert_route(
         "GET / — monochrome landing",
         "/",
-        must_contain=["Climbing ELO", "Ratings, not", "Boulder"],
+        must_contain=["Climbing ELO", "Skill levels, not", "Boulder"],
         base_url=base_url,
     )
     ss(base_url + "/", "landing")
