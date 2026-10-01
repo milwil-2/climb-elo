@@ -14,7 +14,7 @@
   .ai-controls{display:grid;grid-template-columns:1fr auto auto;gap:14px;align-items:center;margin:32px 0 18px}
   @media (max-width:760px){.ai-controls{grid-template-columns:1fr}}
 
-  /* Search box + typeahead dropdown (global search via /api/v1/athletes). */
+  /* Search box + typeahead dropdown (global search via /search/athletes). */
   .ai-search-wrap{position:relative}
   .search{
     display:flex;align-items:center;gap:10px;padding:11px 16px;
@@ -193,7 +193,7 @@
   if (btnRating) btnRating.addEventListener('click', function() { setActive(btnRating); sortRows('rating'); });
   if (btnName) btnName.addEventListener('click', function() { setActive(btnName); sortRows('name'); });
 
-  // ── Global typeahead via /api/v1/athletes (debounced ~280ms).
+  // Global typeahead via /search/athletes (debounced ~280ms).
   var input = document.getElementById('ai-search');
   var dd = document.getElementById('ai-typeahead');
   var disc = {{ disc | tojson }};
@@ -228,7 +228,7 @@
   }
 
   function fetchResults(q) {
-    var url = '/api/v1/athletes?q=' + encodeURIComponent(q) +
+    var url = '/search/athletes?q=' + encodeURIComponent(q) +
       '&gender=' + encodeURIComponent(gender) +
       '&discipline=' + encodeURIComponent(disc) + '&limit=12';
     fetch(url, { headers: { 'Accept': 'application/json' } })
@@ -238,7 +238,7 @@
         // discipline. If that's empty, retry without the discipline filter so
         // the global typeahead still surfaces matches.
         if (!items.length) {
-          return fetch('/api/v1/athletes?q=' + encodeURIComponent(q) +
+          return fetch('/search/athletes?q=' + encodeURIComponent(q) +
               '&gender=' + encodeURIComponent(gender) + '&limit=12',
               { headers: { 'Accept': 'application/json' } })
             .then(function(r) { return r.ok ? r.json() : []; });

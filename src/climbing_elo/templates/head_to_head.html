@@ -376,7 +376,7 @@
     }
 
     function fetchResults(q) {
-      var url = '/api/v1/athletes?q=' + encodeURIComponent(q) + '&limit=12';
+      var url = '/search/athletes?q=' + encodeURIComponent(q) + '&limit=12';
       if (gender) url += '&gender=' + encodeURIComponent(gender);
       // Note: we do NOT filter by discipline here so cross-discipline searches
       // still surface athletes; the result page resolves the rating.

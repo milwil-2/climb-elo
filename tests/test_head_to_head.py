@@ -276,7 +276,7 @@ class TestHeadToHeadForm:
         assert 'id="search-b"' in html
         assert 'id="gender-seg"' in html
         # Typeahead is wired to the search API.
-        assert "/api/v1/athletes?q=" in html
+        assert "/search/athletes?q=" in html
 
     def test_form_offers_cross_gender_scope(self, client):
         """The gender control exposes an explicit all/cross-gender option."""

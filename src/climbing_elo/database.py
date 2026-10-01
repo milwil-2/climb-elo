@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -63,7 +64,23 @@ def get_engine(db_path: Path | str | None = None) -> Engine:
             "SQLite fallback was removed in Issue #82."
         )
 
-    # SQLite URLs (mostly used by the test suite) — no SSL / pool tuning.
+    # In-memory databases are deliberately isolated between callers/tests.
+    if url.startswith("sqlite") and (
+        ":memory:" in url or url.rstrip("/") in {"sqlite:", "sqlite+pysqlite:"}
+    ):
+        return create_engine(url, echo=False, connect_args={"timeout": 60})
+
+    return _configured_engine(url, os.environ.get("CLIMBING_ELO_DB_NULLPOOL") == "1")
+
+
+@lru_cache(maxsize=8)
+def _configured_engine(url: str, force_nullpool: bool) -> Engine:
+    """Reuse engine pools and SQL compilation across requests in one process.
+
+    Sessions remain independent. The URL and pool mode are part of the key so
+    changing either setting never sends requests to the previous database.
+    Explicit ``db_path`` callers retain control of their engine's lifecycle.
+    """
     if url.startswith("sqlite"):
         return create_engine(url, echo=False, connect_args={"timeout": 60})
 
@@ -79,7 +96,6 @@ def get_engine(db_path: Path | str | None = None) -> Engine:
     # gets a fresh connection, no lifetime concerns. Trades ~50ms extra
     # latency per query for connection resilience. The daily cron does
     # NOT set this; only invoke when you need it.
-    force_nullpool = os.environ.get("CLIMBING_ELO_DB_NULLPOOL") == "1"
     if _is_transaction_pooler(url) or force_nullpool:
         return create_engine(
             url,

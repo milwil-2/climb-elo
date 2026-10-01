@@ -1,7 +1,7 @@
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi import _rate_limit_exceeded_handler
@@ -9,10 +9,12 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from climbing_elo.api.cache_headers import CacheControlMiddleware
+from climbing_elo.api.api_auth import PrivateAPIMiddleware
 from climbing_elo.api.limiter import limiter
 from climbing_elo.api.security_headers import SecurityHeadersMiddleware
 from climbing_elo.api.routes import router as html_router
 from climbing_elo.api.v1_routes import router as v1_router
+from climbing_elo.api.v1_routes import search_router
 from climbing_elo.api.sse import router as sse_router
 from climbing_elo.database import _database_url, init_db
 
@@ -36,7 +38,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description=(
             "ELO rating system for World Climbing competitions. "
-            "HTML dashboard at `/` — REST API under `/api/v1/`."
+            "Public dashboard at `/`; private REST API under `/api/v1/`."
         ),
         docs_url="/docs",
         redoc_url="/redoc",
@@ -50,21 +52,14 @@ def create_app() -> FastAPI:
     application.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     application.add_middleware(SlowAPIMiddleware)
 
-    # Allow all origins — this is a public API.
-    # POST is allowed for /api/v1/projections (idempotent: same input → same output,
-    # bounded compute, no DB writes). Credentials are NOT allowed (default), so
-    # the wildcard origin is safe.
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["*"],
-    )
-
     # Edge cache-control on read-only GET routes (Issue #97 Tier 1) so Vercel's
-    # edge serves repeat hits without re-invoking the function. Excludes /live
-    # (real-time) and /static (own validators). See cache_headers.py.
+    # edge serves repeat hits without re-invoking the function. Live and
+    # private responses are uncached; static assets have their own policy.
     application.add_middleware(CacheControlMiddleware)
+
+    application.add_middleware(
+        PrivateAPIMiddleware, api_key=os.environ.get("CLIMBING_ELO_API_KEY")
+    )
 
     # Security response headers + CSP on HTML responses (Issue #208). Excludes
     # the interactive API docs (/docs, /redoc, /openapi.json), which need their
@@ -77,7 +72,13 @@ def create_app() -> FastAPI:
     application.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     application.include_router(html_router)
     application.include_router(v1_router)
+    application.include_router(search_router)
     application.include_router(sse_router)
+
+    @application.get("/health", include_in_schema=False)
+    async def health():
+        return {"status": "ok"}
+
     return application
 
 

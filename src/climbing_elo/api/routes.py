@@ -23,6 +23,7 @@ from climbing_elo.cache import (
     predictions_cache,
     ratings_fingerprint,
 )
+from climbing_elo.api.limiter import limiter
 from climbing_elo.database import get_session_factory
 from climbing_elo.engine.activity import (
     INACTIVE_THRESHOLD_MONTHS,
@@ -64,15 +65,10 @@ router = APIRouter()
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-_TEMPLATES_DIR_NAME = "templates"
-
 
 def _templates(request: Request):
-    """Return Jinja2Templates pointed at templates/."""
-    from fastapi.templating import Jinja2Templates
-
-    d = Path(__file__).resolve().parent.parent / _TEMPLATES_DIR_NAME
-    return Jinja2Templates(directory=str(d))
+    """Reuse the app's compiled-template cache across HTML requests."""
+    return request.app.state.templates
 
 
 def _session():
@@ -1149,6 +1145,7 @@ async def v2_athlete_profile(request: Request, athlete_id: int):
 
 
 @router.get("/projections", response_class=HTMLResponse)
+@limiter.shared_limit("12/minute", scope="web-projections")
 async def v2_projections(request: Request):
     t = _templates(request)
 
@@ -2225,7 +2222,8 @@ async def v2_live_event(request: Request, event_id: int, gender: str = "M"):
 
 
 @router.get("/live/{event_id}/projections.json")
-async def live_projections_json(event_id: int, gender: str = "M"):
+@limiter.shared_limit("12/minute", scope="web-projections")
+async def live_projections_json(request: Request, event_id: int, gender: str = "M"):
     """Return current projection data for a live event as JSON.
 
     The SSE consumer in templates/live.html calls this endpoint so the
@@ -2407,6 +2405,7 @@ _V2_PAGE_SIM_COUNT = 2_000
 
 
 @router.get("/predictions", response_class=HTMLResponse)
+@limiter.shared_limit("12/minute", scope="web-projections")
 async def v2_predictions(request: Request):
     """List upcoming World Cup events with ELO-based outcome predictions.
 
@@ -2418,6 +2417,27 @@ async def v2_predictions(request: Request):
     grouped: list[dict] = []
 
     with _session() as session:
+        # Registered rosters can change without a rating backfill. Include
+        # upcoming event/result counts as well as ratings in the page key.
+        event_count, result_count, last_result = session.execute(
+            select(
+                func.count(func.distinct(Event.id)),
+                func.count(Result.id),
+                func.coalesce(func.max(Result.id), 0),
+            )
+            .select_from(Event)
+            .outerjoin(Round, Round.event_id == Event.id)
+            .outerjoin(Result, Result.round_id == Round.id)
+            .where(Event.start_date >= today)
+        ).one()
+        page_key = (
+            f"html:predictions:{today}:{ratings_fingerprint(session)}"
+            f":roster:{event_count}:{result_count}:{last_result}"
+        )
+        cached_ctx = html_page_cache.get(page_key)
+        if cached_ctx is not None:
+            return t.TemplateResponse(request, "predictions.html", cached_ctx)
+
         for disc_key, disc_label, disc_enum in _V2_PREDICTIONS_DISCIPLINES:
             stmt = (
                 select(Event)
@@ -2638,6 +2658,7 @@ async def v2_predictions(request: Request):
         **ticker,
         **_nav_context("predictions"),
     }
+    html_page_cache.set(page_key, ctx)
     return t.TemplateResponse(request, "predictions.html", ctx)
 
 
@@ -2648,6 +2669,7 @@ async def v2_predictions(request: Request):
 
 
 @router.get("/predictions/{event_id}", response_class=HTMLResponse)
+@limiter.shared_limit("12/minute", scope="web-projections")
 async def v2_predictions_event(request: Request, event_id: int):
     """Per-event prediction view.
 

@@ -174,7 +174,7 @@ def client(test_db_path, test_factory):
     _db.get_engine = patched_get_engine  # type: ignore[assignment]
 
     app = create_app()
-    tc = TestClient(app)
+    tc = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
 
     yield tc
 
@@ -363,7 +363,7 @@ def view_client(view_db_path, view_factory):
     _db.get_engine = patched_get_engine  # type: ignore[assignment]
 
     app = create_app()
-    tc = TestClient(app)
+    tc = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
     yield tc
 
     _db.get_engine = original_get_engine
@@ -540,6 +540,16 @@ def test_athlete_search_gender_filter(client):
     assert all(a["gender"] == "F" for a in body)
 
 
+def test_public_search_remains_available_without_a_token(client):
+    public = TestClient(client.app)
+    response = public.get("/search/athletes?q=Janja&gender=F")
+    assert response.status_code == 200
+    assert response.json()[0]["name"] == "Janja Garnbret"
+    assert public.get("/api/v1/athletes?q=Janja").status_code == 401
+    assert public.get("/search/athletes?q=a").json() == []
+    assert public.get("/search/athletes?q=%25%25").json() == []
+
+
 def test_athlete_search_discipline_mu(client):
     """With a discipline, mu reflects that discipline's rating."""
     r = client.get("/api/v1/athletes?q=garnbret&discipline=lead")
@@ -708,10 +718,10 @@ def test_event_detail_not_found(client):
 # ---------------------------------------------------------------------------
 
 
-def test_cors_allows_all_origins(client):
+def test_private_api_does_not_allow_cross_origin_browser_access(client):
     r = client.get("/api/v1/disciplines", headers={"Origin": "https://example.com"})
     assert r.status_code == 200
-    assert r.headers.get("access-control-allow-origin") == "*"
+    assert "access-control-allow-origin" not in r.headers
 
 
 # ---------------------------------------------------------------------------
@@ -985,7 +995,7 @@ def ext_client(extended_db_path, extended_factory):
     _db.get_engine = patched_get_engine  # type: ignore[assignment]
 
     app = create_app()
-    tc = TestClient(app)
+    tc = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
 
     yield tc
 
@@ -1143,6 +1153,67 @@ def test_projections_valid(ext_client):
     # Probabilities should sum to ~1
     total_win = sum(e["win"] for e in body["items"])
     assert abs(total_win - 1.0) < 0.05
+
+
+def test_projection_queries_are_batched_and_rating_changes_invalidate_cache(
+    ext_client, extended_factory, monkeypatch
+):
+    from sqlalchemy import event, select
+    from climbing_elo.models import Athlete, Rating, Discipline
+
+    with extended_factory() as session:
+        ids = list(session.scalars(select(Athlete.id).order_by(Athlete.id)))[:2]
+
+    engine = extended_factory.kw["bind"]
+    queries = []
+    simulations = []
+    original_compute = _v1.compute_podium_probabilities
+
+    def record_query(*args):
+        queries.append(args[2])
+
+    def record_simulation(inputs, **kwargs):
+        simulations.append(inputs)
+        return original_compute(inputs, **kwargs)
+
+    monkeypatch.setattr(_v1, "compute_podium_probabilities", record_simulation)
+    event.listen(engine, "before_cursor_execute", record_query)
+    try:
+        body = {"discipline": "lead", "athlete_ids": ids}
+        first = ext_client.post("/api/v1/projections", json=body)
+        assert first.status_code == 200
+        assert len(queries) == 2
+        queries.clear()
+        second = ext_client.post("/api/v1/projections", json=body)
+        assert second.json() == first.json()
+        assert len(queries) == 2
+        assert len(simulations) == 1
+        with extended_factory() as session:
+            rating = session.scalar(
+                select(Rating).where(
+                    Rating.athlete_id == ids[0], Rating.discipline == Discipline.LEAD
+                )
+            )
+            original_mu = rating.mu
+            rating.mu += 200
+            session.commit()
+        changed = ext_client.post("/api/v1/projections", json=body)
+        assert changed.status_code == 200
+        assert len(simulations) == 2
+        assert next(
+            item for item in changed.json()["items"] if item["athlete_id"] == ids[0]
+        )["mu"] == round(original_mu + 200, 2)
+    finally:
+        event.remove(engine, "before_cursor_execute", record_query)
+        with extended_factory() as session:
+            rating = session.scalar(
+                select(Rating).where(
+                    Rating.athlete_id == ids[0], Rating.discipline == Discipline.LEAD
+                )
+            )
+            if "original_mu" in locals():
+                rating.mu = original_mu
+                session.commit()
 
 
 def test_projections_too_few_athletes(ext_client):
@@ -1398,7 +1469,7 @@ def test_combined_leaderboard_batched_path(tmp_path):
     engine, factory = _seed_combined_db(tmp_path / "combined_batch.db", n)
     with _patched_v1(engine, factory):
         app = create_app()
-        tc = TestClient(app)
+        tc = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
         tc.get("/api/v1/combined/leaderboard?gender=M&limit=1")  # warm up lifespan
         with _count_select_queries() as counter:
             r = tc.get(f"/api/v1/combined/leaderboard?gender=M&limit={n}")
@@ -1490,7 +1561,7 @@ def test_predictions_upcoming_batched_path(tmp_path):
     season = date.today().year
     with _patched_v1(engine, factory):
         app = create_app()
-        tc = TestClient(app)
+        tc = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
         tc.get(f"/api/v1/predictions/upcoming?discipline=lead&season={season}")  # warm
         with _count_select_queries() as counter:
             r = tc.get(f"/api/v1/predictions/upcoming?discipline=lead&season={season}")

@@ -174,7 +174,7 @@ def client(test_db_path, test_factory):
     _v1._session = patched_session  # type: ignore[assignment]
 
     app = create_app()
-    tc = TestClient(app)
+    tc = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
 
     yield tc
 
@@ -366,7 +366,7 @@ class TestPredictionsQueryCount:
 
         try:
             app = create_app()
-            tc = TestClient(app)
+            tc = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
             query_count[0] = 0
             r = tc.get("/predictions")
             assert r.status_code == 200
@@ -414,7 +414,7 @@ class TestPredictionsEmptyState:
 
         try:
             app = create_app()
-            tc = TestClient(app)
+            tc = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
             r = tc.get("/predictions")
             assert r.status_code == 200
             # Empty state should prompt users to scrape
