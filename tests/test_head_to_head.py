@@ -307,6 +307,31 @@ class TestHeadToHeadResult:
         assert "Adam Ondra" in r.text
         assert "Janja Garnbret" in r.text
 
+    def test_chart_receives_aligned_numeric_history_arrays(self, client):
+        """Rendered Chart.js inputs preserve the seeded history as arrays."""
+        import json
+        import re
+
+        tc, adam_id, janja_id, _ = client
+        response = tc.get(f"/head-to-head/{adam_id}/{janja_id}?discipline=lead")
+        assert response.status_code == 200
+
+        chart_data = {}
+        for name in ("labels", "muA", "muB"):
+            match = re.search(rf"\bvar\s+{name}\s*=\s*(.+?);", response.text)
+            assert match is not None, f"Missing Chart.js input {name}"
+            chart_data[name] = json.loads(match.group(1))
+            assert isinstance(chart_data[name], list), (
+                f"Chart.js input {name} must be an array, not encoded JSON text"
+            )
+
+        labels = chart_data["labels"]
+        assert len(labels) == len(chart_data["muA"]) == len(chart_data["muB"]) == 2
+        assert labels == sorted(labels)
+        assert all(isinstance(label, str) for label in labels)
+        assert chart_data["muA"] == [1750.0, 1750.0]
+        assert chart_data["muB"] == [1850.0, 1850.0]
+
     def test_win_probabilities_sum_to_100(self, client):
         """win_a and win_b must be present and together total ~100%.
 
