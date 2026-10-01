@@ -8,6 +8,7 @@ import os
 # individual tests still monkey-patch ``get_engine`` to use their own
 # seeded DBs where needed.
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+os.environ["CLIMBING_ELO_API_KEY"] = "test-api-key"
 
 import pytest  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
@@ -38,6 +39,9 @@ def _clear_app_caches():
         predictions_cache,
     )
 
+    from climbing_elo.api.limiter import limiter
+
+    limiter.reset()
     for cache in (html_page_cache, likely_roster_cache, predictions_cache):
         cache.clear()
     yield

@@ -72,7 +72,7 @@ def client(db_path: Path, factory) -> TestClient:
     _db.get_engine = patched_get_engine  # type: ignore[assignment]
 
     app = create_app()
-    tc = TestClient(app)
+    tc = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
     try:
         yield tc
     finally:

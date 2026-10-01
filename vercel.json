@@ -1,9 +1,28 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["sfo1"],
+  "buildCommand": "python3 scripts/build_static.py",
+  "headers": [
+    {
+      "source": "/static/:path*",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=3600, must-revalidate" },
+        { "key": "Vercel-CDN-Cache-Control", "value": "public, s-maxage=86400" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" }
+      ]
+    },
+    {
+      "source": "/favicon.ico",
+      "headers": [
+        { "key": "Content-Type", "value": "image/svg+xml" },
+        { "key": "Cache-Control", "value": "public, max-age=3600, must-revalidate" },
+        { "key": "Vercel-CDN-Cache-Control", "value": "public, s-maxage=86400" }
+      ]
+    }
+  ],
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/((?!static/|favicon\\.ico$).*)",
       "destination": "/api/index.py"
     }
   ]

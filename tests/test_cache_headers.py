@@ -1,80 +1,91 @@
-"""Tests for the edge cache-control middleware (Issue #97, Tier 1)."""
+"""Browser/CDN policy and regressions for shared-cache disclosure."""
 
+import pytest
+from fastapi.responses import Response
 from fastapi.testclient import TestClient
 
 from climbing_elo.api.app import create_app
-from climbing_elo.api.cache_headers import DEFAULT_CACHE_CONTROL
-
-# raise_server_exceptions=False so routes that touch the (unseeded) throwaway
-# DB surface as 500 responses rather than re-raising — we only care about the
-# response headers, not the route's data behaviour.
-client = TestClient(create_app(), raise_server_exceptions=False)
-
-
-def test_get_api_route_has_cache_control():
-    """A read-only GET API route gets the shared-cache header."""
-    r = client.get("/api/v1/disciplines")
-    assert r.status_code == 200
-    assert r.headers.get("cache-control") == DEFAULT_CACHE_CONTROL
-    assert "s-maxage" in r.headers["cache-control"]
-    assert "stale-while-revalidate" in r.headers["cache-control"]
+from climbing_elo.api.cache_headers import (
+    DEFAULT_CACHE_CONTROL,
+    DEFAULT_CDN_CACHE_CONTROL,
+    STATIC_CACHE_CONTROL,
+    STATIC_CDN_CACHE_CONTROL,
+)
 
 
-def test_get_api_route_has_vercel_cdn_cache_control():
-    """The same cacheable GET 200 also carries the Vercel CDN directive
-    (Issue #101) — this is the header Vercel's edge actually honors. Same
-    policy value as plain Cache-Control."""
-    r = client.get("/api/v1/disciplines")
-    assert r.status_code == 200
-    assert r.headers.get("vercel-cdn-cache-control") == DEFAULT_CACHE_CONTROL
+@pytest.fixture
+def client():
+    app = create_app()
+
+    @app.get("/cache-test")
+    def public_page():
+        return Response("public")
+
+    @app.get("/cache-test/custom")
+    def custom_page():
+        return Response("custom", headers={"Cache-Control": "public, max-age=15"})
+
+    @app.get("/cache-test/private")
+    def private_page():
+        return Response(
+            "private",
+            headers={
+                "Cache-Control": "private, no-store",
+                "Vercel-CDN-Cache-Control": "public, s-maxage=600",
+            },
+        )
+
+    @app.get("/cache-test/cookie")
+    def cookie_page():
+        response = Response("cookie", headers={"Cache-Control": "public, max-age=15"})
+        response.set_cookie("session", "secret")
+        return response
+
+    return TestClient(app)
 
 
-def test_docs_route_has_cache_control():
-    """A generic GET 200 (FastAPI docs) is tagged — broad coverage check."""
-    r = client.get("/docs")
-    assert r.status_code == 200
-    assert r.headers.get("cache-control") == DEFAULT_CACHE_CONTROL
-    assert r.headers.get("vercel-cdn-cache-control") == DEFAULT_CACHE_CONTROL
+def test_public_get_has_separate_browser_and_cdn_policy(client):
+    response = client.get("/cache-test")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == DEFAULT_CACHE_CONTROL
+    assert response.headers["vercel-cdn-cache-control"] == DEFAULT_CDN_CACHE_CONTROL
 
 
-def test_live_prefix_in_no_cache_list():
-    """`/live` (real-time pages + SSE) is excluded by prefix."""
-    from climbing_elo.api.cache_headers import NO_CACHE_PREFIXES
-
-    assert "/live" in NO_CACHE_PREFIXES
-    assert "/static" in NO_CACHE_PREFIXES
+def test_route_ttl_also_controls_the_cdn(client):
+    response = client.get("/cache-test/custom")
+    assert response.headers["cache-control"] == "public, max-age=15"
+    assert response.headers["vercel-cdn-cache-control"] == "public, max-age=15"
 
 
-def test_live_path_excluded_from_edge_cache():
-    """A `/live` path never carries the public shared-cache directive,
-    regardless of response status — including the Vercel CDN header (#101)."""
-    r = client.get("/live/99999999")
-    assert "public" not in r.headers.get("cache-control", "")
-    assert "public" not in r.headers.get("vercel-cdn-cache-control", "")
+@pytest.mark.parametrize(
+    "path",
+    ["/cache-test/private", "/cache-test/cookie", "/health", "/live/not-an-event-id"],
+)
+def test_private_cookie_and_live_responses_cannot_enter_public_cache(client, path):
+    response = client.get(path)
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["vercel-cdn-cache-control"] == "no-store"
 
 
-def test_static_path_excluded():
-    """`/static` is served by StaticFiles with its own validators; the
-    middleware must not stamp the shared-cache directive on top."""
-    # styles.css is the canonical static asset; if absent the 404 still must
-    # not carry our public directive (plain or Vercel CDN — #101).
-    r = client.get("/static/styles.css")
-    assert "public, s-maxage" not in r.headers.get("cache-control", "")
-    assert "public, s-maxage" not in r.headers.get("vercel-cdn-cache-control", "")
+def test_authorization_prevents_shared_caching_even_on_public_routes(client):
+    response = client.get("/cache-test", headers={"Authorization": "Bearer owner"})
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["vercel-cdn-cache-control"] == "no-store"
 
 
-def test_non_get_not_cached():
-    """Non-GET requests are never tagged (POST to the projections endpoint)."""
-    # Missing/invalid body → 422, but the point is the method, not the status.
-    r = client.post("/api/v1/projections", json={})
-    assert "public, s-maxage" not in r.headers.get("cache-control", "")
-    assert "public, s-maxage" not in r.headers.get("vercel-cdn-cache-control", "")
+def test_static_files_cache_and_revalidate_with_etag(client):
+    response = client.get("/static/styles.css")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == STATIC_CACHE_CONTROL
+    assert response.headers["vercel-cdn-cache-control"] == STATIC_CDN_CACHE_CONTROL
+    conditional = client.get(
+        "/static/styles.css", headers={"If-None-Match": response.headers["etag"]}
+    )
+    assert conditional.status_code == 304
+    assert conditional.content == b""
 
 
-def test_404_get_not_tagged():
-    """A 404 GET (router-level, no DB) must not be edge-cached — only 200s
-    are tagged (plain or Vercel CDN header — #101)."""
-    r = client.get("/this-route-does-not-exist")
-    assert r.status_code == 404
-    assert "public, s-maxage" not in r.headers.get("cache-control", "")
-    assert "public, s-maxage" not in r.headers.get("vercel-cdn-cache-control", "")
+def test_non_get_and_errors_are_not_publicly_cached(client):
+    for response in (client.post("/cache-test"), client.get("/not-found")):
+        assert "public" not in response.headers.get("cache-control", "")
+        assert "public" not in response.headers.get("vercel-cdn-cache-control", "")

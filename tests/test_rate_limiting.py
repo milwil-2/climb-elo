@@ -3,7 +3,7 @@
 Coverage:
 - POST /api/v1/projections is limited to 10 req/min per IP; 11th request → 429
 - 429 response includes a Retry-After header and does not leak sensitive info
-- GET /api/v1/predictions/upcoming is limited to 60 req/min; limit enforced
+- GET /api/v1/predictions/upcoming is limited to 10 req/min; limit enforced
 - GET /api/v1/leaderboard (default limit) uses 120/min; not hit by short bursts
 - HTML route GET / shares the 120/min default; not hit by short bursts
 - limiter.reset() clears state between tests (in-memory backend)
@@ -34,6 +34,7 @@ import climbing_elo.api.v1_routes as _v1
 import climbing_elo.database as _db
 from climbing_elo.api.app import create_app
 from climbing_elo.api.limiter import limiter
+from climbing_elo.api.limiter import client_ip
 from climbing_elo.models import (
     Athlete,
     Base,
@@ -131,7 +132,11 @@ def client(test_db_path, test_factory):
     _db.get_engine = patched_get_engine  # type: ignore[assignment]
 
     app = create_app()
-    tc = TestClient(app, raise_server_exceptions=False)
+    tc = TestClient(
+        app,
+        raise_server_exceptions=False,
+        headers={"Authorization": "Bearer test-api-key"},
+    )
 
     yield tc
 
@@ -228,30 +233,77 @@ class TestProjectionsRateLimit:
         assert "sqlite" not in error_text.lower()
 
 
+def test_expensive_html_routes_share_one_limit(client):
+    for _ in range(6):
+        assert client.get("/predictions").status_code == 200
+        assert client.get("/projections").status_code == 200
+    response = client.get("/predictions/999999")
+    assert response.status_code == 429
+    assert "retry-after" in response.headers
+
+
+def test_public_search_has_a_limit_and_needs_no_api_key(client):
+    public = TestClient(client.app)
+    for _ in range(60):
+        assert public.get("/search/athletes?q=Adam").status_code == 200
+    response = public.get("/search/athletes?q=Janja")
+    assert response.status_code == 429
+
+
+def test_forwarded_ip_is_trusted_only_on_vercel(monkeypatch):
+    from starlette.requests import Request
+
+    request = Request(
+        {
+            "type": "http",
+            "client": ("127.0.0.1", 1234),
+            "headers": [(b"x-vercel-forwarded-for", b"203.0.113.7")],
+        }
+    )
+    monkeypatch.delenv("VERCEL", raising=False)
+    assert client_ip(request) == "127.0.0.1"
+    monkeypatch.setenv("VERCEL", "1")
+    assert client_ip(request) == "203.0.113.7"
+
+
+def test_invalid_forwarded_ip_uses_socket_peer(monkeypatch):
+    from starlette.requests import Request
+
+    monkeypatch.setenv("VERCEL", "1")
+    request = Request(
+        {
+            "type": "http",
+            "client": ("127.0.0.1", 1234),
+            "headers": [(b"x-vercel-forwarded-for", b"spoofed, 203.0.113.7")],
+        }
+    )
+    assert client_ip(request) == "127.0.0.1"
+
+
 # ---------------------------------------------------------------------------
-# Tests — GET /api/v1/predictions/upcoming  (60/minute limit)
+# Tests — GET /api/v1/predictions/upcoming  (10/minute limit)
 # ---------------------------------------------------------------------------
 
 
 class TestPredictionsUpcomingRateLimit:
-    def test_first_sixty_requests_succeed(self, client):
-        """First 60 GET /api/v1/predictions/upcoming → 200 (or 200 with no data)."""
-        for i in range(60):
+    def test_first_ten_requests_succeed(self, client):
+        """First 10 GET /api/v1/predictions/upcoming → 200 (or 200 with no data)."""
+        for i in range(10):
             resp = client.get("/api/v1/predictions/upcoming")
             assert resp.status_code == 200, (
                 f"Request {i + 1} expected 200, got {resp.status_code}"
             )
 
-    def test_61st_request_is_429(self, client):
-        """61st request within the same minute → 429."""
-        for _ in range(60):
+    def test_11th_request_is_429(self, client):
+        """11th request within the same minute → 429."""
+        for _ in range(10):
             client.get("/api/v1/predictions/upcoming")
 
         resp = client.get("/api/v1/predictions/upcoming")
         assert resp.status_code == 429
 
     def test_429_has_retry_after(self, client):
-        for _ in range(60):
+        for _ in range(10):
             client.get("/api/v1/predictions/upcoming")
 
         resp = client.get("/api/v1/predictions/upcoming")

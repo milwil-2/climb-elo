@@ -50,7 +50,7 @@ ROUTES: list[str] = [
     "/athletes",
     "/events",
     "/predictions",
-    "/api/v1/disciplines",  # control: lightweight JSON endpoint
+    "/health",  # control: lightweight public JSON endpoint
 ]
 
 #: Default p50 budgets in milliseconds (#97 acceptance criteria). Routes absent

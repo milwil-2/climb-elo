@@ -8,6 +8,44 @@ from sqlalchemy.pool import NullPool
 from climbing_elo.database import _is_transaction_pooler, get_engine
 
 
+def test_repeated_sessions_share_engine_but_not_transactions(monkeypatch, tmp_path):
+    from sqlalchemy import text
+    from climbing_elo.database import get_session_factory
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'shared.db'}")
+    first = get_session_factory()()
+    second = get_session_factory()()
+    try:
+        assert first.bind is second.bind
+        with first.bind.begin() as connection:
+            connection.execute(text("CREATE TABLE entries (value INTEGER)"))
+        first.execute(text("INSERT INTO entries VALUES (1)"))
+        first.rollback()
+        assert second.execute(text("SELECT count(*) FROM entries")).scalar_one() == 0
+    finally:
+        first.close()
+        second.close()
+
+
+def test_engine_changes_when_database_url_changes(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'first.db'}")
+    first = get_engine()
+    assert get_engine() is first
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'second.db'}")
+    assert get_engine() is not first
+
+
+def test_in_memory_databases_stay_isolated(monkeypatch):
+    from sqlalchemy import inspect, text
+
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+    first = get_engine()
+    second = get_engine()
+    with first.begin() as connection:
+        connection.execute(text("CREATE TABLE isolated (value INTEGER)"))
+    assert not inspect(second).has_table("isolated")
+
+
 @pytest.mark.parametrize(
     "url, expected",
     [

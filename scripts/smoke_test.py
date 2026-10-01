@@ -390,7 +390,7 @@ def run_tests(base_url: str, take_screenshots: bool, surface: str | None) -> Non
     assert_route(
         "GET /api — API reference page",
         "/api",
-        must_contain=["Climbing ELO", "leaderboard", "no auth"],
+        must_contain=["Climbing ELO", "leaderboard", "Private API", "bearer token"],
         base_url=base_url,
     )
     ss(base_url + "/api", "api")

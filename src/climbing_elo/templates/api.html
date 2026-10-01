@@ -48,11 +48,11 @@
 <main>
   <section class="page-head">
     <div class="crumbs reveal"><a href="/">Home</a> / API</div>
-    <h1 class="reveal d2">Read-only,<br/><em>no auth</em>.</h1>
+    <h1 class="reveal d2">Private API,<br/><em>owner access</em>.</h1>
     <p class="lead reveal d3">
-      Public REST API. CORS is open, no credentials. Interactive docs at
-      <a href="/docs" style="color:var(--ink)">/docs</a>,
-      OpenAPI schema at <a href="/openapi.json" style="color:var(--ink)">/openapi.json</a>.
+      API requests require an owner-issued bearer token. Requests without a
+      valid token return 401. Documentation and the OpenAPI schema require
+      the same token. The public website does not need API credentials.
     </p>
   </section>
 
@@ -77,11 +77,13 @@
       <div>
         <div class="eyebrow"><span class="dash"></span>Example</div>
         <p style="color:var(--ink-2);font-size:14px;line-height:1.55;margin-top:10px">
-          Fetch the top-10 Boulder men. No auth header, no rate limit you'll hit.
+          Fetch the top-10 Boulder men using your private token. API requests
+          are limited to 120 per minute per IP; prediction requests to 10.
         </p>
         <div class="code-block">
           <div><span class="c"># shell</span></div>
-          <div>curl <span class="s">'https://climbing-elo.app/api/v1/leaderboard?discipline=boulder&amp;gender=M&amp;limit=10'</span></div>
+          <div>curl -H <span class="s">"Authorization: Bearer $CLIMBING_ELO_API_KEY"</span> \</div>
+          <div>&nbsp;&nbsp;<span class="s">'https://climb-elo.vercel.app/api/v1/leaderboard?discipline=boulder&amp;gender=M&amp;limit=10'</span></div>
           <br/>
           <div><span class="c"># response</span></div>
           <div>{</div>
@@ -101,6 +103,7 @@
         </p>
         <div class="code-block">
           <div>curl -X POST <span class="s">'.../api/v1/projections'</span> \</div>
+          <div>&nbsp;&nbsp;-H <span class="s">"Authorization: Bearer $CLIMBING_ELO_API_KEY"</span> \</div>
           <div>&nbsp;&nbsp;-H <span class="s">'Content-Type: application/json'</span> \</div>
           <div>&nbsp;&nbsp;-d <span class="s">'{"discipline":"lead","athlete_ids":[1,2,3]}'</span></div>
         </div>

@@ -653,7 +653,27 @@ def test_athletes_index_default_renders(leaderboard_client):
 
 
 def test_athletes_index_typeahead_hits_search_api(leaderboard_client):
-    """The page wires its typeahead to the GET /api/v1/athletes endpoint."""
+    """The page wires its typeahead to the GET /search/athletes endpoint."""
     r = leaderboard_client.get("/athletes?disc=L&gender=M")
     assert r.status_code == 200
-    assert "/api/v1/athletes?q=" in r.text
+    assert "/search/athletes?q=" in r.text
+
+
+def test_html_requests_reuse_compiled_templates(leaderboard_client, monkeypatch):
+    environment = leaderboard_client.app.state.templates.env
+    environment.cache.clear()
+    original_compile = environment.compile
+    compiled = []
+
+    def record_compile(source, name=None, *args, **kwargs):
+        compiled.append(name)
+        return original_compile(source, name, *args, **kwargs)
+
+    monkeypatch.setattr(environment, "compile", record_compile)
+    first = leaderboard_client.get("/leaderboard?disc=L&gender=M")
+    compiled_after_first = list(compiled)
+    second = leaderboard_client.get("/leaderboard?disc=L&gender=M")
+    assert first.status_code == second.status_code == 200
+    assert "Active Ace" in first.text and "Active Ace" in second.text
+    assert "leaderboard.html" in compiled_after_first
+    assert compiled == compiled_after_first

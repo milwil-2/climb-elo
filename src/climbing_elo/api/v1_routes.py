@@ -1,4 +1,4 @@
-"""Public REST API v1 endpoints."""
+"""Private REST API v1 and bounded website athlete search."""
 
 from __future__ import annotations
 
@@ -90,6 +90,7 @@ _MAX_UPCOMING_PER_DISCIPLINE = 50
 _MAX_UPCOMING_EVENTS_TOTAL = 3 * _MAX_UPCOMING_PER_DISCIPLINE
 
 router = APIRouter(prefix="/api/v1", tags=["v1"])
+search_router = APIRouter(prefix="/search", include_in_schema=False)
 
 
 def _session():
@@ -285,12 +286,16 @@ async def leaderboard(
 # ---------------------------------------------------------------------------
 
 
+@search_router.get("/athletes", response_model=list[AthleteSearchResult])
 @router.get(
     "/athletes",
     response_model=list[AthleteSearchResult],
     summary="Search athletes by name",
 )
+@limiter.limit("60/minute")
 async def search_athletes(
+    request: Request,
+    response: Response,
     q: str = Query(
         ...,
         min_length=1,
@@ -328,7 +333,14 @@ async def search_athletes(
     if discipline is not None:
         disc = _resolve_discipline(discipline)
 
-    pattern = f"%{q.strip()}%"
+    # The website sends two or more characters after debouncing. Keep empty,
+    # one-character and wildcard-only probes from scanning the whole roster.
+    term = q.strip()
+    if not term or (len(term) < 2 and request.url.path.startswith("/search/")):
+        return []
+    pattern = (
+        "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    )
 
     with _session() as session:
         if disc is not None:
@@ -340,7 +352,7 @@ async def search_athletes(
                     Rating,
                     (Rating.athlete_id == Athlete.id) & (Rating.discipline == disc),
                 )
-                .where(Athlete.name.ilike(pattern))
+                .where(Athlete.name.ilike(pattern, escape="\\"))
             )
             if gen is not None:
                 stmt = stmt.where(Athlete.gender == gen)
@@ -371,7 +383,7 @@ async def search_athletes(
         stmt = (
             select(Athlete, max_mu_subq.c.max_mu)
             .outerjoin(max_mu_subq, max_mu_subq.c.athlete_id == Athlete.id)
-            .where(Athlete.name.ilike(pattern))
+            .where(Athlete.name.ilike(pattern, escape="\\"))
         )
         if gen is not None:
             stmt = stmt.where(Athlete.gender == gen)
@@ -875,10 +887,12 @@ async def athlete_combined(athlete_id: int) -> AthleteCombined:
 # ---------------------------------------------------------------------------
 
 
-def _make_projection_cache_key(discipline: Discipline, athlete_ids: list[int]) -> str:
+def _make_projection_cache_key(
+    discipline: Discipline, inputs: list[AthleteProjectionInput]
+) -> str:
     """Stable cache key for a projection request fingerprint."""
-    sorted_ids = sorted(athlete_ids)
-    payload = json.dumps({"disc": discipline.value, "ids": sorted_ids}, sort_keys=True)
+    ratings = sorted((a.athlete_id, a.mu, a.sigma) for a in inputs)
+    payload = json.dumps({"disc": discipline.value, "ratings": ratings}, sort_keys=True)
     return "api:projections:" + hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -898,9 +912,9 @@ async def projections(
     simulated events from each athlete's rating distribution and returns win,
     podium, top-8, and expected-rank probabilities.
 
-    **Caching**: results are cached in-memory for 1 hour keyed on the request
-    fingerprint (discipline + sorted athlete IDs). Repeated identical requests
-    are served from cache at negligible cost.
+    **Caching**: results are cached in-memory for 1 hour keyed on discipline,
+    athlete IDs, ratings and current uncertainty. Identical inputs reuse the
+    simulations; changed inputs invalidate them immediately.
 
     **Rate limit**: 10 requests/min per IP (stricter than the 120/min default
     because each uncached call runs 10k Monte Carlo simulations).
@@ -914,26 +928,33 @@ async def projections(
             detail="athlete_ids must not contain duplicates",
         )
 
-    cache_key = _make_projection_cache_key(disc, body.athlete_ids)
-    cached = predictions_cache.get(cache_key)
-
     with _session() as session:
         from climbing_elo.engine.elo import DEFAULT_MU, DEFAULT_SIGMA
 
         proj_inputs: list[AthleteProjectionInput] = []
+        athletes = {
+            a.id: a
+            for a in session.execute(
+                select(Athlete).where(Athlete.id.in_(body.athlete_ids))
+            ).scalars()
+        }
+        ratings = {
+            r.athlete_id: r
+            for r in session.execute(
+                select(Rating).where(
+                    Rating.athlete_id.in_(body.athlete_ids),
+                    Rating.discipline == disc,
+                )
+            ).scalars()
+        }
         for aid in body.athlete_ids:
-            athlete = session.get(Athlete, aid)
+            athlete = athletes.get(aid)
             if not athlete:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Athlete {aid} not found",
                 )
-            rating = session.execute(
-                select(Rating).where(
-                    Rating.athlete_id == aid,
-                    Rating.discipline == disc,
-                )
-            ).scalar_one_or_none()
+            rating = ratings.get(aid)
             mu = rating.mu if rating else DEFAULT_MU
             sigma = (
                 sigma_now(rating.sigma, rating.last_event_at)
@@ -949,6 +970,8 @@ async def projections(
                 )
             )
 
+        cache_key = _make_projection_cache_key(disc, proj_inputs)
+        cached = predictions_cache.get(cache_key)
         if cached is not None:
             probs = cached
         else:
@@ -989,7 +1012,7 @@ async def projections(
     response_model=UpcomingPredictionsResponse,
     summary="List upcoming events with predicted top-3",
 )
-@limiter.limit("60/minute")
+@limiter.limit("10/minute")
 async def predictions_upcoming(
     request: Request,
     response: Response,

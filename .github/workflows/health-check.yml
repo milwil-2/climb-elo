@@ -182,30 +182,30 @@ jobs:
           fi
           echo "OK: landing page returned 200 and contains 'Leaderboard'"
 
-      - name: Probe /api/v1/disciplines (JSON)
+      - name: Probe /health (JSON)
         id: probe-api
         run: |
           set -euo pipefail
-          # Endpoint returns a JSON array of discipline objects, each with a `code` field.
+          # Public liveness endpoint does not require a private API token.
           BODY_FILE=$(mktemp)
           HTTP_CODE=$(curl -sS -o "$BODY_FILE" -w "%{http_code}" \
             --max-time 30 \
             -H "Accept: application/json" \
-            "${PROD_BASE_URL}/api/v1/disciplines")
+            "${PROD_BASE_URL}/health")
           echo "API HTTP status: ${HTTP_CODE}"
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "FAIL: expected HTTP 200 from /api/v1/disciplines, got ${HTTP_CODE}"
+            echo "FAIL: expected HTTP 200 from /health, got ${HTTP_CODE}"
             head -c 500 "$BODY_FILE"
             exit 1
           fi
-          # Validate JSON shape: array, non-empty, first element has a `code` field.
-          if ! jq -e 'type == "array" and length > 0 and (.[0] | has("code"))' "$BODY_FILE" > /dev/null; then
-            echo "FAIL: /api/v1/disciplines did not return a non-empty array of discipline objects"
+          # Validate the liveness response.
+          if ! jq -e '.status == "ok"' "$BODY_FILE" > /dev/null; then
+            echo "FAIL: /health did not return status ok"
             echo "--- first 500 chars of response ---"
             head -c 500 "$BODY_FILE"
             exit 1
           fi
-          echo "OK: /api/v1/disciplines returned $(jq 'length' "$BODY_FILE") discipline(s)"
+          echo "OK: /health returned status ok"
 
       # -----------------------------------------------------------------------
       # Discord alert on failure (separate code-path from IFSC alert).
@@ -310,7 +310,7 @@ jobs:
           - **Workflow run:** ${RUN_URL}
           - **Endpoints checked:**
             - \`GET https://climb-elo.vercel.app/\` (expect HTTP 200 + body contains 'Leaderboard')
-            - \`GET https://climb-elo.vercel.app/api/v1/disciplines\` (expect HTTP 200 + non-empty JSON array with \`code\` field)
+            - \`GET https://climb-elo.vercel.app/health\` (expect HTTP 200 + JSON status ok)
           - **Time (UTC):** $(date -u '+%Y-%m-%d %H:%M:%S')
 
           ### Possible causes
